@@ -167,9 +167,26 @@ class WorkerClient:
             self._pending[rep.get("request_id")] = rep
 
     def execute(self, code, cell_id="cell"):
+        """REPL-order execute: parent is the client's current snapshot and
+        the committed cell joins the replay ledger."""
         rep = self.request("execute", code=code, cell_id=cell_id,
                            parent_snapshot=self.snapshot)
         if rep.get("status") == "ok":
             self.snapshot = rep["snapshot"]
             self.ledger.append((cell_id, code))
         return rep
+
+    def execute_at(self, code, cell_id, parent):
+        """Document-order execute against an explicit parent snapshot.
+        Not ledgered: document mode recovers by prefix revalidation."""
+        rep = self.request("execute", code=code, cell_id=cell_id,
+                           parent_snapshot=parent)
+        if rep.get("status") == "ok":
+            self.snapshot = rep["snapshot"]
+        return rep
+
+    def restart_fresh(self):
+        """Fresh worker with no replay (document mode rebuilds on demand)."""
+        self.kill()
+        self.ledger = []
+        self.start()

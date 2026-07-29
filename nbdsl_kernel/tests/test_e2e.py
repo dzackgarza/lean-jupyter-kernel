@@ -96,6 +96,41 @@ def test_complete_and_inspect(kernel):
     assert "Functor" in text or "⥤" in text, text
 
 
+def _send_comm(kc, msg_type, content):
+    msg = kc.session.msg(msg_type, content)
+    kc.shell_channel.send(msg)
+
+
+def _send_document(kc, comm_id, cells):
+    _send_comm(kc, "comm_msg", {
+        "comm_id": comm_id,
+        "data": {"type": "document",
+                 "cells": [{"id": i, "source": s} for i, s in cells]}})
+
+
+def _exec_cell(kc, code, cell_id, timeout=STARTUP):
+    """execute_request with JupyterLab's metadata.cellId, like the frontend."""
+    msg = kc.session.msg("execute_request", {
+        "code": code, "silent": False, "store_history": True,
+        "user_expressions": {}, "allow_stdin": False})
+    msg["metadata"] = {"cellId": cell_id}
+    kc.shell_channel.send(msg)
+    msg_id = msg["header"]["msg_id"]
+    outputs = []
+    while True:
+        m = kc.get_iopub_msg(timeout=timeout)
+        if m["parent_header"].get("msg_id") != msg_id:
+            continue
+        if (m["msg_type"] == "status"
+                and m["content"]["execution_state"] == "idle"):
+            break
+        outputs.append(m)
+    while True:
+        reply = kc.get_shell_msg(timeout=timeout)
+        if reply["parent_header"]["msg_id"] == msg_id:
+            return reply["content"], outputs
+
+
 def test_interrupt_restart_replay(kernel):
     km, kc = kernel
     msg_id = kc.execute("def spin : IO Unit := do while true do pure ()\n#eval spin")
@@ -119,3 +154,38 @@ def test_interrupt_restart_replay(kernel):
     reply, outputs = run_cell(kc, "#eval x + 1")
     assert reply["status"] == "ok"
     assert "42" in texts(outputs)
+
+
+def test_document_order_semantics(kernel):
+    _, kc = kernel
+    comm_id = "doc-comm-1"
+    _send_comm(kc, "comm_open", {"comm_id": comm_id,
+                                 "target_name": "nbdsl_document", "data": {}})
+    # Two cells; running the SECOND must auto-run the first (prefix invariant).
+    _send_document(kc, comm_id, [("cellA", "def base : Nat := 1"),
+                                 ("cellB", "#eval base + 1")])
+    reply, outputs = _exec_cell(kc, "#eval base + 1", "cellB")
+    assert reply["status"] == "ok", reply
+    text = texts(outputs)
+    assert "re-running upstream cell 1" in text, text
+    assert "2" in text, text
+
+    # Editing the upstream cell invalidates downstream: same run now sees 5.
+    _send_document(kc, comm_id, [("cellA", "def base : Nat := 5"),
+                                 ("cellB", "#eval base + 1")])
+    reply, outputs = _exec_cell(kc, "#eval base + 1", "cellB")
+    assert reply["status"] == "ok", reply
+    assert "6" in texts(outputs), texts(outputs)
+
+    # Unchanged prefix is NOT re-run.
+    reply, outputs = _exec_cell(kc, "#eval base + 1", "cellB")
+    assert reply["status"] == "ok", reply
+    assert "re-running" not in texts(outputs), texts(outputs)
+
+    # A broken upstream cell surfaces as this cell's failure, atomically.
+    _send_document(kc, comm_id, [("cellA", 'def base : Nat := "no"'),
+                                 ("cellB", "#eval base + 1")])
+    reply, outputs = _exec_cell(kc, "#eval base + 1", "cellB")
+    assert reply["status"] == "error", reply
+    assert "upstream cell 1" in reply["evalue"], reply
+

@@ -77,6 +77,15 @@ roundtrip → Jupyter E2E.
   loop) is escalated after a grace window: the worker is killed and the next
   execute restarts it and replays the committed cell ledger — source replay
   is the canonical record (scoped environment state does not pickle reliably).
+- **Document order, not execution order.** With the `jupyterlab_nbdsl`
+  extension, the frontend streams the notebook's code-cell order and sources
+  over the `nbdsl_document` comm. Running a cell first re-establishes the
+  invariant *"the snapshot for cell i is exactly the state of elaborating the
+  visible prefix through cell i"*: unchanged prefix cells reuse their cached
+  snapshots (the worker's snapshot DAG), edited or moved ones re-run
+  automatically (`↻ re-running upstream cell k…`), and an upstream failure
+  aborts the run with that cell's error. Without the comm (jupyter console),
+  execution keeps plain REPL semantics.
 - **Positions.** Diagnostic columns are Unicode code points end to end
   (Lean's `FileMap.toPosition` ↔ Jupyter's `cursor_pos`); no byte/codepoint
   conversion exists anywhere.

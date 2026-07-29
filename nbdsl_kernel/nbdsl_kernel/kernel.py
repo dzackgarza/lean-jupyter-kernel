@@ -32,6 +32,35 @@ class NbDslKernel(Kernel):
         self.worker = WorkerClient(project, on_stream=self._stream)
         self._started = False
         self._silent = False
+        # Document mode: the jupyterlab_nbdsl extension streams cell order and
+        # sources over the "nbdsl_document" comm. Without it (jupyter console)
+        # execution keeps REPL semantics.
+        self._doc_comms = set()
+        self.doc_order = []          # cell ids, visible order (code cells)
+        self.doc_sources = {}        # cell id -> source
+        self.cell_state = {}         # cell id -> {source, snapshot, parent}
+        for msg_type in ("comm_open", "comm_msg", "comm_close"):
+            self.shell_handlers[msg_type] = getattr(self, msg_type)
+
+    # -- document comm -----------------------------------------------------
+
+    async def comm_open(self, stream, ident, parent):
+        content = parent["content"]
+        if content.get("target_name") == "nbdsl_document":
+            self._doc_comms.add(content.get("comm_id"))
+
+    async def comm_msg(self, stream, ident, parent):
+        content = parent["content"]
+        if content.get("comm_id") not in self._doc_comms:
+            return
+        data = content.get("data", {})
+        if data.get("type") == "document":
+            cells = data.get("cells", [])
+            self.doc_order = [c["id"] for c in cells]
+            self.doc_sources = {c["id"]: c["source"] for c in cells}
+
+    async def comm_close(self, stream, ident, parent):
+        self._doc_comms.discard(parent["content"].get("comm_id"))
 
     # -- plumbing ----------------------------------------------------------
 
@@ -47,14 +76,52 @@ class NbDslKernel(Kernel):
             self.worker.start()
             self._started = True
         elif self.worker.proc is None or self.worker.proc.poll() is not None:
-            # The worker died — normally from an interrupt's SIGINT. Rebuild
-            # the committed state by replaying the ledger: source replay is
-            # the canonical record (scoped env state does not pickle).
-            self._stream("stderr",
-                         "Lean worker died; restarting and replaying "
-                         "committed cells…\n")
-            n = self.worker.restart_and_replay()
-            self._stream("stderr", f"Replayed {n} cells.\n")
+            # The worker died — normally from an interrupt escalation.
+            if self.doc_sources:
+                # Document mode: snapshots are gone, so drop the cell states;
+                # prefix revalidation rebuilds exactly what the next run needs.
+                self._stream("stderr", "Lean worker died; restarting (cells "
+                                       "will re-run on demand)…\n")
+                self.worker.restart_fresh()
+                self.cell_state.clear()
+            else:
+                # REPL mode: source replay of the ledger is the canonical
+                # record (scoped env state does not pickle).
+                self._stream("stderr", "Lean worker died; restarting and "
+                                       "replaying committed cells…\n")
+                n = self.worker.restart_and_replay()
+                self._stream("stderr", f"Replayed {n} cells.\n")
+
+    def _ensure_prefix(self, cell_id):
+        """Re-establish the invariant: the snapshot for each cell equals the
+        state of elaborating the visible notebook prefix through that cell.
+        Returns (error_reply | None, parent_snapshot_for_cell_id)."""
+        parent = 0  # the prelude snapshot
+        for cid in self.doc_order:
+            if cid == cell_id:
+                return None, parent
+            src = self.doc_sources.get(cid, "")
+            if not src.strip():
+                continue
+            st = self.cell_state.get(cid)
+            if st and st["source"] == src and st["parent"] == parent:
+                parent = st["snapshot"]
+                continue
+            pos = self.doc_order.index(cid) + 1
+            self._stream("stdout", f"↻ re-running upstream cell {pos}…\n")
+            rep = self.worker.execute_at(src, cid, parent)
+            if rep.get("status") != "ok":
+                first = next((d for d in rep.get("diagnostics", [])
+                              if d["severity"] == "error"), {"message": "failed"})
+                return self._error_reply(
+                    "UpstreamError",
+                    f"upstream cell {pos} failed: {first['message']}"), parent
+            self.cell_state[cid] = {"source": src,
+                                    "snapshot": rep["snapshot"], "parent": parent}
+            parent = rep["snapshot"]
+        # cell not in the document (e.g. brand-new cell the extension hasn't
+        # reported yet): fall through with the last prefix state
+        return None, parent
 
     def _publish_reply(self, rep):
         for diag in rep.get("diagnostics", []):
@@ -94,7 +161,21 @@ class NbDslKernel(Kernel):
         self._silent = silent
         try:
             self._ensure_worker()
-            rep = self.worker.execute(code, cell_id=cell_id or "cell")
+            if cell_id and cell_id in self.doc_sources:
+                # Document mode: make the prefix invariant true, then run this
+                # cell against its prefix snapshot. The request's code is the
+                # authoritative source for the cell itself.
+                self.doc_sources[cell_id] = code
+                err, parent = self._ensure_prefix(cell_id)
+                if err is not None:
+                    return err
+                rep = self.worker.execute_at(code, cell_id, parent)
+                if rep.get("status") == "ok":
+                    self.cell_state[cell_id] = {
+                        "source": code, "snapshot": rep["snapshot"],
+                        "parent": parent}
+            else:
+                rep = self.worker.execute(code, cell_id=cell_id or "cell")
             if not silent:
                 self._publish_reply(rep)
             if rep.get("status") == "ok":
