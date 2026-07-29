@@ -9,13 +9,35 @@ import {
 } from '@jupyterlab/notebook';
 import { Kernel } from '@jupyterlab/services';
 import { buildDocumentMessage } from './documentMessage';
+import {
+  computeStaleClassUpdates,
+  isStatusMessage,
+  STALE_CLASS
+} from './staleStatus';
 
 const COMM_TARGET = 'nbdsl_document';
 const DEBOUNCE_MS = 100;
 
-// Fire-and-forget: the kernel never replies on this comm. Sends are per-panel,
-// so `executionScheduled` needs a way back from the notebook to its sender.
+// Sends are per-panel, so `executionScheduled` needs a way back from the
+// notebook to its sender.
 const senders = new WeakMap<NotebookPanel, () => void>();
+
+/** Mark the cells the kernel reports stale; unmark every other cell. */
+function applyStatus(panel: NotebookPanel, data: unknown): void {
+  if (!isStatusMessage(data)) {
+    return;
+  }
+  const byId = new Map(panel.content.widgets.map(w => [w.model.id, w] as const));
+  const { addStale, removeStale } = computeStaleClassUpdates(data, [
+    ...byId.keys()
+  ]);
+  for (const id of addStale) {
+    byId.get(id)?.node.classList.add(STALE_CLASS);
+  }
+  for (const id of removeStale) {
+    byId.get(id)?.node.classList.remove(STALE_CLASS);
+  }
+}
 
 function track(panel: NotebookPanel): void {
   let comm: Kernel.IComm | null = null;
@@ -33,6 +55,7 @@ function track(panel: NotebookPanel): void {
     }
     if (!comm) {
       comm = kernel.createComm(COMM_TARGET);
+      comm.onMsg = msg => applyStatus(panel, msg.content.data);
       comm.open({});
     }
     comm.send(buildDocumentMessage(model.cells));
@@ -67,7 +90,10 @@ function track(panel: NotebookPanel): void {
   });
 
   void panel.context.ready.then(() => {
-    panel.content.model?.cells.changed.connect(sendDebounced);
+    // sharedModel.changed covers cell text edits AND list operations
+    // (add/remove/move) — cells.changed alone misses typing, so staleness
+    // would only update at execution time.
+    panel.content.model?.sharedModel.changed.connect(sendDebounced);
     sendNow();
   });
 

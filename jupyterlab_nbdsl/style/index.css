@@ -1,0 +1,9 @@
+/* A cell whose cached kernel state was invalidated by an upstream edit; it will
+   re-run on the next execution. Marked, not hidden. */
+.nbdsl-stale .jp-Cell-inputWrapper {
+  border-left: 3px dashed var(--jp-warn-color1);
+}
+
+.nbdsl-stale .jp-Cell-outputWrapper {
+  opacity: 0.5;
+}
