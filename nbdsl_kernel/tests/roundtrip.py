@@ -14,6 +14,7 @@ import os
 import select
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -211,6 +212,41 @@ def main() -> None:
     rep = w.execute('prefer groupsToSets\ndef zap : Nat := "s"')
     assert rep["status"] == "error", rep
     print("ok: registry mutation in a failed cell rolled back with it")
+
+    # --- is_complete (parse-only, Lean's parser decides) --------------------
+    for code, expected in [
+        ("def foo : Nat := 4", "complete"),
+        ("def foo : Nat :=", "incomplete"),
+        # `by` + EOF parses (empty tactic block); failing it is elaboration's job
+        ("example : True := by", "complete"),
+        ("def ( := )", "invalid"),
+    ]:
+        rep = w.request("is_complete", code=code)
+        assert rep["status"] == "ok" and rep["result"] == expected, (code, rep)
+    print("ok: is_complete classifies via Lean's parser")
+
+    # --- cooperative cancel -------------------------------------------------
+    w._rid += 1
+    rid = f"r{w._rid}"
+    # Wide, flat elaboration (~10s): thousands of tactic steps, each passing
+    # cancellation checkpoints — the same mechanism the language server uses.
+    slow = ("set_option maxHeartbeats 0 in\nexample : True := by\n"
+            + "".join(f"  have h{i} : Nat := {i}\n" for i in range(25000))
+            + "  trivial")
+    write_frame(w.req_fd, {
+        "op": "execute", "request_id": rid, "cell_id": "slow", "code": slow})
+    time.sleep(1.0)  # let elaboration get going
+    write_frame(w.req_fd, {"op": "cancel", "request_id": rid})
+    t0 = time.monotonic()
+    rep = w.replies.read_frame()
+    took = time.monotonic() - t0
+    assert rep["request_id"] == rid, rep
+    assert rep["status"] == "cancelled", rep
+    assert took < 15, took
+    before = w.request("describe")["snapshot"]
+    rep = w.execute("#eval x + 1")  # worker fully alive, state unchanged
+    assert rep["status"] == "ok" and rep["snapshot"] == before + 1, rep
+    print(f"ok: cooperative cancel ({took:.2f}s), state intact, worker alive")
 
     # --- shutdown -----------------------------------------------------------
     rc, out, err = w.shutdown()

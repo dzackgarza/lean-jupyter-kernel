@@ -15,6 +15,7 @@ from pathlib import Path
 
 READY_TIMEOUT = 600.0  # first prelude import loads mathlib oleans
 REPLY_TIMEOUT = 3600.0  # elaboration can legitimately be slow; interrupt kills
+CANCEL_GRACE = 3.0  # cooperative-cancel window before the worker is killed
 
 
 class WorkerDied(RuntimeError):
@@ -75,6 +76,10 @@ class WorkerClient:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            # Own session: Jupyter's interrupt SIGINTs the kernel's process
+            # group; the worker must survive it so cancellation can be
+            # cooperative (a `cancel` frame) with kill only as escalation.
+            start_new_session=True,
         )
         os.close(req_r)
         os.close(rep_w)
@@ -136,13 +141,29 @@ class WorkerClient:
         self._rid += 1
         rid = f"r{self._rid}"
         self._write_frame({"op": op, "request_id": rid, **fields})
+        try:
+            return self._await(rid, timeout)
+        except KeyboardInterrupt:
+            # Jupyter interrupt: ask the worker to cancel the in-flight
+            # request; if elaboration doesn't reach a cancellation checkpoint
+            # within the grace window, kill the worker (the caller restarts
+            # and replays on the next execute).
+            try:
+                self._write_frame({"op": "cancel", "request_id": rid})
+                return self._await(rid, CANCEL_GRACE)
+            except (TimeoutError, KeyboardInterrupt, WorkerDied):
+                self.kill()
+                raise WorkerDied(
+                    "interrupted: worker killed (did not cancel in time)") from None
+
+    def _await(self, rid, timeout):
         if rid in self._pending:
             return self._pending.pop(rid)
         while True:
             rep = self.replies.read_frame(timeout)
             if rep.get("request_id") == rid:
                 return rep
-            # out-of-order reply (e.g. a late cancel ack): stash it
+            # out-of-order reply: stash it
             self._pending[rep.get("request_id")] = rep
 
     def execute(self, code, cell_id="cell"):

@@ -68,10 +68,15 @@ roundtrip → Jupyter E2E.
 - **Protocol isolation.** Control frames travel on dedicated fds; user output
   cannot forge a frame (`#eval` prints are additionally captured by Lean into
   the message log and surface as info diagnostics).
-- **Interrupt = kill + replay.** Jupyter's interrupt SIGINTs the worker; the
-  next execute restarts it, re-imports the prelude, and replays the committed
-  cell ledger — source replay is the canonical record (scoped environment
-  state does not pickle reliably).
+- **Interrupt = cooperative cancel, then kill + replay.** The worker runs in
+  its own session; Jupyter's interrupt reaches only the kernel, which sends a
+  `cancel` frame. A reader task sets the in-flight `IO.CancelToken`, and
+  elaboration aborts at its next checkpoint (~0.2s for tactic proofs — the
+  same mechanism the language server uses) with `status:"cancelled"` and no
+  commit. Code that never reaches a checkpoint (e.g. an interpreted `#eval`
+  loop) is escalated after a grace window: the worker is killed and the next
+  execute restarts it and replays the committed cell ledger — source replay
+  is the canonical record (scoped environment state does not pickle reliably).
 - **Positions.** Diagnostic columns are Unicode code points end to end
   (Lean's `FileMap.toPosition` ↔ Jupyter's `cursor_pos`); no byte/codepoint
   conversion exists anywhere.
@@ -79,15 +84,16 @@ roundtrip → Jupyter E2E.
 ## Protocol (spec by example: `nbdsl_kernel/tests/roundtrip.py`)
 
 Ops: `execute {request_id, parent_snapshot, cell_id, code}` →
-`{status: ok|error, snapshot, diagnostics, sorries, outputs}`;
-`describe`; unknown ops answer `{"status": "unsupported"}` — the
-non-breaking seam for milestone 2's `complete` / `inspect` / `is_complete` /
-`cancel`.
+`{status: ok|error|cancelled, snapshot, diagnostics, sorries, outputs}`;
+`is_complete {code}` → `{result: complete|incomplete|invalid}` (parse-only,
+Lean's parser decides — powers `do_is_complete`); `cancel {request_id}`
+(out-of-band, no reply of its own — the cancelled execute replies);
+`describe`. Unknown ops answer `{"status": "unsupported"}` — the
+non-breaking seam for milestone 2's `complete` / `inspect`.
 
 ## Milestone 2 (not built; seams left)
 
 JupyterLab extension (cell-order tracking, CodeMirror highlighting),
 virtual-document source maps with prefix invalidation, InfoTree-backed
-completion/inspection/is-complete, cooperative cancellation
-(`IO.CancelToken` + reader task), snapshot pickling as a validated cache,
+completion and inspection, snapshot pickling as a validated cache,
 OS-level sandboxing for untrusted notebooks.

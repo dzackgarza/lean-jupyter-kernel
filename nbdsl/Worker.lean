@@ -83,7 +83,8 @@ def sorryJson (s : Frontend.Sorry) : Json :=
      ("end", s.endPos?.elim Json.null positionJson),
      ("goal", Json.str s.goal)]
 
-def handleExecute (session : IO.Ref Session) (req : Json) : IO Json := do
+def handleExecute (session : IO.Ref Session) (cancelTk : IO.CancelToken)
+    (req : Json) : IO Json := do
   let .ok code := req.getObjValAs? String "code"
     | return reply req [("status", Json.str "error"), ("message", Json.str "missing code")]
   let cellId := (req.getObjValAs? String "cell_id").toOption.getD "cell"
@@ -95,7 +96,7 @@ def handleExecute (session : IO.Ref Session) (req : Json) : IO Json := do
          ("message", Json.str s!"unknown snapshot {parentId}")]
   -- Request-local output sink: clear leftovers, elaborate, drain.
   discard NbDsl.Notebook.drainOutputs
-  let result ← Frontend.processCell parent.cmdState code s!"<{cellId}>"
+  let result ← Frontend.processCell parent.cmdState code s!"<{cellId}>" (some cancelTk)
   let outputs ← NbDsl.Notebook.drainOutputs
   let diags ← result.messages.mapM diagnosticJson
   let hasError := result.messages.any (·.severity matches .error)
@@ -103,7 +104,10 @@ def handleExecute (session : IO.Ref Session) (req : Json) : IO Json := do
     [("diagnostics", Json.arr diags.toArray),
      ("sorries", Json.arr (result.sorries.map sorryJson)),
      ("outputs", Json.arr (outputs.map (·.toJson)))]
-  if hasError then
+  if ← cancelTk.isSet then
+    -- Cancelled cooperatively: nothing commits, parent stays current.
+    return reply req <| [("status", Json.str "cancelled"), ("snapshot", toJson parentId)] ++ common
+  else if hasError then
     -- Failure isolation: the parent snapshot stays current.
     return reply req <| [("status", Json.str "error"), ("snapshot", toJson parentId)] ++ common
   else
@@ -115,9 +119,29 @@ def handleExecute (session : IO.Ref Session) (req : Json) : IO Json := do
     }
     return reply req <| [("status", Json.str "ok"), ("snapshot", toJson id)] ++ common
 
-def handleRequest (session : IO.Ref Session) (req : Json) : IO Json := do
+/-- In-flight execute: its request id and cancellation token. -/
+abbrev Inflight := IO.Ref (Option (String × IO.CancelToken))
+
+def handleRequest (session : IO.Ref Session) (inflight : Inflight)
+    (req : Json) : IO Json := do
   match req.getObjValAs? String "op" with
-  | .ok "execute" => handleExecute session req
+  | .ok "execute" =>
+      let tk ← IO.CancelToken.new
+      if let .ok rid := req.getObjValAs? String "request_id" then
+        inflight.set (some (rid, tk))
+      let rep ← handleExecute session tk req
+      inflight.set none
+      return rep
+  | .ok "is_complete" =>
+      let .ok code := req.getObjValAs? String "code"
+        | return reply req [("status", Json.str "error"), ("message", Json.str "missing code")]
+      let s ← session.get
+      let some parent := s.snapshots[s.current]?
+        | return reply req
+            [("status", Json.str "error"), ("message", Json.str "invalid current snapshot")]
+      return reply req
+        [("status", Json.str "ok"),
+         ("result", Json.str (Frontend.classifyInput parent.cmdState code))]
   | .ok "describe" =>
       let s ← session.get
       return reply req
@@ -133,12 +157,35 @@ def handleRequest (session : IO.Ref Session) (req : Json) : IO Json := do
       return reply req
         [("status", Json.str "error"), ("message", Json.str "missing op")]
 
-partial def mainLoop (ch : Channel) (session : IO.Ref Session) : IO Unit := do
+/--
+Reader task: the only reader of the request fd. Ordinary requests are queued
+for the main task; `cancel` frames are handled out-of-band by setting the
+in-flight execute's cancellation token (they get no reply of their own — the
+cancelled execute replies `status:"cancelled"`).
+-/
+partial def readerLoop (ch : Channel) (queue : Std.CloseableChannel.Sync Json)
+    (inflight : Inflight) : IO Unit := do
   match ← readFrame ch with
-  | none => return ()   -- parent closed the request pipe: clean shutdown
+  | none =>
+      discard (queue.close).toBaseIO   -- EOF: drain queue, then shut down
   | some req =>
-      writeFrame ch (← handleRequest session req)
-      mainLoop ch session
+      if let .ok "cancel" := req.getObjValAs? String "op" then
+        if let .ok rid := req.getObjValAs? String "request_id" then
+          if let some (cur, tk) ← inflight.get then
+            if cur == rid then tk.set
+        readerLoop ch queue inflight
+      else
+        match ← (queue.send req).toBaseIO with
+        | .ok _ => readerLoop ch queue inflight
+        | .error _ => return ()
+
+partial def mainLoop (ch : Channel) (queue : Std.CloseableChannel.Sync Json)
+    (session : IO.Ref Session) (inflight : Inflight) : IO Unit := do
+  match ← queue.recv with
+  | none => return ()   -- queue closed after EOF: clean shutdown
+  | some req =>
+      writeFrame ch (← handleRequest session inflight req)
+      mainLoop ch queue session inflight
 
 /-- Import the prelude module and build snapshot 0. -/
 unsafe def initSession (preludeModule : Lean.Name) : IO Session := do
@@ -162,10 +209,13 @@ unsafe def main (argv : List String) : IO UInt32 := do
   | .ok args =>
       let ch ← openChannel args.reqFd args.repFd
       let session ← IO.mkRef (← Worker.initSession args.preludeModule)
+      let inflight : Worker.Inflight ← IO.mkRef none
+      let queue ← Std.CloseableChannel.Sync.new
+      let _reader ← IO.asTask (Worker.readerLoop ch queue inflight) .dedicated
       writeFrame ch <| Json.mkObj
         [("op", Json.str "ready"),
          ("protocol", toJson (1 : Nat)),
          ("lean", Json.str Lean.versionString),
          ("snapshot", toJson (0 : Nat))]
-      Worker.mainLoop ch session
+      Worker.mainLoop ch queue session inflight
       return 0

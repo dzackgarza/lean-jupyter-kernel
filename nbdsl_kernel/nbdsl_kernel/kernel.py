@@ -100,6 +100,9 @@ class NbDslKernel(Kernel):
             if rep.get("status") == "ok":
                 return {"status": "ok", "execution_count": self.execution_count,
                         "payload": [], "user_expressions": {}}
+            if rep.get("status") == "cancelled":
+                return self._error_reply("Interrupted",
+                                         "execution cancelled; state unchanged")
             first = next((d for d in rep.get("diagnostics", [])
                           if d["severity"] == "error"),
                          {"message": "execution failed"})
@@ -125,9 +128,21 @@ class NbDslKernel(Kernel):
                 "traceback": [evalue], "execution_count": self.execution_count}
 
     def do_is_complete(self, code):
-        # Deciding completeness requires Lean's parser; guessing in Python is
-        # forbidden by design. M2 adds a worker-side `is_complete` op.
-        return {"status": "unknown"}
+        # Deciding completeness requires Lean's parser — never guessed in
+        # Python. Before the worker is up, the honest answer is unknown.
+        if not self._started:
+            return {"status": "unknown"}
+        try:
+            rep = self.worker.request("is_complete", code=code, timeout=30)
+        except (WorkerDied, TimeoutError):
+            return {"status": "unknown"}
+        if rep.get("status") != "ok":
+            return {"status": "unknown"}
+        result = rep.get("result", "unknown")
+        out = {"status": result}
+        if result == "incomplete":
+            out["indent"] = "  "
+        return out
 
     def do_complete(self, code, cursor_pos):
         return {"status": "ok", "matches": [], "cursor_start": cursor_pos,

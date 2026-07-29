@@ -122,6 +122,34 @@ where
       goal }
 
 /--
+Parse (without elaborating) to classify a cell for Jupyter's `is_complete`:
+`"complete"` when Lean's parser accepts every command, `"incomplete"` when
+the only failure is at end of input (an unclosed construct), `"invalid"` on a
+definite syntax error. Python never guesses at Lean syntax.
+-/
+partial def classifyInput (parent : Command.State) (code : String) : String :=
+  let ictx := Parser.mkInputContext code "<is_complete>"
+  let endPos := ictx.fileMap.toPosition ⟨code.utf8ByteSize⟩
+  go ictx endPos {} { parent with messages := {} }
+where
+  go (ictx : Parser.InputContext) (endPos : Position)
+      (pstate : Parser.ModuleParserState) (cmdState : Command.State) : String :=
+    let scope := cmdState.scopes.head!
+    let pmctx : Parser.ParserModuleContext :=
+      { env := cmdState.env, options := scope.opts,
+        currNamespace := scope.currNamespace, openDecls := scope.openDecls }
+    let (cmd, ps, messages) :=
+      Parser.parseCommand ictx pmctx pstate cmdState.messages
+    let errs := messages.toList.filter (·.severity matches .error)
+    if errs.isEmpty then
+      if Parser.isTerminalCommand cmd then "complete"
+      else go ictx endPos ps { cmdState with messages := messages }
+    else if errs.all fun m => m.pos.line == endPos.line && m.pos.column == endPos.column then
+      "incomplete"
+    else
+      "invalid"
+
+/--
 Elaborate one cell against `parent`. The returned state is a *candidate*: the
 caller commits it only when no diagnostic has error severity.
 -/
