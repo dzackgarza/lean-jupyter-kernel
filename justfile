@@ -27,6 +27,8 @@ build:
 # Run the full repository QC gate
 test: build
     @just -f ~/ai-review-ci/justfiles/lean.just -d nbdsl lean-no-sorry
+    @! grep -rn '^import NbDsl' nbdsl/Worker.lean nbdsl/Worker/ || \
+        { echo 'BOUNDARY: Worker.* must never import DSL modules'; exit 1; }
     @python3 nbdsl_kernel/tests/roundtrip.py
 
 [private]

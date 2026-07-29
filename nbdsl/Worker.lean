@@ -14,7 +14,7 @@ snapshot remains current and the diagnostics are reported.
 import Worker.Protocol
 import Worker.Frontend
 import Worker.Query
-import NbDsl.Notebook.Output
+import Worker.Output
 
 open Worker.Protocol
 open Lean (Json toJson)
@@ -96,9 +96,9 @@ def handleExecute (session : IO.Ref Session) (cancelTk : IO.CancelToken)
         [("status", Json.str "error"),
          ("message", Json.str s!"unknown snapshot {parentId}")]
   -- Request-local output sink: clear leftovers, elaborate, drain.
-  discard NbDsl.Notebook.drainOutputs
+  discard drainOutputs
   let result ← Frontend.processCell parent.cmdState code s!"<{cellId}>" (some cancelTk)
-  let outputs ← NbDsl.Notebook.drainOutputs
+  let outputs ← drainOutputs
   let diags ← result.messages.mapM diagnosticJson
   let hasError := result.messages.any (·.severity matches .error)
   let common :=
@@ -173,7 +173,7 @@ def handleRequest (session : IO.Ref Session) (inflight : Inflight)
       -- the cell's elaboration, so `#eval` side effects execute.
       let hover? ← do
         let result ← Frontend.processCell parent.cmdState code "<inspect>"
-        discard NbDsl.Notebook.drainOutputs   -- analysis must not leak outputs
+        discard drainOutputs   -- analysis must not leak outputs
         let pos := Frontend.codepointPos code cursor
         let mut found : Option String := none
         for tree in result.cmdState.infoState.trees do

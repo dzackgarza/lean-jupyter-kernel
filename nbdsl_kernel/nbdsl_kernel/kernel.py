@@ -29,7 +29,10 @@ class NbDslKernel(Kernel):
             raise RuntimeError(
                 "NBDSL_PROJECT is not set; install the kernelspec with "
                 "`python -m nbdsl_kernel.install --project <lean project root>`")
-        self.worker = WorkerClient(project, on_stream=self._stream)
+        self.worker = WorkerClient(
+            project,
+            prelude=os.environ.get("NBDSL_PRELUDE", "NbDsl.Notebook"),
+            on_stream=self._stream)
         self._started = False
         self._silent = False
         # Document mode: the jupyterlab_nbdsl extension streams cell order and

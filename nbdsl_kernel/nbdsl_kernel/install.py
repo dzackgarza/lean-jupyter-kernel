@@ -19,6 +19,11 @@ def main():
     p.add_argument("--project", required=True,
                    help="absolute path to the nbdsl Lake project")
     p.add_argument("--name", default="nbdsl", help="kernelspec name")
+    p.add_argument("--prelude-module", default="NbDsl.Notebook",
+                   help="Lean module imported as the notebook prelude — the "
+                        "DSL a session speaks (default: NbDsl.Notebook)")
+    p.add_argument("--display-name", default=None,
+                   help="kernelspec display name (default: derived)")
     p.add_argument("--sandbox", action="store_true",
                    help="run the Lean worker under bubblewrap (read-only "
                         "project/toolchain, no network) for untrusted notebooks")
@@ -27,20 +32,24 @@ def main():
     project = Path(args.project).resolve()
     if not (project / "lean-toolchain").exists():
         sys.exit(f"error: {project} has no lean-toolchain — not a Lean project")
-    worker = project / ".lake/build/bin/nbdsl_worker"
-    if not worker.exists():
+    workers = [project / ".lake/build/bin/nbdsl_worker",
+               *project.glob(".lake/packages/*/.lake/build/bin/nbdsl_worker")]
+    if not any(w.exists() for w in workers):
         sys.exit(f"error: worker not built — run `lake build nbdsl_worker` in {project}")
 
+    display = args.display_name or f"{args.prelude_module.split('.')[0]} (Lean 4)"
     spec = {
         "argv": [sys.executable, "-m", "nbdsl_kernel",
                  "-f", "{connection_file}", "--project", str(project)],
-        "display_name": "NbDsl (Lean 4)",
+        "display_name": display,
         "language": "lean4",
         "interrupt_mode": "message",
-        "metadata": {"nbdsl": {"project_root": str(project)}},
+        "env": {"NBDSL_PRELUDE": args.prelude_module},
+        "metadata": {"nbdsl": {"project_root": str(project),
+                               "prelude_module": args.prelude_module}},
     }
     if args.sandbox:
-        spec["env"] = {"NBDSL_SANDBOX": "1"}
+        spec["env"]["NBDSL_SANDBOX"] = "1"
         spec["display_name"] += " [sandboxed]"
     with tempfile.TemporaryDirectory() as d:
         (Path(d) / "kernel.json").write_text(json.dumps(spec, indent=2))

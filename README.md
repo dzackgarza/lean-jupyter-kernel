@@ -104,6 +104,25 @@ docstring included); `cancel {request_id}` (out-of-band, no reply of its own
 — the cancelled execute replies); `describe`. Unknown ops answer
 `{"status": "unsupported"}`.
 
+## Bring your own DSL
+
+The notebook core is DSL-agnostic, and the boundary is enforced (the QC gate
+fails if `Worker.*` ever imports a DSL module). A custom or replacement DSL
+is:
+
+1. a Lean package (or extra modules here) whose elaborators may `import
+   Worker.Output` and call `Worker.emitOutput` for rich MIME outputs — the
+   dependency arrow is always DSL → Worker;
+2. a prelude module importing your DSL surface;
+3. a kernelspec: `python -m nbdsl_kernel.install --project <your project>
+   --prelude-module Your.Prelude --name yourdsl`.
+
+Nothing in the worker, Python kernel, or Lab extension changes. (For a
+separate downstream package, `require` this repo's `nbdsl` package for the
+`Worker` library and build `nbdsl_worker` there — the kernel finds the
+binary in either build tree. The one cosmetic seam: `prefer` is hardcoded as
+a keyword in the highlighter; new `#commands` highlight automatically.)
+
 ## Milestone 2 remaining (seams left)
 
 JupyterLab extension for cell-order tracking, virtual-document source maps

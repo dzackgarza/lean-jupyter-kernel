@@ -1,5 +1,11 @@
 /-
-Structured notebook output.
+Structured notebook output — CORE infrastructure, not DSL code.
+
+This module is the stable surface a DSL package depends on to emit rich
+outputs; the dependency arrow is DSL → Worker, never the reverse. Nothing
+under `Worker.*` may import DSL modules, so a replacement DSL is a new Lean
+package requiring this library plus a `--prelude-module` change — zero edits
+to the worker, kernel, or frontend extension.
 
 Outputs are MIME bundles the Jupyter kernel republishes as `display_data` /
 `execute_result`. They are *rendering*, not semantics: the sink is a
@@ -8,7 +14,7 @@ and nothing here ever enters the `Environment` or `Command.State`.
 -/
 import Lean
 
-namespace NbDsl.Notebook
+namespace Worker
 
 open Lean (Json)
 
@@ -32,4 +38,4 @@ def Output.toJson (o : Output) : Json :=
      ("metadata", o.metadata),
      ("display_id", o.displayId?.elim Json.null Json.str)]
 
-end NbDsl.Notebook
+end Worker

@@ -88,12 +88,26 @@ class WorkerClient:
             "--die-with-parent",
         ] + cmd
 
+    def _worker_exe(self):
+        """The built worker binary — in this project's build tree, or (when
+        the project is a downstream DSL package that `require`s the worker
+        library) in the dependency's build tree."""
+        candidates = [self.project_root / ".lake/build/bin/nbdsl_worker",
+                      *self.project_root.glob(
+                          ".lake/packages/*/.lake/build/bin/nbdsl_worker")]
+        for c in candidates:
+            if c.exists():
+                return str(c)
+        raise WorkerDied(
+            f"nbdsl_worker not built for {self.project_root}; run "
+            "`lake build nbdsl_worker` there")
+
     def start(self):
         req_r, req_w = os.pipe()
         rep_r, rep_w = os.pipe()
         self.proc = subprocess.Popen(
             self._maybe_sandbox(
-                ["lake", "env", ".lake/build/bin/nbdsl_worker",
+                ["lake", "env", self._worker_exe(),
                  "--req-fd", str(req_r), "--rep-fd", str(rep_w),
                  "--prelude-module", self.prelude]),
             cwd=self.project_root,

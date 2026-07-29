@@ -11,12 +11,12 @@ Parser notes (hard-won, load-bearing):
 -/
 import Lean
 import NbDsl.Registry
-import NbDsl.Notebook.Output
+import Worker.Output
 
 namespace NbDsl.DSL
 
 open Lean Elab Command
-open NbDsl.Notebook (emitOutput)
+open Worker (emitOutput)
 
 syntax (name := dslPrefer) "prefer " ident : command
 syntax (name := dslHome) "#home " ident : command
