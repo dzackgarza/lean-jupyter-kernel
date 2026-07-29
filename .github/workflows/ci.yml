@@ -77,6 +77,11 @@ jobs:
       - name: end-to-end through the Jupyter protocol
         run: pytest nbdsl_kernel/tests/test_e2e.py
 
+      # NOT run here: nbdsl_kernel/tests/sandbox_check.py. bubblewrap needs
+      # user-namespace privileges that GitHub's ubuntu runners don't reliably
+      # grant, so the sandbox proof runs locally via scripts/check.sh only.
+      # CI green therefore does NOT cover the sandbox claim.
+
   frontend:
     name: jupyterlab extension
     runs-on: ubuntu-latest

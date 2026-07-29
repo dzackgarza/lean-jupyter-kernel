@@ -49,6 +49,16 @@ def resolutionNamespaces (scope : Elab.Command.Scope) : List Name := Id.run do
       nss := nss ++ [opened]
   return nss
 
+/-- Sorted, deduplicated, capped — the shared shape of completion results. -/
+private def finishResults (found : Array String) : Array String := Id.run do
+  let mut results : Array String := #[]
+  for s in found.qsort (· < ·) do
+    if results.back? != some s then
+      results := results.push s
+  if results.size > 100 then
+    results := results.extract 0 100
+  return results
+
 def completions (cmdState : Elab.Command.State) (code : String) (cursor : Nat)
     : String × Nat × Array String := Id.run do
   let (pref, start) := identPrefixAt code cursor
@@ -68,13 +78,7 @@ def completions (cmdState : Elab.Command.State) (code : String) (cursor : Nat)
           if short.startsWith pref then
             return acc.push short
       return acc
-  let mut results : Array String := #[]
-  for s in found.qsort (· < ·) do
-    if results.back? != some s then
-      results := results.push s
-  if results.size > 100 then
-    results := results.extract 0 100
-  return (pref, start, results)
+  return (pref, start, finishResults found)
 
 /-- Resolve `ident` the way a cell would: against the current namespace
 chain, then opens, then the root namespace. -/
@@ -132,12 +136,7 @@ def dotCompletions (cmdState : Elab.Command.State) (code : String) (cursor : Nat
         if suffix.startsWith frag && !suffix.isEmpty then
           return acc.push (headStr ++ "." ++ suffix)
       return acc
-  let mut results : Array String := #[]
-  for s in found.qsort (· < ·) do
-    if results.back? != some s then
-      results := results.push s
-  if results.size > 100 then
-    results := results.extract 0 100
+  let results := finishResults found
   if results.isEmpty then return none
   return some (start, results)
 

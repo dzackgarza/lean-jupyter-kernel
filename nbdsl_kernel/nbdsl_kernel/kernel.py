@@ -107,6 +107,10 @@ class NbDslKernel(Kernel):
     # -- plumbing ----------------------------------------------------------
 
     def _stream(self, name, text):
+        # self._silent exists for exactly this method: it gates output from
+        # ASYNC contexts (worker stdout/stderr pump threads, prefix re-run
+        # notes) that have no `silent` parameter in scope. Synchronous reply
+        # paths thread `silent` explicitly instead of mutating the flag.
         if not self._silent:
             self.send_response(self.iopub_socket, "stream",
                                {"name": name, "text": text})
@@ -154,7 +158,7 @@ class NbDslKernel(Kernel):
                 else:
                     self._stream("stderr", f"Replayed {n} cells.\n")
 
-    def _ensure_prefix(self, cell_id):
+    def _ensure_prefix(self, cell_id, silent):
         """Re-establish the invariant: the snapshot for each cell equals the
         state of elaborating the visible notebook prefix through that cell.
         Returns (error_reply | None, parent_snapshot_for_cell_id)."""
@@ -177,7 +181,8 @@ class NbDslKernel(Kernel):
                               if d["severity"] == "error"), {"message": "failed"})
                 return self._error_reply(
                     "UpstreamError",
-                    f"upstream cell {pos} failed: {first['message']}"), parent
+                    f"upstream cell {pos} failed: {first['message']}",
+                    silent), parent
             self.cell_state[cid] = {"source": src,
                                     "snapshot": rep["snapshot"], "parent": parent}
             parent = rep["snapshot"]
@@ -224,13 +229,13 @@ class NbDslKernel(Kernel):
         try:
             self._ensure_worker()
             if self._init_error:
-                return self._error_reply("InitCellError", self._init_error)
+                return self._error_reply("InitCellError", self._init_error, silent)
             if cell_id and cell_id in self.doc_sources:
                 # Document mode: make the prefix invariant true, then run this
                 # cell against its prefix snapshot. The request's code is the
                 # authoritative source for the cell itself.
                 self.doc_sources[cell_id] = code
-                err, parent = self._ensure_prefix(cell_id)
+                err, parent = self._ensure_prefix(cell_id, silent)
                 if err is not None:
                     return err
                 rep = self.worker.execute_at(code, cell_id, parent)
@@ -249,25 +254,26 @@ class NbDslKernel(Kernel):
                 return {"status": "ok", "execution_count": self.execution_count,
                         "payload": [], "user_expressions": {}}
             if rep.get("status") == "cancelled":
-                return self._error_reply("Interrupted",
-                                         "execution cancelled; state unchanged")
+                return self._error_reply(
+                    "Interrupted", "execution cancelled; state unchanged",
+                    silent)
             first = next((d for d in rep.get("diagnostics", [])
                           if d["severity"] == "error"),
                          {"message": "execution failed"})
-            return self._error_reply("LeanError", first["message"])
+            return self._error_reply("LeanError", first["message"], silent)
         except KeyboardInterrupt:
             # Jupyter interrupts SIGINT the whole process group; the worker is
             # (being) killed. Kill it outright so no stale elaboration lingers;
             # the next execute restarts and replays the committed prefix.
             self.worker.kill()
-            return self._error_reply("Interrupted", "execution interrupted")
+            return self._error_reply("Interrupted", "execution interrupted", silent)
         except WorkerDied as e:
-            return self._error_reply("WorkerDied", str(e))
+            return self._error_reply("WorkerDied", str(e), silent)
         finally:
             self._silent = False
 
-    def _error_reply(self, ename, evalue):
-        if not self._silent:
+    def _error_reply(self, ename, evalue, silent):
+        if not silent:
             self.send_response(self.iopub_socket, "error", {
                 "ename": ename, "evalue": evalue,
                 "traceback": [evalue],
@@ -277,7 +283,9 @@ class NbDslKernel(Kernel):
 
     def do_is_complete(self, code):
         # Deciding completeness requires Lean's parser — never guessed in
-        # Python. Before the worker is up, the honest answer is unknown.
+        # Python. is_complete_reply has no error status in the Jupyter spec,
+        # so "unknown" is the spec's honest answer for every cannot-determine
+        # state (worker not started, worker dead) — a ceiling, not a fallback.
         if not self._started:
             return {"status": "unknown"}
         try:
@@ -297,14 +305,20 @@ class NbDslKernel(Kernel):
         empty = {"status": "ok", "matches": [], "cursor_start": cursor_pos,
                  "cursor_end": cursor_pos, "metadata": {}}
         if not self._started:
+            # The worker starts lazily on the first execute; completing
+            # before any execution is a normal state, not a failure.
             return empty
         try:
             rep = self.worker.request("complete", code=code,
                                       cursor=cursor_pos, timeout=30)
-        except (WorkerDied, TimeoutError):
-            return empty
+        except (WorkerDied, TimeoutError) as e:
+            # Fail loudly: a dead worker must not masquerade as "no matches".
+            return {**empty, "status": "error", "ename": type(e).__name__,
+                    "evalue": str(e), "traceback": [str(e)]}
         if rep.get("status") != "ok":
-            return empty
+            return {**empty, "status": "error", "ename": "WorkerError",
+                    "evalue": rep.get("message", "complete failed"),
+                    "traceback": []}
         return {"status": "ok", "matches": rep.get("matches", []),
                 "cursor_start": rep.get("cursor_start", cursor_pos),
                 "cursor_end": rep.get("cursor_end", cursor_pos),
@@ -313,13 +327,19 @@ class NbDslKernel(Kernel):
     def do_inspect(self, code, cursor_pos, detail_level=0, omit_sections=()):
         missing = {"status": "ok", "found": False, "data": {}, "metadata": {}}
         if not self._started:
-            return missing
+            return missing  # lazy worker: nothing to inspect yet, by design
         try:
             rep = self.worker.request("inspect", code=code,
                                       cursor=cursor_pos, timeout=30)
-        except (WorkerDied, TimeoutError):
-            return missing
-        if rep.get("status") != "ok" or not rep.get("found"):
+        except (WorkerDied, TimeoutError) as e:
+            # Fail loudly: a dead worker must not masquerade as "not found".
+            return {**missing, "status": "error", "ename": type(e).__name__,
+                    "evalue": str(e), "traceback": [str(e)]}
+        if rep.get("status") != "ok":
+            return {**missing, "status": "error", "ename": "WorkerError",
+                    "evalue": rep.get("message", "inspect failed"),
+                    "traceback": []}
+        if not rep.get("found"):
             return missing
         if rep.get("hover"):
             # Server-grade hover (markdown; covers locals and full terms).

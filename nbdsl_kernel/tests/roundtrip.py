@@ -22,6 +22,10 @@ NBDSL = REPO / "dsls/nbdsl"
 TIMEOUT = 300.0  # first prelude import loads mathlib oleans; give it room
 
 
+# The frame codec below deliberately DUPLICATES nbdsl_kernel/worker.py's:
+# this script is an independent oracle for the wire protocol. Sharing the
+# production codec would let a codec bug pass both sides unnoticed. Do not
+# "deduplicate" this into an import.
 def write_frame(fd: int, obj: dict) -> None:
     payload = json.dumps(obj).encode()
     os.write(fd, str(len(payload)).encode() + b"\n" + payload)
