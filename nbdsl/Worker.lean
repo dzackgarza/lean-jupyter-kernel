@@ -200,8 +200,7 @@ cancelled execute replies `status:"cancelled"`).
 partial def readerLoop (ch : Channel) (queue : Std.CloseableChannel.Sync Json)
     (inflight : Inflight) : IO Unit := do
   match ← readFrame ch with
-  | none =>
-      discard (queue.close).toBaseIO   -- EOF: drain queue, then shut down
+  | none => return ()   -- clean EOF
   | some req =>
       if let .ok "cancel" := req.getObjValAs? String "op" then
         if let .ok rid := req.getObjValAs? String "request_id" then
@@ -212,6 +211,19 @@ partial def readerLoop (ch : Channel) (queue : Std.CloseableChannel.Sync Json)
         match ← (queue.send req).toBaseIO with
         | .ok _ => readerLoop ch queue inflight
         | .error _ => return ()
+
+/--
+Run the reader and, no matter how it ends — clean EOF, a torn frame from a
+dying kernel, any exception — close the queue so the main task's `recv`
+resolves and the process can exit. Without this a reader failure leaves the
+worker orphaned forever (observed: futex-parked main task, no pipe reader).
+-/
+def readerTask (ch : Channel) (queue : Std.CloseableChannel.Sync Json)
+    (inflight : Inflight) : IO Unit := do
+  try
+    readerLoop ch queue inflight
+  finally
+    discard (queue.close).toBaseIO
 
 partial def mainLoop (ch : Channel) (queue : Std.CloseableChannel.Sync Json)
     (session : IO.Ref Session) (inflight : Inflight) : IO Unit := do
@@ -245,7 +257,7 @@ unsafe def main (argv : List String) : IO UInt32 := do
       let session ← IO.mkRef (← Worker.initSession args.preludeModule)
       let inflight : Worker.Inflight ← IO.mkRef none
       let queue ← Std.CloseableChannel.Sync.new
-      let _reader ← IO.asTask (Worker.readerLoop ch queue inflight) .dedicated
+      let _reader ← IO.asTask (Worker.readerTask ch queue inflight) .dedicated
       writeFrame ch <| Json.mkObj
         [("op", Json.str "ready"),
          ("protocol", toJson (1 : Nat)),

@@ -5,8 +5,9 @@ import {
 import { IEditorLanguageRegistry } from '@jupyterlab/codemirror';
 import { LanguageSupport, StreamLanguage } from '@codemirror/language';
 import { leanParser } from './lean4';
+import documentPlugin from './document';
 
-const plugin: JupyterFrontEndPlugin<void> = {
+const languagePlugin: JupyterFrontEndPlugin<void> = {
   id: 'jupyterlab_nbdsl:language',
   description: 'Lean 4 syntax highlighting for nbdsl notebook cells',
   autoStart: true,
@@ -22,4 +23,4 @@ const plugin: JupyterFrontEndPlugin<void> = {
   }
 };
 
-export default plugin;
+export default [languagePlugin, documentPlugin];

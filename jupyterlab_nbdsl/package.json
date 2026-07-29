@@ -25,12 +25,13 @@
     "watch": "run-p watch:src watch:labextension",
     "watch:src": "tsc -w --sourceMap",
     "watch:labextension": "jupyter labextension watch .",
-    "test": "tsc src/lean4.ts --module commonjs --moduleResolution node --target ES2018 --esModuleInterop --skipLibCheck --outDir .test-build && node test/parser.test.cjs"
+    "test": "tsc src/lean4.ts src/documentMessage.ts --module commonjs --moduleResolution node --target ES2018 --esModuleInterop --skipLibCheck --outDir .test-build && node test/parser.test.cjs && node test/document.test.cjs"
   },
   "dependencies": {
     "@codemirror/language": "^6.0.0",
     "@jupyterlab/application": "^4.6.2",
     "@jupyterlab/codemirror": "^4.6.2",
+    "@jupyterlab/notebook": "^4.6.2",
     "@lezer/highlight": "^1.0.0"
   },
   "devDependencies": {
