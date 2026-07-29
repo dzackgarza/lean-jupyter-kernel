@@ -1,0 +1,10 @@
+node_modules/
+lib/
+.test-build/
+.yarn/
+.pnp.*
+tsconfig.tsbuildinfo
+jupyterlab-debug.log
+jupyterlab_nbdsl/labextension/
+*.egg-info/
+__pycache__/

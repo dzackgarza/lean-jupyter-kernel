@@ -1,0 +1,69 @@
+{
+  "name": "jupyterlab_nbdsl",
+  "version": "0.1.0",
+  "description": "CodeMirror 6 syntax highlighting for Lean 4 (text/x-lean4) cells in JupyterLab",
+  "license": "BSD-3-Clause",
+  "keywords": [
+    "jupyter",
+    "jupyterlab",
+    "jupyterlab-extension",
+    "lean4"
+  ],
+  "files": [
+    "lib/**/*.{js,js.map,d.ts}",
+    "style/**/*"
+  ],
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "scripts": {
+    "build": "jlpm build:lib && jlpm build:labextension:dev",
+    "build:prod": "jlpm build:lib && jlpm build:labextension",
+    "build:lib": "tsc --sourceMap",
+    "build:labextension": "jupyter labextension build .",
+    "build:labextension:dev": "jupyter labextension build --development True .",
+    "clean": "rimraf lib tsconfig.tsbuildinfo .test-build jupyterlab_nbdsl/labextension",
+    "watch": "run-p watch:src watch:labextension",
+    "watch:src": "tsc -w --sourceMap",
+    "watch:labextension": "jupyter labextension watch .",
+    "test": "tsc src/lean4.ts --module commonjs --moduleResolution node --target ES2018 --esModuleInterop --skipLibCheck --outDir .test-build && node test/parser.test.cjs"
+  },
+  "dependencies": {
+    "@codemirror/language": "^6.0.0",
+    "@jupyterlab/application": "^4.6.2",
+    "@jupyterlab/codemirror": "^4.6.2",
+    "@lezer/highlight": "^1.0.0"
+  },
+  "devDependencies": {
+    "@jupyter/builder": "^1.1.1",
+    "typescript": "~5.5.4"
+  },
+  "sideEffects": [
+    "style/*.css"
+  ],
+  "jupyterlab": {
+    "extension": true,
+    "outputDir": "jupyterlab_nbdsl/labextension",
+    "sharedPackages": {
+      "@codemirror/language": {
+        "bundled": false,
+        "singleton": true
+      },
+      "@codemirror/state": {
+        "bundled": false,
+        "singleton": true
+      },
+      "@codemirror/view": {
+        "bundled": false,
+        "singleton": true
+      },
+      "@lezer/common": {
+        "bundled": false,
+        "singleton": true
+      },
+      "@lezer/highlight": {
+        "bundled": false,
+        "singleton": true
+      }
+    }
+  }
+}

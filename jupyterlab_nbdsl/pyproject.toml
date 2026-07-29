@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "jupyterlab_nbdsl"
+version = "0.1.0"
+description = "Lean 4 syntax highlighting for JupyterLab (nbdsl kernel)"
+requires-python = ">=3.9"
+dependencies = ["jupyterlab>=4.0.0,<5"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["jupyterlab_nbdsl"]
+
+# ponytail: no hatch-jupyter-builder; `jlpm build` runs by hand and
+# `jupyter labextension develop` symlinks the output. Add the builder plugin
+# only if this ever needs to produce a distributable wheel.
+[tool.hatch.build.targets.wheel.shared-data]
+"jupyterlab_nbdsl/labextension" = "share/jupyter/labextensions/jupyterlab_nbdsl"
+"install.json" = "share/jupyter/labextensions/jupyterlab_nbdsl/install.json"
