@@ -242,6 +242,14 @@ def main() -> None:
     assert rep.get("doc"), rep  # docstring surfaced
     print("ok: inspect resolves, types, and documents identifiers")
 
+    # InfoTree hover: a LOCAL variable (invisible to the environment scan).
+    code = "def flocal (nlocal : Nat) : Nat := nlocal + 1"
+    rep = w.request("inspect", code=code, cursor=code.rindex("nlocal"))
+    assert rep["status"] == "ok" and rep["found"], rep
+    hover = rep.get("hover", "")
+    assert "nlocal" in hover and ("ℕ" in hover or "Nat" in hover), rep
+    print("ok: inspect hovers locals via InfoTrees")
+
     # --- cooperative cancel -------------------------------------------------
     w._rid += 1
     rid = f"r{w._rid}"

@@ -149,6 +149,17 @@ where
     else
       "invalid"
 
+/-- Byte position of a code-point offset (protocol cursors are code points). -/
+def codepointPos (s : String) (cp : Nat) : String.Pos.Raw := Id.run do
+  let mut byteIdx := 0
+  let mut n := 0
+  for c in s.toList do
+    if n == cp then
+      return ⟨byteIdx⟩
+    byteIdx := byteIdx + c.utf8Size
+    n := n + 1
+  return ⟨byteIdx⟩
+
 /--
 Elaborate one cell against `parent`. The returned state is a *candidate*: the
 caller commits it only when no diagnostic has error severity.

@@ -64,13 +64,38 @@ class WorkerClient:
 
     # -- lifecycle ---------------------------------------------------------
 
+    def _maybe_sandbox(self, cmd):
+        """NBDSL_SANDBOX=1: run the worker under bubblewrap — project and
+        toolchain read-only, private /tmp, no network, no foreign pids, dies
+        with the kernel. A process boundary is not a security sandbox; this
+        OS-level allowlist is what makes untrusted notebooks tolerable.
+        ponytail: filesystem/net/pid isolation only; add resource limits
+        (systemd-run -p MemoryMax=…) if runaway memory becomes a problem."""
+        if os.environ.get("NBDSL_SANDBOX") != "1":
+            return cmd
+        home = str(Path.home())
+        return [
+            "bwrap",
+            "--ro-bind", "/usr", "/usr",
+            "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64",
+            "--symlink", "usr/bin", "/bin", "--symlink", "usr/bin", "/sbin",
+            "--ro-bind-try", "/etc/alternatives", "/etc/alternatives",
+            "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+            "--ro-bind", str(self.project_root), str(self.project_root),
+            "--ro-bind", f"{home}/.elan", f"{home}/.elan",
+            "--setenv", "HOME", home,
+            "--unshare-net", "--unshare-pid",
+            "--die-with-parent",
+        ] + cmd
+
     def start(self):
         req_r, req_w = os.pipe()
         rep_r, rep_w = os.pipe()
         self.proc = subprocess.Popen(
-            ["lake", "env", ".lake/build/bin/nbdsl_worker",
-             "--req-fd", str(req_r), "--rep-fd", str(rep_w),
-             "--prelude-module", self.prelude],
+            self._maybe_sandbox(
+                ["lake", "env", ".lake/build/bin/nbdsl_worker",
+                 "--req-fd", str(req_r), "--rep-fd", str(rep_w),
+                 "--prelude-module", self.prelude]),
             cwd=self.project_root,
             pass_fds=(req_r, rep_w),
             stdin=subprocess.DEVNULL,

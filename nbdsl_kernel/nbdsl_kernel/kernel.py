@@ -58,9 +58,36 @@ class NbDslKernel(Kernel):
             cells = data.get("cells", [])
             self.doc_order = [c["id"] for c in cells]
             self.doc_sources = {c["id"]: c["source"] for c in cells}
+            self._broadcast_status()
 
     async def comm_close(self, stream, ident, parent):
         self._doc_comms.discard(parent["content"].get("comm_id"))
+
+    def _broadcast_status(self):
+        """Tell the frontend which cells are fresh vs stale (previously run,
+        now invalidated by an upstream edit). Unrun cells are in neither."""
+        if not self._doc_comms or not self.doc_order:
+            return
+        fresh, stale = [], []
+        parent = 0
+        broken = False
+        for cid in self.doc_order:
+            src = self.doc_sources.get(cid, "")
+            if not src.strip():
+                continue
+            st = self.cell_state.get(cid)
+            if (not broken and st and st["source"] == src
+                    and st["parent"] == parent):
+                fresh.append(cid)
+                parent = st["snapshot"]
+            else:
+                broken = True
+                if st:
+                    stale.append(cid)
+        data = {"type": "status", "fresh": fresh, "stale": stale}
+        for comm_id in self._doc_comms:
+            self.session.send(self.iopub_socket, "comm_msg",
+                              {"comm_id": comm_id, "data": data})
 
     # -- plumbing ----------------------------------------------------------
 
@@ -174,6 +201,7 @@ class NbDslKernel(Kernel):
                     self.cell_state[cell_id] = {
                         "source": code, "snapshot": rep["snapshot"],
                         "parent": parent}
+                self._broadcast_status()
             else:
                 rep = self.worker.execute(code, cell_id=cell_id or "cell")
             if not silent:
@@ -254,6 +282,12 @@ class NbDslKernel(Kernel):
             return missing
         if rep.get("status") != "ok" or not rep.get("found"):
             return missing
+        if rep.get("hover"):
+            # Server-grade hover (markdown; covers locals and full terms).
+            return {"status": "ok", "found": True,
+                    "data": {"text/plain": rep["hover"],
+                             "text/markdown": rep["hover"]},
+                    "metadata": {}}
         text = f"{rep['name']} : {rep['type']}"
         if rep.get("doc"):
             text += f"\n\n{rep['doc']}"

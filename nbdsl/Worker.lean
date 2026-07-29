@@ -167,15 +167,34 @@ def handleRequest (session : IO.Ref Session) (inflight : Inflight)
       let some parent := s.snapshots[s.current]?
         | return reply req
             [("status", Json.str "error"), ("message", Json.str "invalid current snapshot")]
-      match ← Query.inspect parent.cmdState code cursor with
-      | none => return reply req [("status", Json.str "ok"), ("found", toJson false)]
-      | some r =>
-          return reply req
-            [("status", Json.str "ok"),
-             ("found", toJson true),
-             ("name", Json.str r.name.toString),
-             ("type", Json.str r.type),
-             ("doc", r.doc?.elim Json.null Json.str)]
+      -- Analysis-only elaboration of the cell (candidate state discarded, no
+      -- commit): the InfoTrees give server-grade hover — locals included —
+      -- via `Info.fmtHover?`. Note: like the language server, analysis runs
+      -- the cell's elaboration, so `#eval` side effects execute.
+      let hover? ← do
+        let result ← Frontend.processCell parent.cmdState code "<inspect>"
+        discard NbDsl.Notebook.drainOutputs   -- analysis must not leak outputs
+        let pos := Frontend.codepointPos code cursor
+        let mut found : Option String := none
+        for tree in result.cmdState.infoState.trees do
+          if let some iwc := tree.hoverableInfoAtM? (m := Id) pos (includeStop := true) then
+            if let some f ← Lean.Elab.Info.fmtHover? iwc.ctx iwc.info then
+              found := some (toString f.fmt)
+              break
+        pure found
+      -- Environment fallback still supplies name/type/doc when it resolves.
+      let global? ← Query.inspect parent.cmdState code cursor
+      if hover?.isNone && global?.isNone then
+        return reply req [("status", Json.str "ok"), ("found", toJson false)]
+      let mut fields := [("status", Json.str "ok"), ("found", toJson true)]
+      if let some h := hover? then
+        fields := fields ++ [("hover", Json.str h)]
+      if let some r := global? then
+        fields := fields ++
+          [("name", Json.str r.name.toString),
+           ("type", Json.str r.type),
+           ("doc", r.doc?.elim Json.null Json.str)]
+      return reply req fields
   | .ok "describe" =>
       let s ← session.get
       return reply req
