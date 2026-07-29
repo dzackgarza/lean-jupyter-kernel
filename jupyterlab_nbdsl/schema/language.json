@@ -1,0 +1,18 @@
+{
+  "title": "nbdsl Language",
+  "description": "Syntax highlighting for text/x-lean4 notebook cells.",
+  "jupyter.lab.setting-icon-label": "nbdsl Language",
+  "type": "object",
+  "properties": {
+    "dslKeywords": {
+      "title": "DSL keywords",
+      "description": "Extra words highlighted as keywords, on top of the core Lean 4 keyword set. Takes effect after a page reload.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": ["prefer"]
+    }
+  },
+  "additionalProperties": false
+}

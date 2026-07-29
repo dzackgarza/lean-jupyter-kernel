@@ -1282,7 +1282,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@lumino/widgets@npm:^1.37.2 || ^2.8.0, @lumino/widgets@npm:^2.8.0, @lumino/widgets@npm:^2.9.0":
+"@lumino/widgets@npm:^1.37.2 || ^2.8.0, @lumino/widgets@npm:^2.0.0, @lumino/widgets@npm:^2.8.0, @lumino/widgets@npm:^2.9.0":
   version: 2.9.0
   resolution: "@lumino/widgets@npm:2.9.0"
   dependencies:
@@ -2903,7 +2903,11 @@ __metadata:
     "@jupyterlab/application": ^4.6.2
     "@jupyterlab/codemirror": ^4.6.2
     "@jupyterlab/notebook": ^4.6.2
+    "@jupyterlab/rendermime": ^4.6.2
+    "@jupyterlab/rendermime-interfaces": ^3.14.2
+    "@jupyterlab/settingregistry": ^4.6.2
     "@lezer/highlight": ^1.0.0
+    "@lumino/widgets": ^2.0.0
     typescript: ~5.5.4
   languageName: unknown
   linkType: soft

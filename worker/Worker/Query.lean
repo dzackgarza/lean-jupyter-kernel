@@ -90,7 +90,7 @@ def resolve? (cmdState : Elab.Command.State) (ident : String) : Option Name := I
     return some name
   return none
 
-private def runMetaM (cmdState : Elab.Command.State) (x : MetaM α) : IO α := do
+def runMetaM (cmdState : Elab.Command.State) (x : MetaM α) : IO α := do
   let scope := cmdState.scopes.head!
   let ctx : Core.Context := {
     fileName := "<query>"
@@ -101,6 +101,45 @@ private def runMetaM (cmdState : Elab.Command.State) (x : MetaM α) : IO α := d
   }
   let (a, _) ← (x.run').toIO ctx { env := cmdState.env }
   return a
+
+/-- Type-aware dot completion: for `x.pre` where `x` resolves to a global
+constant whose type reduces (whnf) to an application headed by constant `C`,
+offer `C.*` members — generalized field notation — completing `pre`. `none`
+when the shape doesn't apply; the caller falls back to prefix completion. -/
+def dotCompletions (cmdState : Elab.Command.State) (code : String) (cursor : Nat)
+    : IO (Option (Nat × Array String)) := do
+  let (pref, start) := identPrefixAt code cursor
+  let parts := pref.splitOn "."
+  if parts.length < 2 then return none
+  let frag := parts.getLast!
+  let headStr := String.intercalate "." parts.dropLast
+  if headStr.isEmpty then return none
+  let some headName := resolve? cmdState headStr
+    | return none
+  let some ci := cmdState.env.find? headName
+    | return none
+  let tyHead ← runMetaM cmdState do
+    return (← Meta.whnf ci.type).getAppFn
+  let .const tyC _ := tyHead
+    | return none
+  let nsStr := tyC.toString ++ "."
+  let found := cmdState.env.constants.fold (init := #[]) fun acc n _ =>
+    if n.isInternal || n.hasMacroScopes then acc
+    else Id.run do
+      let full := n.toString
+      if full.startsWith nsStr then
+        let suffix := (full.drop nsStr.length).toString
+        if suffix.startsWith frag && !suffix.isEmpty then
+          return acc.push (headStr ++ "." ++ suffix)
+      return acc
+  let mut results : Array String := #[]
+  for s in found.qsort (· < ·) do
+    if results.back? != some s then
+      results := results.push s
+  if results.size > 100 then
+    results := results.extract 0 100
+  if results.isEmpty then return none
+  return some (start, results)
 
 structure InspectResult where
   name : Name

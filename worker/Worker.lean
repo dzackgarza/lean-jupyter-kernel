@@ -15,6 +15,7 @@ import Worker.Protocol
 import Worker.Frontend
 import Worker.Query
 import Worker.Output
+import Worker.SessionCache
 
 open Worker.Protocol
 open Lean (Json toJson)
@@ -152,7 +153,13 @@ def handleRequest (session : IO.Ref Session) (inflight : Inflight)
       let some parent := s.snapshots[s.current]?
         | return reply req
             [("status", Json.str "error"), ("message", Json.str "invalid current snapshot")]
-      let (_, start, results) := Query.completions parent.cmdState code cursor
+      -- Type-aware dot completion first; plain prefix completion otherwise.
+      let (start, results) ←
+        match ← Query.dotCompletions parent.cmdState code cursor with
+        | some (start, results) => pure (start, results)
+        | none =>
+            let (_, start, results) := Query.completions parent.cmdState code cursor
+            pure (start, results)
       return reply req
         [("status", Json.str "ok"),
          ("matches", Json.arr (results.map Json.str)),
@@ -195,6 +202,35 @@ def handleRequest (session : IO.Ref Session) (inflight : Inflight)
            ("type", Json.str r.type),
            ("doc", r.doc?.elim Json.null Json.str)]
       return reply req fields
+  | .ok "save_session" =>
+      let .ok dir := req.getObjValAs? String "path"
+        | return reply req [("status", Json.str "error"), ("message", Json.str "missing path")]
+      let s ← session.get
+      let some snap := s.snapshots[s.current]?
+        | return reply req
+            [("status", Json.str "error"), ("message", Json.str "invalid current snapshot")]
+      (match ← SessionCache.save snap.cmdState dir with
+       | .ok () => return reply req [("status", Json.str "ok"), ("saved", toJson true)]
+       | .error reason =>
+           return reply req
+             [("status", Json.str "ok"), ("saved", toJson false),
+              ("reason", Json.str reason)])
+  | .ok "load_session" =>
+      let .ok dir := req.getObjValAs? String "path"
+        | return reply req [("status", Json.str "error"), ("message", Json.str "missing path")]
+      match ← (SessionCache.load dir).toBaseIO with
+      | .error e =>
+          return reply req
+            [("status", Json.str "error"), ("message", Json.str s!"cache miss: {e}")]
+      | .ok cmdState =>
+          let s ← session.get
+          let id := s.snapshots.size
+          session.set {
+            snapshots := s.snapshots.push
+              { id, parent? := none, cmdState, cellId := "<restored>" }
+            current := id
+          }
+          return reply req [("status", Json.str "ok"), ("snapshot", toJson id)]
   | .ok "describe" =>
       let s ← session.get
       return reply req

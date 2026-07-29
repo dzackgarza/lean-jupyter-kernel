@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: worker (mathlib-free gate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      # The worker is mathlib-free and builds in seconds: no cache, no
+      # mathlib fetch — this job is the fast signal on every push.
+      - uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: worker
+          build-args: nbdsl_worker
+          use-mathlib-cache: false
+          use-github-cache: false
+
+      - name: boundary — the core must never import DSL modules
+        run: |
+          ! grep -rn '^import NbDsl' worker/ --include='*.lean'
+
+  dsl:
+    name: NbDsl + kernel round-trip + e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      # Keyed on the dependency set, not the commit, so warm runs hit: the
+      # ~5GB of mathlib oleans is re-saved only when deps or toolchain move.
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/mathlib
+            dsls/nbdsl/.lake
+          key: lake-${{ runner.os }}-${{ hashFiles('dsls/nbdsl/lean-toolchain', 'dsls/nbdsl/lake-manifest.json') }}
+
+      - uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: dsls/nbdsl
+          build-args: NbDsl
+          use-mathlib-cache: true
+          use-github-cache: false  # cached above, keyed on deps rather than SHA
+
+      # The DSL build pulls the worker in as a path dependency but not its
+      # executable, which the kernel spawns.
+      - name: build worker executable
+        working-directory: worker
+        run: lake build nbdsl_worker
+
+      - name: protocol round-trip
+        run: python3 nbdsl_kernel/tests/roundtrip.py
+
+      - name: install kernel package and kernelspec
+        run: |
+          pip install -e './nbdsl_kernel[test]'
+          python -m nbdsl_kernel.install --project "$PWD/dsls/nbdsl"
+
+      - name: end-to-end through the Jupyter protocol
+        run: pytest nbdsl_kernel/tests/test_e2e.py
+
+  frontend:
+    name: jupyterlab extension
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: install jupyterlab  # provides jlpm and the labextension builder
+        run: pip install jupyterlab
+
+      - working-directory: jupyterlab_nbdsl
+        run: |
+          jlpm install
+          jlpm test
+          jlpm build

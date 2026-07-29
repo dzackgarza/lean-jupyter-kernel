@@ -200,6 +200,11 @@ def main() -> None:
     rep = w.execute("#home G")
     assert rep["status"] == "ok", rep
     assert any("Groups" in d["message"] for d in infos(rep)), rep
+    # Dot completion through the DSL's transparent Object def: whnf reduces
+    # Object Groups to GrpCat, so G. offers GrpCat members.
+    rep = w.request("complete", code="G.o", cursor=3)
+    assert rep["status"] == "ok" and "G.of" in rep["matches"], rep
+    print("ok: dot completion unfolds Object to the bundled category")
     rep = w.execute("#via G ∈ Sets")
     assert rep["status"] == "ok", rep
     bundles = [o["data"] for o in rep["outputs"]]
@@ -241,6 +246,11 @@ def main() -> None:
     assert rep["found"] and rep["name"] == "NbDsl.Std.groupsToSets", rep
     assert rep.get("doc"), rep  # docstring surfaced
     print("ok: inspect resolves, types, and documents identifiers")
+
+    # Type-aware dot completion: x : Nat → members of Nat.
+    rep = w.request("complete", code="x.su", cursor=4)
+    assert rep["status"] == "ok" and "x.succ" in rep["matches"], rep
+    print("ok: dot completion via the head of the resolved type")
 
     # InfoTree hover: a LOCAL variable (invisible to the environment scan).
     code = "def flocal (nlocal : Nat) : Nat := nlocal + 1"

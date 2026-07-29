@@ -2,17 +2,19 @@
 // Run with `jlpm test` (compiles src/lean4.ts to .test-build/ first).
 const assert = require('assert');
 const { StringStream } = require('@codemirror/language');
-const { leanParser } = require('../.test-build/lean4.js');
+const { makeLean4Parser } = require('../.test-build/lean4.js');
+
+const leanParser = makeLean4Parser(['prefer']);
 
 /** Tokenize `lines` as one continuous document; returns [text, style] pairs. */
-function tokenize(lines) {
-  const state = leanParser.startState(2);
+function tokenize(lines, parser) {
+  const state = parser.startState(2);
   const out = [];
   for (const line of lines) {
     const stream = new StringStream(line, 2, 2);
     while (!stream.eol()) {
       stream.start = stream.pos;
-      const style = leanParser.token(stream, state);
+      const style = parser.token(stream, state);
       assert.ok(stream.pos > stream.start, `no progress on: ${line}`);
       if (style) {
         out.push([line.slice(stream.start, stream.pos), style]);
@@ -22,8 +24,8 @@ function tokenize(lines) {
   return out;
 }
 
-function check(lines, expected) {
-  const got = tokenize(Array.isArray(lines) ? lines : [lines]);
+function check(lines, expected, parser = leanParser) {
+  const got = tokenize(Array.isArray(lines) ? lines : [lines], parser);
   assert.deepStrictEqual(got, expected, JSON.stringify(got));
 }
 
@@ -60,7 +62,14 @@ check('#eval #check foo', [
   ['foo', 'variableName']
 ]);
 
+// DSL keywords come from settings, not the core set.
 check('prefer bar', [['prefer', 'keyword'], ['bar', 'variableName']]);
+
+check(
+  'observe prefer',
+  [['observe', 'keyword'], ['prefer', 'variableName']],
+  makeLean4Parser(['observe'])
+);
 
 check('theorem t : x = 1 := by s' + 'orry', [
   ['theorem', 'keyword'],

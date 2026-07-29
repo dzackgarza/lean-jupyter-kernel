@@ -7,3 +7,105 @@
 .nbdsl-stale .jp-Cell-outputWrapper {
   opacity: 0.5;
 }
+
+/* Rendered application/vnd.nbdsl.path+json: object badge, then the functor
+   chain from source to target. All colours come from --jp-* so the widget
+   tracks the active theme. */
+.nbdsl-path {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 4px;
+  font-family: var(--jp-ui-font-family);
+  font-size: var(--jp-ui-font-size1);
+  color: var(--jp-ui-font-color1);
+  overflow-x: auto;
+}
+
+.nbdsl-path-object {
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-family: var(--jp-code-font-family);
+  font-weight: 600;
+  color: var(--jp-ui-inverse-font-color1);
+  background: var(--jp-brand-color1);
+}
+
+.nbdsl-path-chain {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.nbdsl-path-node {
+  padding: 2px 8px;
+  border: 1px solid var(--jp-border-color2);
+  border-radius: 3px;
+  font-family: var(--jp-code-font-family);
+  background: var(--jp-layout-color2);
+}
+
+/* Objects between successive functors are not named by the payload. */
+.nbdsl-path-waypoint {
+  padding: 0;
+  width: 6px;
+  height: 6px;
+  border: none;
+  border-radius: 50%;
+  text-indent: -999px;
+  overflow: hidden;
+  background: var(--jp-border-color1);
+}
+
+/* A column: functor label on top, shaft-and-head below it. The bottom padding
+   matches the label height so the shaft, not the column, centres on the
+   node row. */
+.nbdsl-path-arrow {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding-bottom: 14px;
+  color: var(--jp-brand-color1);
+}
+
+.nbdsl-path-step {
+  height: 14px;
+  line-height: 14px;
+  padding: 0 6px;
+  text-align: center;
+  font-family: var(--jp-code-font-family);
+  font-size: var(--jp-ui-font-size0);
+  color: var(--jp-ui-font-color2);
+  white-space: nowrap;
+}
+
+/* ::before is the shaft; it grows to the label's width so the arrow spans
+   the functor it is labelled with. */
+.nbdsl-path-glyph {
+  display: flex;
+  align-items: center;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.nbdsl-path-glyph::before {
+  content: '';
+  flex: 1 1 auto;
+  min-width: 14px;
+  height: 1.5px;
+  margin-right: -3px;
+  background: currentcolor;
+}
+
+.nbdsl-path-fallback {
+  display: inline-block;
+  margin: 0;
+  padding: 6px 10px;
+  border-radius: 3px;
+  font-family: var(--jp-code-font-family);
+  font-size: var(--jp-code-font-size);
+  color: var(--jp-content-font-color1);
+  background: var(--jp-layout-color2);
+  white-space: pre-wrap;
+}

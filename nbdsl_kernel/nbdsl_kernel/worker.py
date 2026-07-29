@@ -6,6 +6,7 @@ stdout/stderr pump threads, the replay ledger, and kill/respawn. The kernel
 class never touches fds.
 """
 
+import hashlib
 import json
 import os
 import select
@@ -78,6 +79,11 @@ class WorkerClient:
         self.replies = None
         self.snapshot = 0
         self.ledger = []  # committed (cell_id, code) pairs, for restart replay
+        # Optional session cache dir (kernel-owned): committed state is saved
+        # as an olean after each REPL commit, keyed by the ledger, and loaded
+        # instead of replaying on restart. Validation = key match + load
+        # success; any failure is a cache miss and replay runs.
+        self.cache_dir = None
         self._rid = 0
         self._pending = {}
 
@@ -185,9 +191,13 @@ class WorkerClient:
                 self.kill()
 
     def restart_and_replay(self):
-        """Fresh worker, prelude, then replay the committed ledger silently."""
+        """Fresh worker, then the session cache if it matches the ledger,
+        else source replay. Returns cell count replayed, or -1 on a cache
+        restore (the ledger is kept — it still describes the state)."""
         self.kill()
         self.start()
+        if self._try_restore_session():
+            return -1
         ledger, self.ledger = self.ledger, []
         for cell_id, code in ledger:
             rep = self.execute(code, cell_id=cell_id)
@@ -195,6 +205,48 @@ class WorkerClient:
                 raise WorkerDied(
                     f"replay diverged on {cell_id}: {rep.get('diagnostics')}")
         return len(ledger)
+
+    # -- session cache -----------------------------------------------------
+
+    def _ledger_key(self):
+        h = hashlib.sha256(self.prelude.encode())
+        for _, code in self.ledger:
+            h.update(b"\x00" + code.encode())
+        return h.hexdigest()
+
+    def save_session(self):
+        """Persist committed state after a REPL commit (cheap: the olean holds
+        only session-local constants + extension entries)."""
+        if self.cache_dir is None:
+            return
+        try:
+            rep = self.request("save_session", path=str(self.cache_dir),
+                               timeout=60)
+        except (WorkerDied, TimeoutError):
+            return
+        key = Path(self.cache_dir) / "key.txt"
+        if rep.get("saved"):
+            key.write_text(self._ledger_key())
+        else:
+            # Uncacheable state (open scopes, syntax-valued options, …):
+            # drop the key so restart falls back to replay.
+            key.unlink(missing_ok=True)
+
+    def _try_restore_session(self):
+        if self.cache_dir is None:
+            return False
+        key = Path(self.cache_dir) / "key.txt"
+        if not key.exists() or key.read_text() != self._ledger_key():
+            return False
+        try:
+            rep = self.request("load_session", path=str(self.cache_dir),
+                               timeout=120)
+        except (WorkerDied, TimeoutError):
+            return False
+        if rep.get("status") != "ok":
+            return False
+        self.snapshot = rep["snapshot"]
+        return True
 
     # -- requests ----------------------------------------------------------
 

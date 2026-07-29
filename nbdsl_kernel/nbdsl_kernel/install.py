@@ -26,6 +26,9 @@ def main():
                         "DSL a session speaks (default: NbDsl.Notebook)")
     p.add_argument("--display-name", default=None,
                    help="kernelspec display name (default: derived)")
+    p.add_argument("--init-cell", default="",
+                   help="Lean commands run once after worker start as the "
+                        "session base (e.g. set_option defaults, opens)")
     p.add_argument("--sandbox", action="store_true",
                    help="run the Lean worker under bubblewrap (read-only "
                         "project/toolchain, no network) for untrusted notebooks")
@@ -48,6 +51,8 @@ def main():
         "metadata": {"nbdsl": {"project_root": str(project),
                                "prelude_module": args.prelude_module}},
     }
+    if args.init_cell:
+        spec["env"]["NBDSL_INIT"] = args.init_cell
     if args.sandbox:
         spec["env"]["NBDSL_SANDBOX"] = "1"
         spec["display_name"] += " [sandboxed]"

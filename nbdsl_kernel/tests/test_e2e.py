@@ -150,10 +150,34 @@ def test_interrupt_restart_replay(kernel):
                 and msg["msg_type"] == "status"
                 and msg["content"]["execution_state"] == "idle"):
             break
-    # Replay must have reconstructed every committed cell.
+    # Recovery must reconstruct committed state — via the session cache
+    # (olean round-trip), not replay.
     reply, outputs = run_cell(kc, "#eval x + 1")
     assert reply["status"] == "ok"
-    assert "42" in texts(outputs)
+    text = texts(outputs)
+    assert "42" in text
+    assert "Restored session from cache" in text, text
+    # Registry (env-extension) state survived the olean round-trip.
+    reply, outputs = run_cell(kc, "#via G ∈ Sets")
+    assert reply["status"] == "ok"
+    assert any("application/vnd.nbdsl.path+json" in m["content"].get("data", {})
+               for m in outputs
+               if m["msg_type"] in ("execute_result", "display_data")), \
+        [m["msg_type"] for m in outputs]
+
+
+def test_init_cell():
+    import os
+    km, kc = start_new_kernel(
+        kernel_name="nbdsl", startup_timeout=60,
+        env={**os.environ, "NBDSL_INIT": "def initVal : Nat := 99"})
+    try:
+        reply, outputs = run_cell(kc, "#eval initVal + 1")
+        assert reply["status"] == "ok", reply
+        assert "100" in texts(outputs)
+    finally:
+        kc.stop_channels()
+        km.shutdown_kernel(now=False)
 
 
 def test_document_order_semantics(kernel):

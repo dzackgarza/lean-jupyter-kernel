@@ -6,6 +6,8 @@ Jupyter messaging and rendering only. Python never interprets DSL text.
 """
 
 import os
+import shutil
+import tempfile
 
 from ipykernel.kernelbase import Kernel
 
@@ -35,6 +37,16 @@ class NbDslKernel(Kernel):
             on_stream=self._stream)
         self._started = False
         self._silent = False
+        # Session defaults a prelude can't set (set_option doesn't cross
+        # module import): one cell of commands run right after worker start,
+        # from the kernelspec (install.py --init-cell).
+        self.init_cell = os.environ.get("NBDSL_INIT", "")
+        self.base_snapshot = 0
+        self._init_error = None
+        # Session cache (REPL-mode restarts skip replay). Not in sandbox
+        # mode: the sandboxed worker cannot write outside its private tmpfs.
+        if os.environ.get("NBDSL_SANDBOX") != "1":
+            self.worker.cache_dir = tempfile.mkdtemp(prefix="nbdsl-cache-")
         # Document mode: the jupyterlab_nbdsl extension streams cell order and
         # sources over the "nbdsl_document" comm. Without it (jupyter console)
         # execution keeps REPL semantics.
@@ -99,12 +111,29 @@ class NbDslKernel(Kernel):
             self.send_response(self.iopub_socket, "stream",
                                {"name": name, "text": text})
 
+    def _run_init_cell(self):
+        """The kernelspec's init cell becomes the session's base snapshot.
+        A failing init cell is a broken kernelspec: fail every execute loudly
+        rather than silently running without the configured defaults."""
+        self.base_snapshot = 0
+        self._init_error = None
+        if not self.init_cell.strip():
+            return
+        rep = self.worker.execute(self.init_cell, cell_id="<init>")
+        if rep.get("status") == "ok":
+            self.base_snapshot = rep["snapshot"]
+        else:
+            first = next((d for d in rep.get("diagnostics", [])
+                          if d["severity"] == "error"), {"message": "failed"})
+            self._init_error = f"init cell failed: {first['message']}"
+
     def _ensure_worker(self):
         if not self._started:
             self._stream("stdout",
                          f"Starting Lean worker ({self.worker.project_root})…\n")
             self.worker.start()
             self._started = True
+            self._run_init_cell()
         elif self.worker.proc is None or self.worker.proc.poll() is not None:
             # The worker died — normally from an interrupt escalation.
             if self.doc_sources:
@@ -114,19 +143,22 @@ class NbDslKernel(Kernel):
                                        "will re-run on demand)…\n")
                 self.worker.restart_fresh()
                 self.cell_state.clear()
+                self._run_init_cell()
             else:
-                # REPL mode: source replay of the ledger is the canonical
-                # record (scoped env state does not pickle).
-                self._stream("stderr", "Lean worker died; restarting and "
-                                       "replaying committed cells…\n")
+                # REPL mode: session cache when valid, else source replay
+                # (the canonical record).
+                self._stream("stderr", "Lean worker died; restarting…\n")
                 n = self.worker.restart_and_replay()
-                self._stream("stderr", f"Replayed {n} cells.\n")
+                if n == -1:
+                    self._stream("stderr", "Restored session from cache.\n")
+                else:
+                    self._stream("stderr", f"Replayed {n} cells.\n")
 
     def _ensure_prefix(self, cell_id):
         """Re-establish the invariant: the snapshot for each cell equals the
         state of elaborating the visible notebook prefix through that cell.
         Returns (error_reply | None, parent_snapshot_for_cell_id)."""
-        parent = 0  # the prelude snapshot
+        parent = self.base_snapshot  # prelude, plus the init cell if any
         for cid in self.doc_order:
             if cid == cell_id:
                 return None, parent
@@ -191,6 +223,8 @@ class NbDslKernel(Kernel):
         self._silent = silent
         try:
             self._ensure_worker()
+            if self._init_error:
+                return self._error_reply("InitCellError", self._init_error)
             if cell_id and cell_id in self.doc_sources:
                 # Document mode: make the prefix invariant true, then run this
                 # cell against its prefix snapshot. The request's code is the
@@ -207,6 +241,8 @@ class NbDslKernel(Kernel):
                 self._broadcast_status()
             else:
                 rep = self.worker.execute(code, cell_id=cell_id or "cell")
+                if rep.get("status") == "ok":
+                    self.worker.save_session()
             if not silent:
                 self._publish_reply(rep)
             if rep.get("status") == "ok":
@@ -301,4 +337,6 @@ class NbDslKernel(Kernel):
         if self._started:
             self.worker.shutdown()
             self._started = False
+        if self.worker.cache_dir:
+            shutil.rmtree(self.worker.cache_dir, ignore_errors=True)
         return {"status": "ok", "restart": restart}

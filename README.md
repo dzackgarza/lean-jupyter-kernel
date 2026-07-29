@@ -96,13 +96,19 @@ Ops: `execute {request_id, parent_snapshot, cell_id, code}` →
 `{status: ok|error|cancelled, snapshot, diagnostics, sorries, outputs}`;
 `is_complete {code}` → `{result: complete|incomplete|invalid}` (parse-only,
 Lean's parser decides — powers `do_is_complete`); `complete {code, cursor}` →
-`{matches, cursor_start, cursor_end}` (identifier-prefix completion against
-the snapshot environment, aware of the current namespace and `open`s; cursor
-offsets are code points); `inspect {code, cursor}` → `{found, name, type,
-doc}` (resolution the way a cell would resolve, type via the pretty printer,
-docstring included); `cancel {request_id}` (out-of-band, no reply of its own
-— the cancelled execute replies); `describe`. Unknown ops answer
+`{matches, cursor_start, cursor_end}` (type-aware dot completion — `x.` offers
+members of `x`'s whnf-reduced type head — falling back to identifier-prefix
+completion against the snapshot environment, `open`-aware; cursor offsets are
+code points); `inspect {code, cursor}` → `{found, hover?, name?, type?,
+doc?}`; `cancel {request_id}` (out-of-band, no reply of its own — the
+cancelled execute replies); `save_session` / `load_session {path}` (committed
+state as an olean + scope JSON — the kernel's restart cache, keyed by the
+ledger, with source replay as the fallback); `describe`. Unknown ops answer
 `{"status": "unsupported"}`.
+
+Kernelspec knobs (`install.py`): `--prelude-module`, `--init-cell` (commands
+run once after worker start as the session base — how a DSL sets
+`set_option` defaults), `--sandbox`, `--name`, `--display-name`.
 
 ## Bring your own DSL
 
