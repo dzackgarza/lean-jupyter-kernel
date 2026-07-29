@@ -12,6 +12,11 @@
 
 set dotenv-load := true
 
+# No ai_review_ci_* contract stanza: this is a polyglot monorepo (Lean +
+# Python + TS) and doctor's profiles demand exclusive whole-repo delegation
+# (declaring "python" would be a false contract). The Python slice still runs
+# the global mypy gate below. Upstream gap: ai-review-ci#353.
+
 # Show available recipes
 default:
     @just --list
@@ -31,6 +36,7 @@ test: build
     @just -f ~/ai-review-ci/justfiles/lean.just -d dsls/nbdsl lean-no-sorry
     @! grep -rn '^import NbDsl' worker/ --include='*.lean' || \
         { echo 'BOUNDARY: the core must never import DSL modules'; exit 1; }
+    @just -f ~/ai-review-ci/justfiles/python.just -d nbdsl_kernel _mypy
     @python3 nbdsl_kernel/tests/roundtrip.py
 
 [private]

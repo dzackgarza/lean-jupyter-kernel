@@ -3,15 +3,28 @@
 A thin protocol adapter: cells go verbatim to the Lean worker, which owns
 parsing, elaboration, semantic state, and proof checking; this class owns
 Jupyter messaging and rendering only. Python never interprets DSL text.
+
+Typing note: worker traffic is fully modeled (see protocol.py). The dicts
+that remain are the two untyped external boundaries — ipykernel's message
+payloads (Any, by its API) and the Jupyter reply dicts this class returns
+to ipykernel.
 """
+
+from __future__ import annotations
 
 import os
 import shutil
 import tempfile
+from typing import Any
 
 from ipykernel.kernelbase import Kernel
+from pydantic import ValidationError
 
+from .protocol import (CellState, CompleteOk, DocumentMessage, ExecuteReply,
+                       InspectOk, IsCompleteOk)
 from .worker import WorkerClient, WorkerDied
+
+JupyterReply = dict[str, object]
 
 
 class NbDslKernel(Kernel):
@@ -24,7 +37,7 @@ class NbDslKernel(Kernel):
         "file_extension": ".lean",
     }
 
-    def __init__(self, **kwargs):
+    def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         project = os.environ.get("NBDSL_PROJECT")
         if not project:
@@ -42,7 +55,7 @@ class NbDslKernel(Kernel):
         # from the kernelspec (install.py --init-cell).
         self.init_cell = os.environ.get("NBDSL_INIT", "")
         self.base_snapshot = 0
-        self._init_error = None
+        self._init_error: str | None = None
         # Session cache (REPL-mode restarts skip replay). Not in sandbox
         # mode: the sandboxed worker cannot write outside its private tmpfs.
         if os.environ.get("NBDSL_SANDBOX") != "1":
@@ -50,54 +63,61 @@ class NbDslKernel(Kernel):
         # Document mode: the jupyterlab_nbdsl extension streams cell order and
         # sources over the "nbdsl_document" comm. Without it (jupyter console)
         # execution keeps REPL semantics.
-        self._doc_comms = set()
-        self.doc_order = []          # cell ids, visible order (code cells)
-        self.doc_sources = {}        # cell id -> source
-        self.cell_state = {}         # cell id -> {source, snapshot, parent}
+        self._doc_comms: set[object] = set()
+        self.doc_order: list[str] = []   # cell ids, visible order (code cells)
+        self.doc_sources: dict[str, str] = {}   # cell id -> source
+        self.cell_state: dict[str, CellState] = {}
         for msg_type in ("comm_open", "comm_msg", "comm_close"):
             self.shell_handlers[msg_type] = getattr(self, msg_type)
 
     # -- document comm -----------------------------------------------------
 
-    async def comm_open(self, stream, ident, parent):
+    async def comm_open(self, stream: Any, ident: Any,
+                        parent: dict[str, Any]) -> None:
         content = parent["content"]
         if content.get("target_name") == "nbdsl_document":
             self._doc_comms.add(content.get("comm_id"))
 
-    async def comm_msg(self, stream, ident, parent):
+    async def comm_msg(self, stream: Any, ident: Any,
+                       parent: dict[str, Any]) -> None:
         content = parent["content"]
         if content.get("comm_id") not in self._doc_comms:
             return
-        data = content.get("data", {})
-        if data.get("type") == "document":
-            cells = data.get("cells", [])
-            self.doc_order = [c["id"] for c in cells]
-            self.doc_sources = {c["id"]: c["source"] for c in cells}
-            self._broadcast_status()
+        try:
+            doc = DocumentMessage.model_validate(content.get("data"))
+        except ValidationError:
+            # Status broadcasts echo on this comm and any frontend code may
+            # open the target; non-document traffic is ignored, not fatal.
+            return
+        self.doc_order = [c.id for c in doc.cells]
+        self.doc_sources = {c.id: c.source for c in doc.cells}
+        self._broadcast_status()
 
-    async def comm_close(self, stream, ident, parent):
+    async def comm_close(self, stream: Any, ident: Any,
+                         parent: dict[str, Any]) -> None:
         self._doc_comms.discard(parent["content"].get("comm_id"))
 
-    def _broadcast_status(self):
+    def _broadcast_status(self) -> None:
         """Tell the frontend which cells are fresh vs stale (previously run,
         now invalidated by an upstream edit). Unrun cells are in neither."""
-        if not self._doc_comms or not self.doc_order:
+        if not self._doc_comms or not self.doc_order or self.session is None:
             return
-        fresh, stale = [], []
-        parent = 0
+        fresh: list[str] = []
+        stale: list[str] = []
+        parent = self.base_snapshot
         broken = False
         for cid in self.doc_order:
             src = self.doc_sources.get(cid, "")
             if not src.strip():
                 continue
             st = self.cell_state.get(cid)
-            if (not broken and st and st["source"] == src
-                    and st["parent"] == parent):
+            if (not broken and st is not None and st.source == src
+                    and st.parent == parent):
                 fresh.append(cid)
-                parent = st["snapshot"]
+                parent = st.snapshot
             else:
                 broken = True
-                if st:
+                if st is not None:
                     stale.append(cid)
         data = {"type": "status", "fresh": fresh, "stale": stale}
         for comm_id in self._doc_comms:
@@ -106,7 +126,7 @@ class NbDslKernel(Kernel):
 
     # -- plumbing ----------------------------------------------------------
 
-    def _stream(self, name, text):
+    def _stream(self, name: str, text: str) -> None:
         # self._silent exists for exactly this method: it gates output from
         # ASYNC contexts (worker stdout/stderr pump threads, prefix re-run
         # notes) that have no `silent` parameter in scope. Synchronous reply
@@ -115,7 +135,7 @@ class NbDslKernel(Kernel):
             self.send_response(self.iopub_socket, "stream",
                                {"name": name, "text": text})
 
-    def _run_init_cell(self):
+    def _run_init_cell(self) -> None:
         """The kernelspec's init cell becomes the session's base snapshot.
         A failing init cell is a broken kernelspec: fail every execute loudly
         rather than silently running without the configured defaults."""
@@ -124,14 +144,12 @@ class NbDslKernel(Kernel):
         if not self.init_cell.strip():
             return
         rep = self.worker.execute(self.init_cell, cell_id="<init>")
-        if rep.get("status") == "ok":
-            self.base_snapshot = rep["snapshot"]
+        if rep.status == "ok":
+            self.base_snapshot = rep.snapshot
         else:
-            first = next((d for d in rep.get("diagnostics", [])
-                          if d["severity"] == "error"), {"message": "failed"})
-            self._init_error = f"init cell failed: {first['message']}"
+            self._init_error = f"init cell failed: {rep.first_error()}"
 
-    def _ensure_worker(self):
+    def _ensure_worker(self) -> None:
         if not self._started:
             self._stream("stdout",
                          f"Starting Lean worker ({self.worker.project_root})…\n")
@@ -158,7 +176,8 @@ class NbDslKernel(Kernel):
                 else:
                     self._stream("stderr", f"Replayed {n} cells.\n")
 
-    def _ensure_prefix(self, cell_id, silent):
+    def _ensure_prefix(self, cell_id: str,
+                       silent: bool) -> tuple[JupyterReply | None, int]:
         """Re-establish the invariant: the snapshot for each cell equals the
         state of elaborating the visible notebook prefix through that cell.
         Returns (error_reply | None, parent_snapshot_for_cell_id)."""
@@ -170,66 +189,65 @@ class NbDslKernel(Kernel):
             if not src.strip():
                 continue
             st = self.cell_state.get(cid)
-            if st and st["source"] == src and st["parent"] == parent:
-                parent = st["snapshot"]
+            if st is not None and st.source == src and st.parent == parent:
+                parent = st.snapshot
                 continue
             pos = self.doc_order.index(cid) + 1
             self._stream("stdout", f"↻ re-running upstream cell {pos}…\n")
             rep = self.worker.execute_at(src, cid, parent)
-            if rep.get("status") != "ok":
-                first = next((d for d in rep.get("diagnostics", [])
-                              if d["severity"] == "error"), {"message": "failed"})
+            if rep.status != "ok":
                 return self._error_reply(
                     "UpstreamError",
-                    f"upstream cell {pos} failed: {first['message']}",
+                    f"upstream cell {pos} failed: {rep.first_error()}",
                     silent), parent
-            self.cell_state[cid] = {"source": src,
-                                    "snapshot": rep["snapshot"], "parent": parent}
-            parent = rep["snapshot"]
+            self.cell_state[cid] = CellState(
+                source=src, snapshot=rep.snapshot, parent=parent)
+            parent = rep.snapshot
         # cell not in the document (e.g. brand-new cell the extension hasn't
         # reported yet): fall through with the last prefix state
         return None, parent
 
-    def _publish_reply(self, rep):
-        for diag in rep.get("diagnostics", []):
-            sev = diag["severity"]
-            if sev == "error":
+    def _publish_reply(self, rep: ExecuteReply) -> None:
+        for diag in rep.diagnostics:
+            if diag.severity == "error":
                 continue  # errors are published once, as the error output
-            pos = diag["start"]
-            text = f"{pos['line']}:{pos['column']}: {diag['message']}\n"
-            self._stream("stdout" if sev == "information" else "stderr", text)
-        for s in rep.get("sorries", []):
-            pos = s["start"]
+            text = f"{diag.start.line}:{diag.start.column}: {diag.message}\n"
+            self._stream(
+                "stdout" if diag.severity == "information" else "stderr", text)
+        for s in rep.sorries:
             self._stream(
                 "stderr",
-                f"⚠ sorry at {pos['line']}:{pos['column']}\n{s['goal']}\n")
-        outputs = rep.get("outputs", [])
-        for i, out in enumerate(outputs):
-            data = dict(out["data"])
+                f"⚠ sorry at {s.start.line}:{s.start.column}\n{s.goal}\n")
+        for i, out in enumerate(rep.outputs):
+            data = dict(out.data)
             data.setdefault("text/plain", "<nbdsl output>")
-            last = i == len(outputs) - 1
-            if last and rep.get("status") == "ok":
+            last = i == len(rep.outputs) - 1
+            if last and rep.status == "ok":
                 self.send_response(self.iopub_socket, "execute_result", {
                     "execution_count": self.execution_count,
                     "data": data,
-                    "metadata": out.get("metadata") or {},
+                    "metadata": out.metadata,
                 })
             else:
                 self.send_response(self.iopub_socket, "display_data", {
                     "data": data,
-                    "metadata": out.get("metadata") or {},
+                    "metadata": out.metadata,
                 })
 
     # -- Jupyter entry points ---------------------------------------------
 
-    def do_execute(self, code, silent, store_history=True,
-                   user_expressions=None, allow_stdin=False, *,
-                   cell_meta=None, cell_id=None):
+    async def do_execute(self, code: str, silent: bool,
+                         store_history: bool = True,
+                         user_expressions: dict[str, Any] | None = None,
+                         allow_stdin: bool = False, *,
+                         cell_meta: dict[str, Any] | None = None,
+                         cell_id: str | None = None) -> JupyterReply:
         self._silent = silent
         try:
             self._ensure_worker()
             if self._init_error:
-                return self._error_reply("InitCellError", self._init_error, silent)
+                return self._error_reply("InitCellError", self._init_error,
+                                         silent)
             if cell_id and cell_id in self.doc_sources:
                 # Document mode: make the prefix invariant true, then run this
                 # cell against its prefix snapshot. The request's code is the
@@ -239,40 +257,38 @@ class NbDslKernel(Kernel):
                 if err is not None:
                     return err
                 rep = self.worker.execute_at(code, cell_id, parent)
-                if rep.get("status") == "ok":
-                    self.cell_state[cell_id] = {
-                        "source": code, "snapshot": rep["snapshot"],
-                        "parent": parent}
+                if rep.status == "ok":
+                    self.cell_state[cell_id] = CellState(
+                        source=code, snapshot=rep.snapshot, parent=parent)
                 self._broadcast_status()
             else:
                 rep = self.worker.execute(code, cell_id=cell_id or "cell")
-                if rep.get("status") == "ok":
+                if rep.status == "ok":
                     self.worker.save_session()
             if not silent:
                 self._publish_reply(rep)
-            if rep.get("status") == "ok":
+            if rep.status == "ok":
                 return {"status": "ok", "execution_count": self.execution_count,
                         "payload": [], "user_expressions": {}}
-            if rep.get("status") == "cancelled":
+            if rep.status == "cancelled":
                 return self._error_reply(
                     "Interrupted", "execution cancelled; state unchanged",
                     silent)
-            first = next((d for d in rep.get("diagnostics", [])
-                          if d["severity"] == "error"),
-                         {"message": "execution failed"})
-            return self._error_reply("LeanError", first["message"], silent)
+            return self._error_reply("LeanError", rep.first_error(), silent)
         except KeyboardInterrupt:
             # Jupyter interrupts SIGINT the whole process group; the worker is
             # (being) killed. Kill it outright so no stale elaboration lingers;
             # the next execute restarts and replays the committed prefix.
             self.worker.kill()
-            return self._error_reply("Interrupted", "execution interrupted", silent)
+            return self._error_reply("Interrupted", "execution interrupted",
+                                     silent)
         except WorkerDied as e:
             return self._error_reply("WorkerDied", str(e), silent)
         finally:
             self._silent = False
 
-    def _error_reply(self, ename, evalue, silent):
+    def _error_reply(self, ename: str, evalue: str,
+                     silent: bool) -> JupyterReply:
         if not silent:
             self.send_response(self.iopub_socket, "error", {
                 "ename": ename, "evalue": evalue,
@@ -281,7 +297,7 @@ class NbDslKernel(Kernel):
         return {"status": "error", "ename": ename, "evalue": evalue,
                 "traceback": [evalue], "execution_count": self.execution_count}
 
-    def do_is_complete(self, code):
+    async def do_is_complete(self, code: str) -> JupyterReply:
         # Deciding completeness requires Lean's parser — never guessed in
         # Python. is_complete_reply has no error status in the Jupyter spec,
         # so "unknown" is the spec's honest answer for every cannot-determine
@@ -289,71 +305,70 @@ class NbDslKernel(Kernel):
         if not self._started:
             return {"status": "unknown"}
         try:
-            rep = self.worker.request("is_complete", code=code, timeout=30)
+            rep = self.worker.is_complete(code)
         except (WorkerDied, TimeoutError):
             return {"status": "unknown"}
-        if rep.get("status") != "ok":
+        if not isinstance(rep, IsCompleteOk):
             return {"status": "unknown"}
-        result = rep.get("result", "unknown")
-        out = {"status": result}
-        if result == "incomplete":
+        out: JupyterReply = {"status": rep.result}
+        if rep.result == "incomplete":
             out["indent"] = "  "
         return out
 
-    def do_complete(self, code, cursor_pos):
+    async def do_complete(self, code: str, cursor_pos: int) -> JupyterReply:
         # cursor_pos is Unicode code points — the worker's convention too.
-        empty = {"status": "ok", "matches": [], "cursor_start": cursor_pos,
-                 "cursor_end": cursor_pos, "metadata": {}}
+        empty: JupyterReply = {"status": "ok", "matches": [],
+                               "cursor_start": cursor_pos,
+                               "cursor_end": cursor_pos, "metadata": {}}
         if not self._started:
             # The worker starts lazily on the first execute; completing
             # before any execution is a normal state, not a failure.
             return empty
         try:
-            rep = self.worker.request("complete", code=code,
-                                      cursor=cursor_pos, timeout=30)
+            rep = self.worker.complete(code, cursor_pos)
         except (WorkerDied, TimeoutError) as e:
             # Fail loudly: a dead worker must not masquerade as "no matches".
             return {**empty, "status": "error", "ename": type(e).__name__,
                     "evalue": str(e), "traceback": [str(e)]}
-        if rep.get("status") != "ok":
+        if not isinstance(rep, CompleteOk):
             return {**empty, "status": "error", "ename": "WorkerError",
-                    "evalue": rep.get("message", "complete failed"),
-                    "traceback": []}
-        return {"status": "ok", "matches": rep.get("matches", []),
-                "cursor_start": rep.get("cursor_start", cursor_pos),
-                "cursor_end": rep.get("cursor_end", cursor_pos),
+                    "evalue": rep.message, "traceback": []}
+        return {"status": "ok", "matches": rep.matches,
+                "cursor_start": rep.cursor_start,
+                "cursor_end": rep.cursor_end,
                 "metadata": {}}
 
-    def do_inspect(self, code, cursor_pos, detail_level=0, omit_sections=()):
-        missing = {"status": "ok", "found": False, "data": {}, "metadata": {}}
+    async def do_inspect(self, code: str, cursor_pos: int,
+                         detail_level: int = 0,
+                         omit_sections: tuple[object, ...] = ()) -> JupyterReply:
+        missing: JupyterReply = {"status": "ok", "found": False,
+                                 "data": {}, "metadata": {}}
         if not self._started:
             return missing  # lazy worker: nothing to inspect yet, by design
         try:
-            rep = self.worker.request("inspect", code=code,
-                                      cursor=cursor_pos, timeout=30)
+            rep = self.worker.inspect(code, cursor_pos)
         except (WorkerDied, TimeoutError) as e:
             # Fail loudly: a dead worker must not masquerade as "not found".
             return {**missing, "status": "error", "ename": type(e).__name__,
                     "evalue": str(e), "traceback": [str(e)]}
-        if rep.get("status") != "ok":
+        if not isinstance(rep, InspectOk):
             return {**missing, "status": "error", "ename": "WorkerError",
-                    "evalue": rep.get("message", "inspect failed"),
-                    "traceback": []}
-        if not rep.get("found"):
+                    "evalue": rep.message, "traceback": []}
+        if not rep.found:
             return missing
-        if rep.get("hover"):
+        if rep.hover:
             # Server-grade hover (markdown; covers locals and full terms).
             return {"status": "ok", "found": True,
-                    "data": {"text/plain": rep["hover"],
-                             "text/markdown": rep["hover"]},
+                    "data": {"text/plain": rep.hover,
+                             "text/markdown": rep.hover},
                     "metadata": {}}
-        text = f"{rep['name']} : {rep['type']}"
-        if rep.get("doc"):
-            text += f"\n\n{rep['doc']}"
+        text = f"{rep.name} : {rep.type_}"
+        if rep.doc:
+            text += f"\n\n{rep.doc}"
         return {"status": "ok", "found": True,
                 "data": {"text/plain": text}, "metadata": {}}
 
-    def do_shutdown(self, restart):
+    async def do_shutdown(self, restart: bool) -> JupyterReply:
         if self._started:
             self.worker.shutdown()
             self._started = False

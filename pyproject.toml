@@ -1,0 +1,6 @@
+# Monorepo workspace root: the Python package lives in nbdsl_kernel/ (the
+# Lean packages in worker/ and dsls/, the Lab extension in jupyterlab_nbdsl/).
+# This file exists so the repo satisfies the ai-review-ci "python" profile and
+# uv treats the repo as one workspace.
+[tool.uv.workspace]
+members = ["nbdsl_kernel"]

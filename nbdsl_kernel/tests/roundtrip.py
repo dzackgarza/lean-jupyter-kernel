@@ -32,7 +32,7 @@ def write_frame(fd: int, obj: dict) -> None:
 
 
 class FrameReader:
-    def __init__(self, fd: int):
+    def __init__(self, fd: int) -> None:
         self.fd = fd
         self.buf = b""
 
@@ -53,11 +53,12 @@ class FrameReader:
         while len(self.buf) < n:
             self._fill("timed out waiting for frame payload")
         payload, self.buf = self.buf[:n], self.buf[n:]
-        return json.loads(payload)
+        frame: dict = json.loads(payload)
+        return frame
 
 
 class Worker:
-    def __init__(self, prelude="NbDsl.Notebook"):
+    def __init__(self, prelude: str = "NbDsl.Notebook") -> None:
         req_r, req_w = os.pipe()
         rep_r, rep_w = os.pipe()
         self.proc = subprocess.Popen(
@@ -76,7 +77,7 @@ class Worker:
         self.replies = FrameReader(rep_r)
         self._rid = 0
 
-    def request(self, op, **fields) -> dict:
+    def request(self, op: str, **fields: object) -> dict:
         self._rid += 1
         rid = f"r{self._rid}"
         write_frame(self.req_fd, {"op": op, "request_id": rid, **fields})
@@ -84,24 +85,25 @@ class Worker:
         assert rep.get("request_id") == rid, rep
         return rep
 
-    def execute(self, code, parent=None) -> dict:
-        fields = {"code": code, "cell_id": f"cell{self._rid}"}
+    def execute(self, code: str, parent: int | None = None) -> dict:
+        fields: dict[str, object] = {"code": code,
+                                     "cell_id": f"cell{self._rid}"}
         if parent is not None:
             fields["parent_snapshot"] = parent
         return self.request("execute", **fields)
 
-    def shutdown(self):
+    def shutdown(self) -> tuple[int, bytes, bytes]:
         os.close(self.req_fd)
         rc = self.proc.wait(timeout=TIMEOUT)
         out, err = self.proc.communicate(timeout=5)
         return rc, out, err
 
 
-def errors(rep):
+def errors(rep: dict) -> list[dict]:
     return [d for d in rep["diagnostics"] if d["severity"] == "error"]
 
 
-def infos(rep):
+def infos(rep: dict) -> list[dict]:
     return [d for d in rep["diagnostics"] if d["severity"] == "information"]
 
 

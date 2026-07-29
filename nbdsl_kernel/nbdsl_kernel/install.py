@@ -9,6 +9,7 @@ import argparse
 import json
 import sys
 import tempfile
+from typing import Any
 from pathlib import Path
 
 from jupyter_client.kernelspec import KernelSpecManager
@@ -16,7 +17,7 @@ from jupyter_client.kernelspec import KernelSpecManager
 from .worker import find_worker_exe
 
 
-def main():
+def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--project", required=True,
                    help="absolute path to the nbdsl Lake project")
@@ -41,7 +42,7 @@ def main():
         sys.exit(f"error: worker not built — run `lake build nbdsl_worker` in {project}")
 
     display = args.display_name or f"{args.prelude_module.split('.')[0]} (Lean 4)"
-    spec = {
+    spec: dict[str, Any] = {
         "argv": [sys.executable, "-m", "nbdsl_kernel",
                  "-f", "{connection_file}", "--project", str(project)],
         "display_name": display,

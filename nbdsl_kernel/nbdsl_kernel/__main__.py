@@ -8,7 +8,7 @@ from ipykernel.kernelapp import IPKernelApp
 from .kernel import NbDslKernel
 
 
-def main():
+def main() -> None:
     argv = sys.argv[1:]
     if "--project" in argv:
         i = argv.index("--project")

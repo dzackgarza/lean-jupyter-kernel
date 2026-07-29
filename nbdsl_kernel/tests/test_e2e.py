@@ -7,22 +7,28 @@ Run: .venv/bin/pytest nbdsl_kernel/tests/test_e2e.py   (after install.py)
 """
 
 import queue
+from typing import Any, Iterator
 
 import pytest
 from jupyter_client.manager import start_new_kernel
+
+# jupyter_client's manager/client classes are traitlets-heavy; Any keeps
+# the tests honest without stubbing a dependency we don't own.
+Kernel = tuple[Any, Any]  # (KernelManager, BlockingKernelClient)
 
 STARTUP = 600  # first execute waits for the worker's prelude import
 
 
 @pytest.fixture(scope="module")
-def kernel():
+def kernel() -> Iterator[Kernel]:
     km, kc = start_new_kernel(kernel_name="nbdsl", startup_timeout=60)
     yield km, kc
     kc.stop_channels()
     km.shutdown_kernel(now=False)
 
 
-def run_cell(kc, code, timeout=STARTUP):
+def run_cell(kc: Any, code: str,
+             timeout: float = STARTUP) -> tuple[dict[str, Any], list[Any]]:
     """Execute code, return (reply, iopub messages up to idle)."""
     msg_id = kc.execute(code)
     outputs = []
@@ -39,13 +45,13 @@ def run_cell(kc, code, timeout=STARTUP):
     return reply["content"], outputs
 
 
-def texts(outputs, name=None):
+def texts(outputs: list[Any], name: str | None = None) -> str:
     return "".join(
         m["content"]["text"] for m in outputs
         if m["msg_type"] == "stream" and (name is None or m["content"]["name"] == name))
 
 
-def test_eval_and_state(kernel):
+def test_eval_and_state(kernel: Kernel) -> None:
     _, kc = kernel
     reply, _ = run_cell(kc, "def x : Nat := 41")
     assert reply["status"] == "ok"
@@ -54,7 +60,7 @@ def test_eval_and_state(kernel):
     assert "42" in texts(outputs)
 
 
-def test_failure_isolation(kernel):
+def test_failure_isolation(kernel: Kernel) -> None:
     _, kc = kernel
     reply, outputs = run_cell(kc, 'def broken : Nat := "s"')
     assert reply["status"] == "error"
@@ -64,7 +70,7 @@ def test_failure_isolation(kernel):
     assert "42" in texts(outputs)
 
 
-def test_dsl_structured_output(kernel):
+def test_dsl_structured_output(kernel: Kernel) -> None:
     _, kc = kernel
     for cell in ("open NbDsl NbDsl.Std",
                  "prefer groupsToSets",
@@ -78,7 +84,7 @@ def test_dsl_structured_output(kernel):
     assert any("application/vnd.nbdsl.path+json" in b for b in bundles)
 
 
-def test_complete_and_inspect(kernel):
+def test_complete_and_inspect(kernel: Kernel) -> None:
     _, kc = kernel
     # Self-contained: bare-name completion depends on this committed open.
     reply, _ = run_cell(kc, "open NbDsl NbDsl.Std")
@@ -96,19 +102,21 @@ def test_complete_and_inspect(kernel):
     assert "Functor" in text or "⥤" in text, text
 
 
-def _send_comm(kc, msg_type, content):
+def _send_comm(kc: Any, msg_type: str, content: dict[str, Any]) -> None:
     msg = kc.session.msg(msg_type, content)
     kc.shell_channel.send(msg)
 
 
-def _send_document(kc, comm_id, cells):
+def _send_document(kc: Any, comm_id: str,
+                   cells: list[tuple[str, str]]) -> None:
     _send_comm(kc, "comm_msg", {
         "comm_id": comm_id,
         "data": {"type": "document",
                  "cells": [{"id": i, "source": s} for i, s in cells]}})
 
 
-def _exec_cell(kc, code, cell_id, timeout=STARTUP):
+def _exec_cell(kc: Any, code: str, cell_id: str,
+               timeout: float = STARTUP) -> tuple[dict[str, Any], list[Any]]:
     """execute_request with JupyterLab's metadata.cellId, like the frontend."""
     msg = kc.session.msg("execute_request", {
         "code": code, "silent": False, "store_history": True,
@@ -128,10 +136,11 @@ def _exec_cell(kc, code, cell_id, timeout=STARTUP):
     while True:
         reply = kc.get_shell_msg(timeout=timeout)
         if reply["parent_header"]["msg_id"] == msg_id:
-            return reply["content"], outputs
+            content: dict[str, Any] = reply["content"]
+            return content, outputs
 
 
-def test_interrupt_restart_replay(kernel):
+def test_interrupt_restart_replay(kernel: Kernel) -> None:
     km, kc = kernel
     msg_id = kc.execute("def spin : IO Unit := do while true do pure ()\n#eval spin")
     # Give elaboration a moment to be genuinely stuck, then interrupt.
@@ -166,7 +175,7 @@ def test_interrupt_restart_replay(kernel):
         [m["msg_type"] for m in outputs]
 
 
-def test_uncacheable_state_falls_back_to_replay(kernel):
+def test_uncacheable_state_falls_back_to_replay(kernel: Kernel) -> None:
     km, kc = kernel
     # An open `section` makes the state uncacheable (the worker refuses to
     # save and the cache key is dropped), so the next worker death must
@@ -198,15 +207,16 @@ def test_uncacheable_state_falls_back_to_replay(kernel):
     assert reply["status"] == "ok"
 
 
-def _await_status(kc, timeout=15):
+def _await_status(kc: Any, timeout: float = 15) -> dict[str, Any]:
     while True:
         msg = kc.get_iopub_msg(timeout=timeout)
         if (msg["msg_type"] == "comm_msg"
                 and msg["content"].get("data", {}).get("type") == "status"):
-            return msg["content"]["data"]
+            data: dict[str, Any] = msg["content"]["data"]
+            return data
 
 
-def _drain_iopub(kc):
+def _drain_iopub(kc: Any) -> None:
     while True:
         try:
             kc.get_iopub_msg(timeout=0.5)
@@ -214,7 +224,7 @@ def _drain_iopub(kc):
             return
 
 
-def test_init_cell():
+def test_init_cell() -> None:
     import os
     km, kc = start_new_kernel(
         kernel_name="nbdsl", startup_timeout=60,
@@ -228,7 +238,7 @@ def test_init_cell():
         km.shutdown_kernel(now=False)
 
 
-def test_init_cell_failure_is_loud():
+def test_init_cell_failure_is_loud() -> None:
     import os
     km, kc = start_new_kernel(
         kernel_name="nbdsl", startup_timeout=60,
@@ -244,7 +254,7 @@ def test_init_cell_failure_is_loud():
         km.shutdown_kernel(now=False)
 
 
-def test_document_order_semantics(kernel):
+def test_document_order_semantics(kernel: Kernel) -> None:
     _, kc = kernel
     comm_id = "doc-comm-1"
     _send_comm(kc, "comm_open", {"comm_id": comm_id,

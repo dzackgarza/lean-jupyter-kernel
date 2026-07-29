@@ -66,6 +66,12 @@ jobs:
         working-directory: worker
         run: lake build nbdsl_worker
 
+      - name: mypy (strict, mirrors ai-review-ci's global config)
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/dzackgarza/ai-review-ci/main/tool-configs/mypy-global.ini -o /tmp/mypy-global.ini
+          pip install mypy pydantic ipykernel jupyter_client pytest
+          mypy --config-file /tmp/mypy-global.ini nbdsl_kernel/nbdsl_kernel nbdsl_kernel/tests
+
       - name: protocol round-trip
         run: python3 nbdsl_kernel/tests/roundtrip.py
 

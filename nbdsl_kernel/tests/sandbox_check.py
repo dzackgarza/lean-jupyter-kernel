@@ -21,30 +21,31 @@ if shutil.which("bwrap") is None:
     sys.exit(1)
 
 os.environ["NBDSL_SANDBOX"] = "1"
+from nbdsl_kernel.protocol import ExecuteReply  # noqa: E402
 from nbdsl_kernel.worker import WorkerClient  # noqa: E402
 
 
-def infos(rep):
-    return [d for d in rep["diagnostics"] if d["severity"] == "information"]
+def infos(rep: "ExecuteReply") -> list[str]:
+    return [d.message for d in rep.diagnostics if d.severity == "information"]
 
 
-def main():
+def main() -> None:
     w = WorkerClient(REPO / "dsls/nbdsl")
     w.start()
 
     rep = w.execute('#eval IO.FS.writeFile "pwned.txt" "x"')
-    assert rep["status"] == "error", rep
+    assert rep.status == "error", rep
     assert not (REPO / "dsls/nbdsl" / "pwned.txt").exists()
     print("ok: project tree is read-only inside the sandbox")
 
     rep = w.execute('#eval IO.FS.writeFile "/tmp/nbdsl-sbx.txt" "x"')
-    assert rep["status"] == "ok", rep
+    assert rep.status == "ok", rep
     assert not Path("/tmp/nbdsl-sbx.txt").exists()  # private tmpfs, not host /tmp
     print("ok: /tmp is a private tmpfs")
 
     rep = w.execute("#eval 6 * 7")
-    assert rep["status"] == "ok", rep
-    assert any("42" in d["message"] for d in infos(rep)), rep
+    assert rep.status == "ok", rep
+    assert any("42" in m for m in infos(rep)), rep
     print("ok: elaboration works sandboxed")
 
     w.shutdown()
