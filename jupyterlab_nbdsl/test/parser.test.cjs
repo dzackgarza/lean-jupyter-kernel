@@ -32,8 +32,7 @@ function check(lines, expected, parser = leanParser) {
 check('def f := 1', [
   ['def', 'keyword'],
   ['f', 'variableName'],
-  [':', 'operator'],
-  ['=', 'operator'],
+  [':=', 'operator'],
   ['1', 'number']
 ]);
 
@@ -78,8 +77,7 @@ check('theorem t : x = 1 := by s' + 'orry', [
   ['x', 'variableName'],
   ['=', 'operator'],
   ['1', 'number'],
-  [':', 'operator'],
-  ['=', 'operator'],
+  [':=', 'operator'],
   ['by', 'keyword'],
   ['s' + 'orry', 'invalid']
 ]);

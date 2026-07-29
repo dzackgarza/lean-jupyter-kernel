@@ -111,7 +111,11 @@ function token(
     return keywords.has(word) ? 'keyword' : 'variableName';
   }
 
-  // Everything else (→ ∈ ⟨⟩ := ...) is operator/punctuation.
+  // Multi-char ASCII operators kept as single tokens.
+  if (stream.match(':=') || stream.match('=>') || stream.match('->')) {
+    return 'operator';
+  }
+  // Everything else (→ ∈ ⟨⟩ ...) is operator/punctuation.
   stream.next();
   return 'operator';
 }
