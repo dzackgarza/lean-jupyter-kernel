@@ -127,6 +127,21 @@ LOAD_SESSION_REPLY: TypeAdapter[LoadSessionOk | WorkerError] = TypeAdapter(
     Annotated[LoadSessionOk | WorkerError, Field(discriminator="status")])
 
 
+# -- ipykernel ingestion boundary -------------------------------------------
+# ipykernel hands handlers untyped message dicts; these models re-type that
+# dependency at the door (POLICY.NO_UNTYPED_IMPORT_LEAK). Only the fields the
+# kernel reads are modeled; the rest is ignored.
+
+class CommContent(BaseModel):
+    comm_id: str
+    target_name: str | None = None
+    data: object = None
+
+
+class CommParent(BaseModel):
+    content: CommContent
+
+
 # -- kernel-side document model (frontend comm boundary) --------------------
 
 class DocCell(BaseModel):

@@ -4,10 +4,10 @@ A thin protocol adapter: cells go verbatim to the Lean worker, which owns
 parsing, elaboration, semantic state, and proof checking; this class owns
 Jupyter messaging and rendering only. Python never interprets DSL text.
 
-Typing note: worker traffic is fully modeled (see protocol.py). The dicts
-that remain are the two untyped external boundaries — ipykernel's message
-payloads (Any, by its API) and the Jupyter reply dicts this class returns
-to ipykernel.
+Typing note: worker traffic and the ipykernel comm payloads are modeled in
+protocol.py — untyped dependency data is ingested to pydantic at the
+boundary. What remains untyped-by-nature: the Jupyter reply dicts returned
+TO ipykernel (its API), and the __init__ **kwargs relay to traitlets.
 """
 
 from __future__ import annotations
@@ -20,8 +20,8 @@ from typing import Any
 from ipykernel.kernelbase import Kernel
 from pydantic import ValidationError
 
-from .protocol import (CellState, CompleteOk, DocumentMessage, ExecuteReply,
-                       InspectOk, IsCompleteOk)
+from .protocol import (CellState, CommParent, CompleteOk, DocumentMessage,
+                       ExecuteReply, InspectOk, IsCompleteOk)
 from .worker import WorkerClient, WorkerDied
 
 JupyterReply = dict[str, object]
@@ -63,7 +63,7 @@ class NbDslKernel(Kernel):
         # Document mode: the jupyterlab_nbdsl extension streams cell order and
         # sources over the "nbdsl_document" comm. Without it (jupyter console)
         # execution keeps REPL semantics.
-        self._doc_comms: set[object] = set()
+        self._doc_comms: set[str] = set()
         self.doc_order: list[str] = []   # cell ids, visible order (code cells)
         self.doc_sources: dict[str, str] = {}   # cell id -> source
         self.cell_state: dict[str, CellState] = {}
@@ -72,19 +72,19 @@ class NbDslKernel(Kernel):
 
     # -- document comm -----------------------------------------------------
 
-    async def comm_open(self, stream: Any, ident: Any,
-                        parent: dict[str, Any]) -> None:
-        content = parent["content"]
-        if content.get("target_name") == "nbdsl_document":
-            self._doc_comms.add(content.get("comm_id"))
+    async def comm_open(self, stream: object, ident: object,
+                        parent: object) -> None:
+        msg = CommParent.model_validate(parent)
+        if msg.content.target_name == "nbdsl_document":
+            self._doc_comms.add(msg.content.comm_id)
 
-    async def comm_msg(self, stream: Any, ident: Any,
-                       parent: dict[str, Any]) -> None:
-        content = parent["content"]
-        if content.get("comm_id") not in self._doc_comms:
+    async def comm_msg(self, stream: object, ident: object,
+                       parent: object) -> None:
+        msg = CommParent.model_validate(parent)
+        if msg.content.comm_id not in self._doc_comms:
             return
         try:
-            doc = DocumentMessage.model_validate(content.get("data"))
+            doc = DocumentMessage.model_validate(msg.content.data)
         except ValidationError:
             # Status broadcasts echo on this comm and any frontend code may
             # open the target; non-document traffic is ignored, not fatal.
@@ -93,9 +93,9 @@ class NbDslKernel(Kernel):
         self.doc_sources = {c.id: c.source for c in doc.cells}
         self._broadcast_status()
 
-    async def comm_close(self, stream: Any, ident: Any,
-                         parent: dict[str, Any]) -> None:
-        self._doc_comms.discard(parent["content"].get("comm_id"))
+    async def comm_close(self, stream: object, ident: object,
+                         parent: object) -> None:
+        self._doc_comms.discard(CommParent.model_validate(parent).content.comm_id)
 
     def _broadcast_status(self) -> None:
         """Tell the frontend which cells are fresh vs stale (previously run,
@@ -238,9 +238,9 @@ class NbDslKernel(Kernel):
 
     async def do_execute(self, code: str, silent: bool,
                          store_history: bool = True,
-                         user_expressions: dict[str, Any] | None = None,
+                         user_expressions: dict[str, object] | None = None,
                          allow_stdin: bool = False, *,
-                         cell_meta: dict[str, Any] | None = None,
+                         cell_meta: dict[str, object] | None = None,
                          cell_id: str | None = None) -> JupyterReply:
         self._silent = silent
         try:
