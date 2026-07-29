@@ -1,138 +1,86 @@
 # lean-jupyter-kernel
 
-Proof of concept: **a Lean 4 elaborated DSL running as a first-class Jupyter
-kernel.** Lean owns syntax, elaboration, semantic state, and proof checking;
-Jupyter owns transport and rendering. Cells reach Lean verbatim — no DSL
-logic exists in Python.
+Proof of concept: **a Lean 4 elaborated DSL running as a first-class
+Jupyter kernel.** Lean owns syntax, elaboration, semantic state, and proof
+checking; Jupyter owns transport and rendering. Cells reach Lean verbatim —
+no DSL logic exists in Python, and everything semantic (completion, hover,
+completeness, staleness) is asked *of* the Lean worker, never computed
+beside it.
 
 ```text
-JupyterLab / jupyter console
-        │  Jupyter kernel protocol (ZMQ)
-        ▼
-nbdsl_kernel        Python, ipykernel wrapper kernel (thin adapter)
-        │  length-prefixed JSON frames on dedicated inherited fds
-        ▼
-nbdsl_worker        Lean executable, started under `lake env`
-        │  persistent Command.State snapshots, one per committed cell
-        ▼
-NbDsl               the DSL: command elaborators, persistent registry,
-                    Mathlib-backed categories, structured MIME outputs
+JupyterLab ──ZMQ──▶ nbdsl_kernel (Python adapter)
+                        │ framed JSON on dedicated fds
+                        ▼
+                 nbdsl_worker (persistent Lean process)
+                        │ importModules, once
+                        ▼
+                 DSL prelude (Lean elaborators + env extensions,
+                              all of mathlib in scope)
 ```
 
-## Layout
+## What it does
 
-- `worker/` — Lake package `nbdsl-worker`, the notebook core: framed
-  protocol, per-cell elaboration, snapshot DAG, cancellation, query services,
-  and the `Worker.Output` sink. Mathlib-free (builds in seconds); the stable
-  dependency surface for DSL plugins.
-- `dsls/nbdsl/` — the reference DSL plugin: a Lake package (`require`s the
-  worker by path, mathlib `v4.32.0`):
-  - `NbDsl/Basic.lean` — `LargeCat`/`Object` over Mathlib `Cat`; `Object` is a
-    transparent `def` so home categories are recovered by head-symbol matching.
-  - `NbDsl/Registry.lean` — preferred-functor registry as a
-    `SimplePersistentEnvExtension`: semantic state lives in the `Environment`,
-    so it snapshots, rolls back, and replays with cells.
-  - `NbDsl/Syntax.lean` — `let X := t ∈ C` (elaborates to a kernel-checked
-    `noncomputable def X : Object C := t`), `prefer F`, `#home X`, `#via X ∈ C`.
-  - `NbDsl/Std.lean` — `Sets`, `Groups`, forgetful functor.
-  - `NbDsl/Notebook.lean` — the prelude module (the plugin's entry point).
-- `nbdsl_kernel/` — Python package: `kernel.py` (ipykernel subclass),
-  `worker.py` (spawn/framing/replay ledger), `install.py` (kernelspec),
-  `tests/roundtrip.py` (protocol spec by example), `tests/test_e2e.py`
-  (Jupyter-level invariants).
-- `notebooks/demo.ipynb` — the acceptance demo.
+- **Cells are ordinary Lean 4** over the full mathlib (`sage.all`-style),
+  elaborated against retained `Command.State` snapshots. Cells are atomic:
+  an erroring cell commits nothing, including DSL registry mutations.
+- **The reference DSL** makes categorical bookkeeping explicit and checked:
+  `let S3 := GrpCat.of (Equiv.Perm (Fin 3)) ∈ Groups` (membership is a type
+  ascription), `prefer` (transport conventions as document state), `#home`,
+  `#via` (functor-path search with structured MIME output), and
+  `predicate P (x ∈ C) := …` / `#methods C` (predicates as methods of a
+  category, decidable on declared objects: `¬ Abelian S3 := by decide`).
+- **Document-order semantics** in JupyterLab: running a cell re-establishes
+  *"cell i's snapshot = elaborating the visible prefix through i"* —
+  edited upstream cells re-run automatically, stale cells are marked in the
+  UI.
+- **Tooling from the environment**: Tab completion (type-aware after a
+  dot), Shift+Tab hover (server-grade, locals included), sorry tracking
+  with goals, syntax highlighting.
+- **Robust interruption**: cooperative cancellation via Lean's own
+  checkpoints (~0.2 s on tactic proofs), kill + recovery otherwise —
+  recovery by olean session cache (env-extension state survives) or source
+  replay.
+- **Opt-in sandboxing** for untrusted notebooks (bubblewrap: read-only
+  project/toolchain, no network).
+
+The worked demonstration is `dsl-notebooks/nbdsl-example.ipynb` — a
+pedagogical notebook proving all of the above live, including a
+deliberately failing final cell.
 
 ## Quickstart
 
 ```bash
 just cache && just build
-uv venv .venv && uv pip install -p .venv/bin/python -e 'nbdsl_kernel[test]'
+uv venv .venv && uv pip install -p .venv/bin/python -e 'nbdsl_kernel[test]' -e jupyterlab_nbdsl
 .venv/bin/python -m nbdsl_kernel.install --project "$PWD/dsls/nbdsl"
-jupyter lab notebooks/demo.ipynb   # kernel: "NbDsl (Lean 4)"
+PATH="$PWD/.venv/bin:$PATH" .venv/bin/jupyter labextension develop --overwrite jupyterlab_nbdsl
+jupyter lab dsl-notebooks/nbdsl-example.ipynb   # kernel: "NbDsl (Lean 4)"
 ```
 
-`scripts/check.sh` runs the full gate: build → no-sorry QC → worker protocol
-roundtrip → Jupyter E2E.
+`scripts/check.sh` runs the full verification (builds, no-sorry, boundary
+grep, strict mypy, protocol roundtrip, Jupyter E2E, sandbox proof).
 
-## Semantics
+## Documentation
 
-- **Cell atomicity.** A cell (possibly several commands) elaborates against a
-  copy of the parent `Command.State`; the candidate state is committed as a
-  new snapshot only if no diagnostic has error severity. A failed cell leaves
-  committed state — including registry entries — identical to its parent.
-- **Full state, not just the environment.** Snapshots retain the complete
-  `Command.State`: namespaces/sections, `open`s, options, macro-scope
-  counters, name generators. `set_option` and a dangling `namespace` survive
-  cell boundaries; the end-of-input token is never elaborated, so open scopes
-  don't error.
-- **Protocol isolation.** Control frames travel on dedicated fds; user output
-  cannot forge a frame (`#eval` prints are additionally captured by Lean into
-  the message log and surface as info diagnostics).
-- **Interrupt = cooperative cancel, then kill + replay.** The worker runs in
-  its own session; Jupyter's interrupt reaches only the kernel, which sends a
-  `cancel` frame. A reader task sets the in-flight `IO.CancelToken`, and
-  elaboration aborts at its next checkpoint (~0.2s for tactic proofs — the
-  same mechanism the language server uses) with `status:"cancelled"` and no
-  commit. Code that never reaches a checkpoint (e.g. an interpreted `#eval`
-  loop) is escalated after a grace window: the worker is killed and the next
-  execute restarts it and replays the committed cell ledger — source replay
-  is the canonical record (scoped environment state does not pickle reliably).
-- **Document order, not execution order.** With the `jupyterlab_nbdsl`
-  extension, the frontend streams the notebook's code-cell order and sources
-  over the `nbdsl_document` comm. Running a cell first re-establishes the
-  invariant *"the snapshot for cell i is exactly the state of elaborating the
-  visible prefix through cell i"*: unchanged prefix cells reuse their cached
-  snapshots (the worker's snapshot DAG), edited or moved ones re-run
-  automatically (`↻ re-running upstream cell k…`), and an upstream failure
-  aborts the run with that cell's error. Without the comm (jupyter console),
-  execution keeps plain REPL semantics.
-- **Positions.** Diagnostic columns are Unicode code points end to end
-  (Lean's `FileMap.toPosition` ↔ Jupyter's `cursor_pos`); no byte/codepoint
-  conversion exists anywhere.
+| Doc | Contents |
+| --- | --- |
+| [docs/architecture.md](docs/architecture.md) | the three processes, worker internals (snapshots, cancellation, session cache), kernel modes, recovery matrix, extension plugins |
+| [docs/protocol.md](docs/protocol.md) | the wire protocol: framing, every op with reply shapes, conventions |
+| [docs/dsl.md](docs/dsl.md) | the NbDsl language reference, the reducibility design, parser lore |
+| [docs/plugins.md](docs/plugins.md) | bring your own DSL: the plugin contract and laws, kernelspec knobs |
+| [docs/deployment.md](docs/deployment.md) | editable install into a live Jupyter service, operational characteristics |
+| [docs/development.md](docs/development.md) | layout, gates, what each test suite proves, CI, deliberate ceilings |
 
-## Protocol (spec by example: `nbdsl_kernel/tests/roundtrip.py`)
+## Layout
 
-Ops: `execute {request_id, parent_snapshot, cell_id, code}` →
-`{status: ok|error|cancelled, snapshot, diagnostics, sorries, outputs}`;
-`is_complete {code}` → `{result: complete|incomplete|invalid}` (parse-only,
-Lean's parser decides — powers `do_is_complete`); `complete {code, cursor}` →
-`{matches, cursor_start, cursor_end}` (type-aware dot completion — `x.` offers
-members of `x`'s whnf-reduced type head — falling back to identifier-prefix
-completion against the snapshot environment, `open`-aware; cursor offsets are
-code points); `inspect {code, cursor}` → `{found, hover?, name?, type?,
-doc?}`; `cancel {request_id}` (out-of-band, no reply of its own — the
-cancelled execute replies); `save_session` / `load_session {path}` (committed
-state as an olean + scope JSON — the kernel's restart cache, keyed by the
-ledger, with source replay as the fallback); `describe`. Unknown ops answer
-`{"status": "unsupported"}`.
+`worker/` (mathlib-free Lean core, the stable plugin dependency) ·
+`dsls/nbdsl/` (reference DSL plugin) · `nbdsl_kernel/` (Python adapter +
+suites) · `jupyterlab_nbdsl/` (Lab extension) · `dsl-notebooks/` (live
+notebooks) · `docs/`.
 
-Kernelspec knobs (`install.py`): `--prelude-module`, `--init-cell` (commands
-run once after worker start as the session base — how a DSL sets
-`set_option` defaults), `--sandbox`, `--name`, `--display-name`.
+## Status
 
-## Bring your own DSL
-
-The notebook core is DSL-agnostic, and the boundary is enforced (the QC gate
-fails if `Worker.*` ever imports a DSL module). A custom or replacement DSL
-is:
-
-1. a Lean package (or extra modules here) whose elaborators may `import
-   Worker.Output` and call `Worker.emitOutput` for rich MIME outputs — the
-   dependency arrow is always DSL → Worker;
-2. a prelude module importing your DSL surface;
-3. a kernelspec: `python -m nbdsl_kernel.install --project <your project>
-   --prelude-module Your.Prelude --name yourdsl`.
-
-Nothing in the worker, Python kernel, or Lab extension changes. `dsls/nbdsl`
-is the reference plugin: `require «nbdsl-worker» from …` (path or git),
-build `nbdsl_worker` once, done — the kernel resolves the binary from the
-project's build tree, a git dependency's, or a path dependency's (read from
-the Lake manifest). One cosmetic seam: `prefer` is hardcoded as a keyword in
-the highlighter; new `#commands` highlight automatically.
-
-## Milestone 2 remaining (seams left)
-
-JupyterLab extension for cell-order tracking, virtual-document source maps
-with prefix invalidation, InfoTree-backed (expected-type-aware) completion
-and hover to replace the environment-scan versions, snapshot pickling as a
-validated cache, OS-level sandboxing for untrusted notebooks.
+Working POC, verified at four levels: bare-worker protocol roundtrip,
+Jupyter-client E2E, live-service execution, and CI on every push. Design
+ceilings are deliberate and listed in
+[docs/development.md](docs/development.md#ceilings--parked-work-deliberate-not-forgotten).
