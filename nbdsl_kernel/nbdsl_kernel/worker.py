@@ -36,11 +36,13 @@ class WorkerDied(RuntimeError):
 
 def find_worker_exe(project_root: str | Path) -> Path | None:
     """The built worker binary for a Lean project — in its own build tree, or
-    in a dependency's (git deps live under .lake/packages; path deps build in
-    place at the directory the Lake manifest records). None if not built."""
+    in a dependency's (git deps live under .lake/packages, one level deeper
+    when the require names a subDir package; path deps build in place at the
+    directory the Lake manifest records). None if not built."""
     root = Path(project_root)
     candidates = [root / ".lake/build/bin/nbdsl_worker",
-                  *root.glob(".lake/packages/*/.lake/build/bin/nbdsl_worker")]
+                  *root.glob(".lake/packages/*/.lake/build/bin/nbdsl_worker"),
+                  *root.glob(".lake/packages/*/*/.lake/build/bin/nbdsl_worker")]
     manifest = root / "lake-manifest.json"
     if manifest.exists():
         for pkg in json.loads(manifest.read_text()).get("packages", []):
