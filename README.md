@@ -21,7 +21,12 @@ NbDsl               the DSL: command elaborators, persistent registry,
 
 ## Layout
 
-- `nbdsl/` — Lake package (Lean `v4.32.0`, mathlib `v4.32.0`):
+- `worker/` — Lake package `nbdsl-worker`, the notebook core: framed
+  protocol, per-cell elaboration, snapshot DAG, cancellation, query services,
+  and the `Worker.Output` sink. Mathlib-free (builds in seconds); the stable
+  dependency surface for DSL plugins.
+- `dsls/nbdsl/` — the reference DSL plugin: a Lake package (`require`s the
+  worker by path, mathlib `v4.32.0`):
   - `NbDsl/Basic.lean` — `LargeCat`/`Object` over Mathlib `Cat`; `Object` is a
     transparent `def` so home categories are recovered by head-symbol matching.
   - `NbDsl/Registry.lean` — preferred-functor registry as a
@@ -30,12 +35,7 @@ NbDsl               the DSL: command elaborators, persistent registry,
   - `NbDsl/Syntax.lean` — `let X := t ∈ C` (elaborates to a kernel-checked
     `noncomputable def X : Object C := t`), `prefer F`, `#home X`, `#via X ∈ C`.
   - `NbDsl/Std.lean` — `Sets`, `Groups`, forgetful functor.
-  - `NbDsl/Notebook.lean` — the fixed prelude every session imports.
-  - `NbDsl/Notebook/Output.lean` — request-local MIME output sink (rendering
-    never enters semantic state).
-  - `Worker*.lean` — the persistent worker: framed protocol, per-cell
-    elaboration (core-frontend pattern, reimplemented), snapshot DAG,
-    diagnostics with Unicode code-point columns, sorry reports.
+  - `NbDsl/Notebook.lean` — the prelude module (the plugin's entry point).
 - `nbdsl_kernel/` — Python package: `kernel.py` (ipykernel subclass),
   `worker.py` (spawn/framing/replay ledger), `install.py` (kernelspec),
   `tests/roundtrip.py` (protocol spec by example), `tests/test_e2e.py`
@@ -47,7 +47,7 @@ NbDsl               the DSL: command elaborators, persistent registry,
 ```bash
 just cache && just build
 uv venv .venv && uv pip install -p .venv/bin/python -e 'nbdsl_kernel[test]'
-.venv/bin/python -m nbdsl_kernel.install --project "$PWD/nbdsl"
+.venv/bin/python -m nbdsl_kernel.install --project "$PWD/dsls/nbdsl"
 jupyter lab notebooks/demo.ipynb   # kernel: "NbDsl (Lean 4)"
 ```
 
@@ -117,11 +117,12 @@ is:
 3. a kernelspec: `python -m nbdsl_kernel.install --project <your project>
    --prelude-module Your.Prelude --name yourdsl`.
 
-Nothing in the worker, Python kernel, or Lab extension changes. (For a
-separate downstream package, `require` this repo's `nbdsl` package for the
-`Worker` library and build `nbdsl_worker` there — the kernel finds the
-binary in either build tree. The one cosmetic seam: `prefer` is hardcoded as
-a keyword in the highlighter; new `#commands` highlight automatically.)
+Nothing in the worker, Python kernel, or Lab extension changes. `dsls/nbdsl`
+is the reference plugin: `require «nbdsl-worker» from …` (path or git),
+build `nbdsl_worker` once, done — the kernel resolves the binary from the
+project's build tree, a git dependency's, or a path dependency's (read from
+the Lake manifest). One cosmetic seam: `prefer` is hardcoded as a keyword in
+the highlighter; new `#commands` highlight automatically.
 
 ## Milestone 2 remaining (seams left)
 

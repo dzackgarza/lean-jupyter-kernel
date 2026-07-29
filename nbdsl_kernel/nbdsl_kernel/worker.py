@@ -22,6 +22,24 @@ class WorkerDied(RuntimeError):
     pass
 
 
+def find_worker_exe(project_root):
+    """The built worker binary for a Lean project — in its own build tree, or
+    in a dependency's (git deps live under .lake/packages; path deps build in
+    place at the directory the Lake manifest records). None if not built."""
+    project_root = Path(project_root)
+    candidates = [project_root / ".lake/build/bin/nbdsl_worker",
+                  *project_root.glob(
+                      ".lake/packages/*/.lake/build/bin/nbdsl_worker")]
+    manifest = project_root / "lake-manifest.json"
+    if manifest.exists():
+        for pkg in json.loads(manifest.read_text()).get("packages", []):
+            if pkg.get("type") == "path":
+                candidates.append(
+                    (project_root / pkg.get("dir", ".")).resolve()
+                    / ".lake/build/bin/nbdsl_worker")
+    return next((c for c in candidates if c.exists()), None)
+
+
 class _FrameReader:
     def __init__(self, fd):
         self.fd = fd
@@ -64,7 +82,7 @@ class WorkerClient:
 
     # -- lifecycle ---------------------------------------------------------
 
-    def _maybe_sandbox(self, cmd):
+    def _maybe_sandbox(self, cmd, worker_exe):
         """NBDSL_SANDBOX=1: run the worker under bubblewrap — project and
         toolchain read-only, private /tmp, no network, no foreign pids, dies
         with the kernel. A process boundary is not a security sandbox; this
@@ -74,7 +92,7 @@ class WorkerClient:
         if os.environ.get("NBDSL_SANDBOX") != "1":
             return cmd
         home = str(Path.home())
-        return [
+        wrapped = [
             "bwrap",
             "--ro-bind", "/usr", "/usr",
             "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64",
@@ -83,33 +101,35 @@ class WorkerClient:
             "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
             "--ro-bind", str(self.project_root), str(self.project_root),
             "--ro-bind", f"{home}/.elan", f"{home}/.elan",
+        ]
+        # A path-dependency worker package lives outside the project root
+        # (exe = <pkg>/.lake/build/bin/nbdsl_worker) — bind it read-only too.
+        pkg_root = worker_exe.parents[3]
+        if not pkg_root.is_relative_to(self.project_root):
+            wrapped += ["--ro-bind", str(pkg_root), str(pkg_root)]
+        return wrapped + [
             "--setenv", "HOME", home,
             "--unshare-net", "--unshare-pid",
             "--die-with-parent",
         ] + cmd
 
     def _worker_exe(self):
-        """The built worker binary — in this project's build tree, or (when
-        the project is a downstream DSL package that `require`s the worker
-        library) in the dependency's build tree."""
-        candidates = [self.project_root / ".lake/build/bin/nbdsl_worker",
-                      *self.project_root.glob(
-                          ".lake/packages/*/.lake/build/bin/nbdsl_worker")]
-        for c in candidates:
-            if c.exists():
-                return str(c)
-        raise WorkerDied(
-            f"nbdsl_worker not built for {self.project_root}; run "
-            "`lake build nbdsl_worker` there")
+        exe = find_worker_exe(self.project_root)
+        if exe is None:
+            raise WorkerDied(
+                f"nbdsl_worker not built for {self.project_root}; run "
+                "`lake build nbdsl_worker` there")
+        return exe
 
     def start(self):
         req_r, req_w = os.pipe()
         rep_r, rep_w = os.pipe()
+        worker_exe = self._worker_exe()
         self.proc = subprocess.Popen(
             self._maybe_sandbox(
-                ["lake", "env", self._worker_exe(),
+                ["lake", "env", str(worker_exe),
                  "--req-fd", str(req_r), "--rep-fd", str(rep_w),
-                 "--prelude-module", self.prelude]),
+                 "--prelude-module", self.prelude], worker_exe),
             cwd=self.project_root,
             pass_fds=(req_r, rep_w),
             stdin=subprocess.DEVNULL,

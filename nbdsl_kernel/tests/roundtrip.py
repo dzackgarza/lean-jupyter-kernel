@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-NBDSL = REPO / "nbdsl"
+NBDSL = REPO / "dsls/nbdsl"
 TIMEOUT = 300.0  # first prelude import loads mathlib oleans; give it room
 
 
@@ -57,7 +57,7 @@ class Worker:
         req_r, req_w = os.pipe()
         rep_r, rep_w = os.pipe()
         self.proc = subprocess.Popen(
-            ["lake", "env", ".lake/build/bin/nbdsl_worker",
+            ["lake", "env", str(REPO / "worker/.lake/build/bin/nbdsl_worker"),
              "--req-fd", str(req_r), "--rep-fd", str(rep_w),
              "--prelude-module", prelude],
             cwd=NBDSL,

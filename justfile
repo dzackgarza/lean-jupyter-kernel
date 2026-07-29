@@ -18,17 +18,19 @@ default:
 
 # Fetch Mathlib's prebuilt compilation cache
 cache:
-    @cd nbdsl && lake exe cache get
+    @cd dsls/nbdsl && lake exe cache get
 
-# Build the NbDsl library and the worker executable
+# Build the core worker package and the reference DSL plugin
 build:
-    @cd nbdsl && lake build NbDsl nbdsl_worker
+    @cd worker && lake build nbdsl_worker
+    @cd dsls/nbdsl && lake build NbDsl
 
 # Run the full repository QC gate
 test: build
-    @just -f ~/ai-review-ci/justfiles/lean.just -d nbdsl lean-no-sorry
-    @! grep -rn '^import NbDsl' nbdsl/Worker.lean nbdsl/Worker/ || \
-        { echo 'BOUNDARY: Worker.* must never import DSL modules'; exit 1; }
+    @just -f ~/ai-review-ci/justfiles/lean.just -d worker lean-no-sorry
+    @just -f ~/ai-review-ci/justfiles/lean.just -d dsls/nbdsl lean-no-sorry
+    @! grep -rn '^import NbDsl' worker/ --include='*.lean' || \
+        { echo 'BOUNDARY: the core must never import DSL modules'; exit 1; }
     @python3 nbdsl_kernel/tests/roundtrip.py
 
 [private]

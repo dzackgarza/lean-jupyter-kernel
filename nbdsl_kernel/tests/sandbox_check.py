@@ -27,12 +27,12 @@ def infos(rep):
 
 
 def main():
-    w = WorkerClient(REPO / "nbdsl")
+    w = WorkerClient(REPO / "dsls/nbdsl")
     w.start()
 
     rep = w.execute('#eval IO.FS.writeFile "pwned.txt" "x"')
     assert rep["status"] == "error", rep
-    assert not (REPO / "nbdsl" / "pwned.txt").exists()
+    assert not (REPO / "dsls/nbdsl" / "pwned.txt").exists()
     print("ok: project tree is read-only inside the sandbox")
 
     rep = w.execute('#eval IO.FS.writeFile "/tmp/nbdsl-sbx.txt" "x"')

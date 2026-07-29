@@ -13,6 +13,8 @@ from pathlib import Path
 
 from jupyter_client.kernelspec import KernelSpecManager
 
+from .worker import find_worker_exe
+
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
@@ -32,9 +34,7 @@ def main():
     project = Path(args.project).resolve()
     if not (project / "lean-toolchain").exists():
         sys.exit(f"error: {project} has no lean-toolchain — not a Lean project")
-    workers = [project / ".lake/build/bin/nbdsl_worker",
-               *project.glob(".lake/packages/*/.lake/build/bin/nbdsl_worker")]
-    if not any(w.exists() for w in workers):
+    if find_worker_exe(project) is None:
         sys.exit(f"error: worker not built — run `lake build nbdsl_worker` in {project}")
 
     display = args.display_name or f"{args.prelude_module.split('.')[0]} (Lean 4)"
