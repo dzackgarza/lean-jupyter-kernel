@@ -46,6 +46,15 @@ class NbDslKernel(Kernel):
                          f"Starting Lean worker ({self.worker.project_root})…\n")
             self.worker.start()
             self._started = True
+        elif self.worker.proc is None or self.worker.proc.poll() is not None:
+            # The worker died — normally from an interrupt's SIGINT. Rebuild
+            # the committed state by replaying the ledger: source replay is
+            # the canonical record (scoped env state does not pickle).
+            self._stream("stderr",
+                         "Lean worker died; restarting and replaying "
+                         "committed cells…\n")
+            n = self.worker.restart_and_replay()
+            self._stream("stderr", f"Replayed {n} cells.\n")
 
     def _publish_reply(self, rep):
         for diag in rep.get("diagnostics", []):
@@ -95,6 +104,12 @@ class NbDslKernel(Kernel):
                           if d["severity"] == "error"),
                          {"message": "execution failed"})
             return self._error_reply("LeanError", first["message"])
+        except KeyboardInterrupt:
+            # Jupyter interrupts SIGINT the whole process group; the worker is
+            # (being) killed. Kill it outright so no stale elaboration lingers;
+            # the next execute restarts and replays the committed prefix.
+            self.worker.kill()
+            return self._error_reply("Interrupted", "execution interrupted")
         except WorkerDied as e:
             return self._error_reply("WorkerDied", str(e))
         finally:
@@ -120,20 +135,6 @@ class NbDslKernel(Kernel):
 
     def do_inspect(self, code, cursor_pos, detail_level=0, omit_sections=()):
         return {"status": "ok", "found": False, "data": {}, "metadata": {}}
-
-    def do_interrupt(self):
-        # No cooperative cancel yet (M1): kill the worker and rebuild the
-        # committed state by replaying the ledger — replay IS the
-        # deterministic-restart invariant.
-        if self._started:
-            self._stream("stderr", "Interrupt: restarting Lean worker and "
-                                   "replaying committed cells…\n")
-            try:
-                n = self.worker.restart_and_replay()
-                self._stream("stderr", f"Replayed {n} cells.\n")
-            except WorkerDied as e:
-                self._started = False
-                self._stream("stderr", f"Replay failed: {e}\n")
 
     def do_shutdown(self, restart):
         if self._started:
