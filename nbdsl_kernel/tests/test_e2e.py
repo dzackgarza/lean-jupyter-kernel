@@ -40,9 +40,12 @@ def run_cell(kc: Any, code: str,
                 and msg["content"]["execution_state"] == "idle"):
             break
         outputs.append(msg)
-    reply = kc.get_shell_msg(timeout=timeout)
-    assert reply["parent_header"]["msg_id"] == msg_id
-    return reply["content"], outputs
+    while True:
+        # Skip stale replies from earlier requests (e.g. startup kernel_info
+        # exchanges racing the first execute) instead of asserting on them.
+        reply = kc.get_shell_msg(timeout=timeout)
+        if reply["parent_header"].get("msg_id") == msg_id:
+            return reply["content"], outputs
 
 
 def texts(outputs: list[Any], name: str | None = None) -> str:

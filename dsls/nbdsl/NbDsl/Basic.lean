@@ -1,9 +1,13 @@
 /-
 Foundation of the notebook DSL: a thin adapter over Mathlib's category theory.
 
-`Object` is a transparent `def` (not an `abbrev`) on purpose: the registry
-recovers an object's home category by head-symbol matching on `NbDsl.Object C`,
-so the head must survive in elaborated types without unfolding eagerly.
+`Object` is a `def` (not an `abbrev`) so the head symbol `NbDsl.Object C`
+survives in DECLARED types — the registry recovers an object's home category
+by head-symbol matching on declaration types, which reducibility does not
+rewrite. It is `@[reducible]` so that instance search and coercions unfold
+it: an `X : Object Groups` then inherits the bundled category's `CoeSort`,
+so `∀ a b : X, …` speaks about elements of the carrier and element-level
+mathematics applies to DSL objects directly.
 -/
 import Mathlib.CategoryTheory.Category.Cat
 
@@ -15,6 +19,6 @@ open CategoryTheory
 abbrev LargeCat := Cat.{0, 1}
 
 /-- An object of a bundled category. -/
-def Object (C : LargeCat) : Type 1 := C.α
+@[reducible] def Object (C : LargeCat) : Type 1 := C.α
 
 end NbDsl

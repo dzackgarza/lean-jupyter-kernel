@@ -129,9 +129,18 @@ def main() -> None:
     assert any("2" in d["message"] for d in infos(rep)), rep
     print("ok: #eval cell commits a snapshot and reports its info message")
 
+    # Multi-command cells accumulate EVERY command's messages (regression:
+    # elabCommandTopLevel resets the log per command; the frontend loop must
+    # merge or only the last command's diagnostics survive).
+    rep = w.execute("#eval 10\n#eval 20")
+    joined = " ".join(d["message"] for d in infos(rep))
+    assert "10" in joined and "20" in joined, rep
+    print("ok: multi-command cell keeps every command's messages")
+
     # Failure isolation: an error cell must not advance the snapshot.
+    before = w.request("describe")["snapshot"]
     rep = w.execute('def bad : Nat := "string"')
-    assert rep["status"] == "error" and rep["snapshot"] == 1, rep
+    assert rep["status"] == "error" and rep["snapshot"] == before, rep
     assert errors(rep), rep
     print("ok: error cell rolls back to parent snapshot")
 
@@ -189,6 +198,9 @@ def main() -> None:
     assert rep["status"] == "ok", rep
     assert rep["sorries"] and "1 + 1 = 2" in rep["sorries"][0]["goal"], rep
     print("ok: sorries reported with goals")
+    rep = w.execute("example : 2 + 2 = 4 := by sorry\n#eval 0")
+    assert rep["status"] == "ok" and rep["sorries"], rep
+    print("ok: sorry survives a later command in the same cell")
 
     # do-block let: term-level `let x ← e` must not collide with the DSL
     # let command (the documented parser trap).
@@ -217,6 +229,16 @@ def main() -> None:
     path = next((b for b in bundles if "application/vnd.nbdsl.path+json" in b), None)
     assert path is not None and "text/plain" in path, rep
     print("ok: DSL sequence (prefer / let / #home / #via) with structured output")
+
+    # Predicates as category methods: defined in the DSL, registered,
+    # enumerable, and decidable on declared objects.
+    rep = w.execute("predicate RTAbelian (G ∈ Groups) := ∀ a b : G, a * b = b * a")
+    assert rep["status"] == "ok" and not errors(rep), rep
+    rep = w.execute("#methods Groups")
+    assert any("RTAbelian" in d["message"] for d in infos(rep)), rep
+    rep = w.execute("example : RTAbelian G := by decide")  # PUnit group is abelian
+    assert rep["status"] == "ok" and not errors(rep), rep
+    print("ok: predicate command defines, registers, and decides on objects")
 
     # Registry participates in rollback: a prefer inside a failing cell must
     # not survive it (env-extension state is snapshot state).

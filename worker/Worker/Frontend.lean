@@ -73,7 +73,17 @@ private partial def loop (ictx : Parser.InputContext)
       cancelTk?
     }
     match ← EIO.toIO' (((Command.elabCommandTopLevel cmd) cmdCtx).run cmdState) with
-    | .ok (_, cmdState') => loop ictx cancelTk? ps cmdState'
+    | .ok (_, cmdState') =>
+        -- `elabCommandTopLevel` RESETS messages and info trees per command
+        -- (modern Lean reports them through the snapshot machinery instead);
+        -- a multi-command cell must accumulate them across commands here or
+        -- only the last command's diagnostics and sorries survive.
+        let merged := { cmdState' with
+          messages := cmdState.messages ++ cmdState'.messages
+          infoState := { cmdState'.infoState with
+            trees := cmdState'.infoState.trees.foldl (·.push ·)
+              cmdState.infoState.trees } }
+        loop ictx cancelTk? ps merged
     | .error e =>
         -- Internal error (elabCommandTopLevel logs ordinary elaboration
         -- errors itself): fail the cell, keep the worker alive.

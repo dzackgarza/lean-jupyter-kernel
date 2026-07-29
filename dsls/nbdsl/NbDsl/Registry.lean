@@ -30,6 +30,26 @@ initialize preferredFunctorExt :
 def preferredFunctors (env : Environment) : Array FunctorEntry :=
   preferredFunctorExt.getState env
 
+/-- A predicate on the objects of a category — a "method" of the category,
+declared with the `predicate` command. The underlying declaration has type
+`Object C → Prop`; this registry is what makes the methods of a category
+enumerable (`#methods C`). -/
+structure PredicateEntry where
+  predName : Name
+  category : Name
+  deriving BEq, Repr, Hashable, Inhabited
+
+initialize predicateExt :
+    SimplePersistentEnvExtension PredicateEntry (Array PredicateEntry) ←
+  registerSimplePersistentEnvExtension {
+    addEntryFn := Array.push
+    addImportedFn := fun arrs => arrs.flatten
+  }
+
+def predicatesOn (env : Environment) (cat : Name) : Array Name :=
+  (predicateExt.getState env).filterMap fun e =>
+    if e.category == cat then some e.predName else none
+
 /-- Recover the home category of a declaration of type `NbDsl.Object C` by
 head-symbol matching (`Object` is a transparent `def` precisely so the head
 survives elaboration). -/

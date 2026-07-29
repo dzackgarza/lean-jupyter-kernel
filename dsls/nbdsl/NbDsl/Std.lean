@@ -3,9 +3,10 @@ Standard categories for the notebook DSL: enough of a mathematical universe
 to demonstrate declarations, membership, and preferred-functor resolution
 over genuine Mathlib category theory.
 -/
-import Mathlib.CategoryTheory.Types.Basic
-import Mathlib.Algebra.Category.Grp.Basic
-import Mathlib.Algebra.Group.PUnit
+-- All of mathlib, sage.all-style: in a notebook you want the whole library
+-- in scope. Costs worker startup time and memory, not build time (oleans
+-- come prebuilt from `lake exe cache get`).
+import Mathlib
 import NbDsl.Basic
 
 namespace NbDsl
@@ -17,11 +18,14 @@ instance (C : LargeCat) : Category (Object C) := C.str
 
 namespace Std
 
-/-- The category of (small) sets. -/
-def Sets : LargeCat := Cat.of (Type 0)
+/-- The category of (small) sets. Structure literal rather than `Cat.of`
+(a non-reducible def) so `Object Sets` reduces to `Type 0` by projection —
+which is what lets declared objects be used as types and lets `decide`
+find carrier instances. -/
+abbrev Sets : LargeCat := ⟨Type 0, inferInstance⟩
 
-/-- The category of groups. -/
-def Groups : LargeCat := Cat.of GrpCat
+/-- The category of groups. See `Sets` for why this is a structure literal. -/
+abbrev Groups : LargeCat := ⟨GrpCat, inferInstance⟩
 
 /-- Underlying-set functor, the canonical `prefer` example. -/
 def groupsToSets : Object Groups ⥤ Object Sets := forget GrpCat
