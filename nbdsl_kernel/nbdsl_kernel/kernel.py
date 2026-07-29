@@ -145,11 +145,39 @@ class NbDslKernel(Kernel):
         return out
 
     def do_complete(self, code, cursor_pos):
-        return {"status": "ok", "matches": [], "cursor_start": cursor_pos,
-                "cursor_end": cursor_pos, "metadata": {}}
+        # cursor_pos is Unicode code points — the worker's convention too.
+        empty = {"status": "ok", "matches": [], "cursor_start": cursor_pos,
+                 "cursor_end": cursor_pos, "metadata": {}}
+        if not self._started:
+            return empty
+        try:
+            rep = self.worker.request("complete", code=code,
+                                      cursor=cursor_pos, timeout=30)
+        except (WorkerDied, TimeoutError):
+            return empty
+        if rep.get("status") != "ok":
+            return empty
+        return {"status": "ok", "matches": rep.get("matches", []),
+                "cursor_start": rep.get("cursor_start", cursor_pos),
+                "cursor_end": rep.get("cursor_end", cursor_pos),
+                "metadata": {}}
 
     def do_inspect(self, code, cursor_pos, detail_level=0, omit_sections=()):
-        return {"status": "ok", "found": False, "data": {}, "metadata": {}}
+        missing = {"status": "ok", "found": False, "data": {}, "metadata": {}}
+        if not self._started:
+            return missing
+        try:
+            rep = self.worker.request("inspect", code=code,
+                                      cursor=cursor_pos, timeout=30)
+        except (WorkerDied, TimeoutError):
+            return missing
+        if rep.get("status") != "ok" or not rep.get("found"):
+            return missing
+        text = f"{rep['name']} : {rep['type']}"
+        if rep.get("doc"):
+            text += f"\n\n{rep['doc']}"
+        return {"status": "ok", "found": True,
+                "data": {"text/plain": text}, "metadata": {}}
 
     def do_shutdown(self, restart):
         if self._started:

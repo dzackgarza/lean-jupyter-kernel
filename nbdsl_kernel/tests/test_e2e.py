@@ -78,6 +78,24 @@ def test_dsl_structured_output(kernel):
     assert any("application/vnd.nbdsl.path+json" in b for b in bundles)
 
 
+def test_complete_and_inspect(kernel):
+    _, kc = kernel
+    # Self-contained: bare-name completion depends on this committed open.
+    reply, _ = run_cell(kc, "open NbDsl NbDsl.Std")
+    assert reply["status"] == "ok"
+    msg_id = kc.complete("prefer groupsToS", 16)
+    reply = kc.get_shell_msg(timeout=60)
+    assert reply["parent_header"]["msg_id"] == msg_id
+    assert "groupsToSets" in reply["content"]["matches"], reply["content"]
+    msg_id = kc.inspect("groupsToSets", 0)
+    reply = kc.get_shell_msg(timeout=60)
+    assert reply["parent_header"]["msg_id"] == msg_id
+    content = reply["content"]
+    assert content["found"], content
+    text = content["data"]["text/plain"]
+    assert "Functor" in text or "⥤" in text, text
+
+
 def test_interrupt_restart_replay(kernel):
     km, kc = kernel
     msg_id = kc.execute("def spin : IO Unit := do while true do pure ()\n#eval spin")

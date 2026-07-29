@@ -225,6 +225,23 @@ def main() -> None:
         assert rep["status"] == "ok" and rep["result"] == expected, (code, rep)
     print("ok: is_complete classifies via Lean's parser")
 
+    # --- complete / inspect (env + open-namespace aware) --------------------
+    code = "prefer groupsToS"
+    rep = w.request("complete", code=code, cursor=len(code))
+    assert rep["status"] == "ok", rep
+    assert "groupsToSets" in rep["matches"], rep
+    assert rep["cursor_start"] == code.index("groupsToS"), rep
+    print("ok: completion resolves through open namespaces")
+
+    code = "#home G"
+    rep = w.request("inspect", code=code, cursor=code.index("G"))
+    assert rep["status"] == "ok" and rep["found"], rep
+    assert rep["name"] == "G" and "Object" in rep["type"], rep
+    rep = w.request("inspect", code="groupsToSets", cursor=0)
+    assert rep["found"] and rep["name"] == "NbDsl.Std.groupsToSets", rep
+    assert rep.get("doc"), rep  # docstring surfaced
+    print("ok: inspect resolves, types, and documents identifiers")
+
     # --- cooperative cancel -------------------------------------------------
     w._rid += 1
     rid = f"r{w._rid}"

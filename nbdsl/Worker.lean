@@ -13,6 +13,7 @@ snapshot remains current and the diagnostics are reported.
 -/
 import Worker.Protocol
 import Worker.Frontend
+import Worker.Query
 import NbDsl.Notebook.Output
 
 open Worker.Protocol
@@ -142,6 +143,39 @@ def handleRequest (session : IO.Ref Session) (inflight : Inflight)
       return reply req
         [("status", Json.str "ok"),
          ("result", Json.str (Frontend.classifyInput parent.cmdState code))]
+  | .ok "complete" =>
+      let .ok code := req.getObjValAs? String "code"
+        | return reply req [("status", Json.str "error"), ("message", Json.str "missing code")]
+      let .ok cursor := req.getObjValAs? Nat "cursor"
+        | return reply req [("status", Json.str "error"), ("message", Json.str "missing cursor")]
+      let s ← session.get
+      let some parent := s.snapshots[s.current]?
+        | return reply req
+            [("status", Json.str "error"), ("message", Json.str "invalid current snapshot")]
+      let (_, start, results) := Query.completions parent.cmdState code cursor
+      return reply req
+        [("status", Json.str "ok"),
+         ("matches", Json.arr (results.map Json.str)),
+         ("cursor_start", toJson start),
+         ("cursor_end", toJson cursor)]
+  | .ok "inspect" =>
+      let .ok code := req.getObjValAs? String "code"
+        | return reply req [("status", Json.str "error"), ("message", Json.str "missing code")]
+      let .ok cursor := req.getObjValAs? Nat "cursor"
+        | return reply req [("status", Json.str "error"), ("message", Json.str "missing cursor")]
+      let s ← session.get
+      let some parent := s.snapshots[s.current]?
+        | return reply req
+            [("status", Json.str "error"), ("message", Json.str "invalid current snapshot")]
+      match ← Query.inspect parent.cmdState code cursor with
+      | none => return reply req [("status", Json.str "ok"), ("found", toJson false)]
+      | some r =>
+          return reply req
+            [("status", Json.str "ok"),
+             ("found", toJson true),
+             ("name", Json.str r.name.toString),
+             ("type", Json.str r.type),
+             ("doc", r.doc?.elim Json.null Json.str)]
   | .ok "describe" =>
       let s ← session.get
       return reply req

@@ -86,14 +86,18 @@ roundtrip → Jupyter E2E.
 Ops: `execute {request_id, parent_snapshot, cell_id, code}` →
 `{status: ok|error|cancelled, snapshot, diagnostics, sorries, outputs}`;
 `is_complete {code}` → `{result: complete|incomplete|invalid}` (parse-only,
-Lean's parser decides — powers `do_is_complete`); `cancel {request_id}`
-(out-of-band, no reply of its own — the cancelled execute replies);
-`describe`. Unknown ops answer `{"status": "unsupported"}` — the
-non-breaking seam for milestone 2's `complete` / `inspect`.
+Lean's parser decides — powers `do_is_complete`); `complete {code, cursor}` →
+`{matches, cursor_start, cursor_end}` (identifier-prefix completion against
+the snapshot environment, aware of the current namespace and `open`s; cursor
+offsets are code points); `inspect {code, cursor}` → `{found, name, type,
+doc}` (resolution the way a cell would resolve, type via the pretty printer,
+docstring included); `cancel {request_id}` (out-of-band, no reply of its own
+— the cancelled execute replies); `describe`. Unknown ops answer
+`{"status": "unsupported"}`.
 
-## Milestone 2 (not built; seams left)
+## Milestone 2 remaining (seams left)
 
-JupyterLab extension (cell-order tracking, CodeMirror highlighting),
-virtual-document source maps with prefix invalidation, InfoTree-backed
-completion and inspection, snapshot pickling as a validated cache,
-OS-level sandboxing for untrusted notebooks.
+JupyterLab extension for cell-order tracking, virtual-document source maps
+with prefix invalidation, InfoTree-backed (expected-type-aware) completion
+and hover to replace the environment-scan versions, snapshot pickling as a
+validated cache, OS-level sandboxing for untrusted notebooks.
