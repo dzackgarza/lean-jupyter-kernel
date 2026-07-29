@@ -9,6 +9,7 @@ class never touches fds.
 import json
 import os
 import select
+import signal
 import subprocess
 import threading
 from pathlib import Path
@@ -159,7 +160,15 @@ class WorkerClient:
 
     def kill(self):
         if self.proc and self.proc.poll() is None:
-            self.proc.kill()
+            # `lake env` FORKS the worker rather than exec'ing it, so killing
+            # proc.pid alone kills only the wrapper and a busy worker (e.g. an
+            # interpreted infinite loop, immune to EOF) survives as a spinning
+            # orphan — observed. The worker is its own session/process-group
+            # leader (start_new_session), so kill the whole group.
+            try:
+                os.killpg(self.proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                self.proc.kill()
             self.proc.wait()
 
     def shutdown(self, timeout=10):
