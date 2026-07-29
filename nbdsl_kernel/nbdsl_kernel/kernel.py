@@ -29,7 +29,7 @@ JupyterReply = dict[str, object]
 
 class NbDslKernel(Kernel):
     implementation = "nbdsl"
-    implementation_version = "0.1"
+    implementation_version = "1.0"
     banner = "NbDsl — a Lean 4 elaborated DSL"
     language_info = {
         "name": "lean4",
