@@ -1,0 +1,16 @@
+[project]
+name = "nbdsl-kernel"
+version = "0.1.0"
+description = "Jupyter wrapper kernel for the nbdsl Lean 4 elaborated DSL"
+requires-python = ">=3.11"
+dependencies = ["ipykernel>=6.9"]
+
+[project.optional-dependencies]
+test = ["jupyter_client>=8", "pytest"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["nbdsl_kernel"]
