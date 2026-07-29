@@ -166,6 +166,54 @@ def test_interrupt_restart_replay(kernel):
         [m["msg_type"] for m in outputs]
 
 
+def test_uncacheable_state_falls_back_to_replay(kernel):
+    km, kc = kernel
+    # An open `section` makes the state uncacheable (the worker refuses to
+    # save and the cache key is dropped), so the next worker death must
+    # recover by source replay — the validated-cache miss path.
+    reply, _ = run_cell(kc, "section")
+    assert reply["status"] == "ok"
+    msg_id = kc.execute(
+        "def spin2 : IO Unit := do while true do pure ()\n#eval spin2")
+    try:
+        kc.get_shell_msg(timeout=5)
+        pytest.fail("infinite cell returned unexpectedly")
+    except queue.Empty:
+        pass
+    km.interrupt_kernel()
+    reply = kc.get_shell_msg(timeout=STARTUP)
+    assert reply["parent_header"]["msg_id"] == msg_id
+    while True:
+        msg = kc.get_iopub_msg(timeout=30)
+        if (msg["parent_header"].get("msg_id") == msg_id
+                and msg["msg_type"] == "status"
+                and msg["content"]["execution_state"] == "idle"):
+            break
+    reply, outputs = run_cell(kc, "#eval x + 1")
+    assert reply["status"] == "ok"
+    text = texts(outputs)
+    assert "42" in text
+    assert "Replayed" in text and "Restored session" not in text, text
+    reply, _ = run_cell(kc, "end")  # close the section again
+    assert reply["status"] == "ok"
+
+
+def _await_status(kc, timeout=15):
+    while True:
+        msg = kc.get_iopub_msg(timeout=timeout)
+        if (msg["msg_type"] == "comm_msg"
+                and msg["content"].get("data", {}).get("type") == "status"):
+            return msg["content"]["data"]
+
+
+def _drain_iopub(kc):
+    while True:
+        try:
+            kc.get_iopub_msg(timeout=0.5)
+        except queue.Empty:
+            return
+
+
 def test_init_cell():
     import os
     km, kc = start_new_kernel(
@@ -175,6 +223,22 @@ def test_init_cell():
         reply, outputs = run_cell(kc, "#eval initVal + 1")
         assert reply["status"] == "ok", reply
         assert "100" in texts(outputs)
+    finally:
+        kc.stop_channels()
+        km.shutdown_kernel(now=False)
+
+
+def test_init_cell_failure_is_loud():
+    import os
+    km, kc = start_new_kernel(
+        kernel_name="nbdsl", startup_timeout=60,
+        env={**os.environ, "NBDSL_INIT": 'def broken : Nat := "not a Nat"'})
+    try:
+        # A broken kernelspec must fail every execute, typed — never run
+        # silently without the configured session defaults.
+        reply, _ = run_cell(kc, "#eval 1 + 1")
+        assert reply["status"] == "error", reply
+        assert reply["ename"] == "InitCellError", reply
     finally:
         kc.stop_channels()
         km.shutdown_kernel(now=False)
@@ -206,10 +270,30 @@ def test_document_order_semantics(kernel):
     assert reply["status"] == "ok", reply
     assert "re-running" not in texts(outputs), texts(outputs)
 
-    # A broken upstream cell surfaces as this cell's failure, atomically.
+    # The kernel's staleness computation is contract: an upstream edit marks
+    # the edited cell and everything after it stale, nothing else.
+    _drain_iopub(kc)
+    _send_document(kc, comm_id, [("cellA", "def base : Nat := 7"),
+                                 ("cellB", "#eval base + 1")])
+    status = _await_status(kc)
+    assert status["stale"] == ["cellA", "cellB"], status
+    assert status["fresh"] == [], status
+    reply, outputs = _exec_cell(kc, "#eval base + 1", "cellB")
+    assert reply["status"] == "ok"
+    assert "8" in texts(outputs)
+    _drain_iopub(kc)
+    _send_document(kc, comm_id, [("cellA", "def base : Nat := 7"),
+                                 ("cellB", "#eval base + 1")])
+    status = _await_status(kc)
+    assert status["fresh"] == ["cellA", "cellB"], status
+    assert status["stale"] == [], status
+
+    # A broken upstream cell surfaces as this cell's failure, atomically —
+    # typed as UpstreamError, naming the offending cell.
     _send_document(kc, comm_id, [("cellA", 'def base : Nat := "no"'),
                                  ("cellB", "#eval base + 1")])
     reply, outputs = _exec_cell(kc, "#eval base + 1", "cellB")
     assert reply["status"] == "error", reply
+    assert reply["ename"] == "UpstreamError", reply
     assert "upstream cell 1" in reply["evalue"], reply
 

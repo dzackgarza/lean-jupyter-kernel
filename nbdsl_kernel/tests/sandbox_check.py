@@ -15,8 +15,10 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "nbdsl_kernel"))
 
 if shutil.which("bwrap") is None:
-    print("SKIP: bwrap not installed")
-    sys.exit(0)
+    # Hard dependency of this proof: without it nothing is verified, so fail
+    # loudly instead of letting the caller's pipeline read green.
+    print("FAIL: bwrap is required to verify the sandbox", file=sys.stderr)
+    sys.exit(1)
 
 os.environ["NBDSL_SANDBOX"] = "1"
 from nbdsl_kernel.worker import WorkerClient  # noqa: E402

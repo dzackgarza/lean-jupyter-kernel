@@ -244,7 +244,7 @@ def main() -> None:
     assert rep["name"] == "G" and "Object" in rep["type"], rep
     rep = w.request("inspect", code="groupsToSets", cursor=0)
     assert rep["found"] and rep["name"] == "NbDsl.Std.groupsToSets", rep
-    assert rep.get("doc"), rep  # docstring surfaced
+    assert "Underlying-set functor" in (rep.get("doc") or ""), rep
     print("ok: inspect resolves, types, and documents identifiers")
 
     # Type-aware dot completion: x : Nat → members of Nat.
