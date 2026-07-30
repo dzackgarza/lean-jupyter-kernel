@@ -2,15 +2,29 @@
 
 > Tier: workstream / organizational
 > Parent plan: root / researcher-facing programme
-> Externalized fit: the single programme-sized `lean-jupyter-kernel` draft PR; issues
-> #2–#8 provide public traceability only
-> Delivery constraint: every `lean-jupyter-kernel` code, packaging, CI, governance
+> Externalized fit: the single programme-sized `lean-jupyter-kernel` draft PR; it closes
+> #2, #3, #4, and #6 and references the direct-to-main and post-merge work in #5, #7,
+> and #8
+> Delivery constraint: every `lean-jupyter-kernel` code, packaging, CI, repository
 > configuration, compatibility, and release-control change in this programme ships in
 > this one PR
 
+## Contents
+
+- Researcher-visible after-state
+- PR claim and externalization fit
+- Before and after contract
+- Scope, constraints, and preserved behavior
+- Fixed design decisions
+- Execution graph
+- Workstreams 1–7
+- System-level proof matrix
+- Non-goals and stop conditions
+- Completion condition and public traceability
+
 ## Researcher-visible after-state
 
-A researcher installs one exact v1.x release, selects a Lean project and plugin, and
+A researcher installs exact release `v1.1.0`, selects a Lean project and plugin, and
 starts the installed kernel in ordinary Jupyter or JupyterLab. The kernel starts the
 worker built from the declared immutable kernel source under the declared Lean
 toolchain. This remains true when the worker is a direct local path dependency or is
@@ -32,11 +46,11 @@ The installed JupyterLab package is the governed, built extension artifact. It a
 in a clean JupyterLab 4 environment. If this PR changes visible frontend behavior, the
 changed behavior is rendered and inspected in real JupyterLab.
 
-One machine-readable compatibility identity connects the Lean toolchain, worker,
-adapter, extension, plugin API, wire protocol, exact kernel commit, and exact tag.
-Package declarations, runtime observations, downstream provenance, CI qualification,
-and tag readback agree with that identity. Live `main` protection admits changes through
-PRs and required CI and forbids force pushes and branch deletion.
+One authored `release.toml` owns the static compatibility contract. Generated package
+declarations consume it; build provenance adds the exact non-self-referential commit and
+artifact hashes. Runtime observations, downstream provenance, CI qualification, package
+registries, and tag readback agree with that derived identity. Live `main` protection
+admits changes through PRs and required CI and forbids force pushes and branch deletion.
 
 The programme ends only after `lean-cas-dsl` adopts the published immutable identity
 through both dependency channels and repeats its clean build, semantic conformance,
@@ -69,8 +83,7 @@ Plan fit:
 - Tree root: this researcher-facing compatibility and release programme.
 - PR claim set: all `lean-jupyter-kernel` work described here, in one PR.
 - Public traceability: #2–#8.
-- Milestone: the governed v1.x release; select the exact SemVer before editing governed
-  release versions.
+- Milestone and release identity: `1.1.0` / `v1.1.0`.
 - Issues to close on merge: only requirements fully satisfied by the kernel PR at merge.
 - Issues to reference: any issue whose release publication or downstream repin
   obligation remains open.
@@ -78,7 +91,8 @@ Plan fit:
   installation, exact-candidate consumer qualification, compatibility consistency, and
   readiness of exact-head release controls.
 - Proof completed after merge: qualification of the actual release commit, tag-to-commit
-  readback, and consumer adoption of the published identity.
+  readback, publication to GitHub, PyPI, and npm, and consumer adoption of the
+  published identity.
 
 Do not split kernel work into stacked or subsystem PRs. Commits may provide reviewable
 checkpoints inside this PR, but no checkpoint narrows the PR's final claim.
@@ -92,9 +106,9 @@ checkpoints inside this PR, but no checkpoint narrows the PR's final claim.
 | Transport | Dedicated framed control descriptors and typed replies | Existing isolation remains, and both sides advertise and validate the governed wire identity |
 | Adapter installation | Kernelspec install and several worker lookup layouts work from developer-oriented builds | Built adapter installation starts the intended worker from clean local-path and nested-Git/Lake projects and reads back its provenance |
 | Frontend distribution | Node build and tests exist; Python and npm versions disagree; a release wheel is unproved | One versioned wheel contains the built extension and activates in clean JupyterLab 4 |
-| Compatibility | Versions and toolchains are distributed across package files | One authoritative record validates every declaration and runtime identity and rejects mismatch |
+| Compatibility | Versions and toolchains are independently authored across package files | `release.toml` is the only authored static contract; generated projections, build provenance, artifacts, and runtime readback derive from it and reject mismatch |
 | External consumer | Required synchronization and runtime proof are reported but unverified here | Both dependency channels name one immutable kernel; exact candidate and published release pass the real Sage/Jupyter boundary |
-| Release | CI does not bind all claims to one exact release identity | The actual tag target passes exact-head qualification, the tag resolves to that commit, and the consumer adopts it |
+| Release | The broad `v1` release points at 1.0.0 source and publishes no installable artifacts | `v1.1.0` publishes the governed Lean source, Python distributions, npm package, checksums, and provenance from one qualified commit, then the consumer adopts it |
 | Governance | Required live branch rules are not proved | Native GitHub protection is configured and read back from the live repository |
 
 ## Scope, constraints, and preserved behavior
@@ -108,8 +122,9 @@ checkpoints inside this PR, but no checkpoint narrows the PR's final claim.
 - `dsls/nbdsl/` as the in-repository reference conformance profile.
 - `jupyterlab_nbdsl/` build, wheel contents, version alignment, clean installation,
   activation, and changed-behavior browser proof.
-- A repository-owned compatibility record, validator, negative mismatch proof, CI
-  composition, release-head qualification, and live ruleset readback.
+- The authoritative `release.toml`, generated package projections, build-time provenance,
+  negative mismatch proof, CI composition, release-head qualification, registry
+  publication, and live ruleset readback.
 - Exact-candidate qualification against an immutable `lean-cas-dsl` commit without
   committing or pushing consumer overrides.
 - The explicit post-release handoff and consumer repin proof required to finish the
@@ -157,66 +172,89 @@ checkpoints inside this PR, but no checkpoint narrows the PR's final claim.
   runtime boundary is required.
 - No release tag after the qualified tree changes.
 
-## Decisions that must be resolved at their owning boundary
+## Fixed design decisions
 
-These are implementation gates, not invitations to weaken the contract.
+These choices define the implementation. They are not gates that may be resolved to a
+smaller mechanism later.
 
-1. **Semantic observation boundary.** First attempt to express each plugin's
-   discriminating observations through its own commands and structured MIME/replies. If
-   the shared laws still cannot compare exact environment state, stop and decide the
-   smallest generic public Worker/plugin observation surface. Any new public surface
-   must receive an explicit plugin API version before the conformance runner depends on
-   it.
-2. **Runtime provenance shape.** Define one structured identity readback shared by the
-   worker handshake/description, adapter, compatibility validator, installed-kernelspec
-   proof, and consumer qualification. It must report the exact candidate or release
-   commit rather than infer identity from a filesystem path.
-3. **Exact v1.x SemVer.** Select the release version before changing governed package
-   versions. The worker, Python adapter, npm package, frontend Python distribution,
-   compatibility record, and intended tag must use that decision.
-4. **Frontend artifact builder.** Select the standard JupyterLab 4 wheel build path that
-   embeds the built labextension. Stop if the resulting wheel still depends on a source
-   tree, pre-existing build output, or development link.
-5. **Immutable consumer baseline.** Select and record the exact `lean-cas-dsl` commit
-   against which both dependency channels, the Sage boundary, and external profile are
-   understood before candidate overrides are added.
-6. **Native GitHub ownership and protection.** Select the minimal native GitHub
-   mechanism for substantive issue ownership and the compact required-check names.
-   Do not require human approval while no second reviewer exists, and do not impose the
-   ownership process on typo/routine maintenance.
-7. **Release publication set.** Before tagging, name the package artifacts actually
-   published under the governed identity. Do not claim a package channel that is not
-   built, qualified, and read back.
-
-Only decision 1 can block the semantic-conformance design. The other workstreams may
-start in parallel, but none may cross its named decision gate.
+1. **Release identity: `1.1.0` / `v1.1.0`.** The existing `v1` tag points at
+   `0008bda2c69f76abceab92a0b4a4e1b32d65f5c9`, whose package declarations are
+   `1.0.0`, and its GitHub release has no assets. Preserve that historical tag. The
+   semantic-conformance, provenance, and distributable-frontend additions form the
+   backward-compatible 1.1 feature release.
+2. **One authored compatibility source.** Add root `release.toml` with schema version,
+   release SemVer, Lean toolchain, Mathlib revision, plugin API version `1`, and wire
+   protocol version `1`. Derive tag `v1.1.0` from the SemVer. A repository-owned
+   generator rewrites the Lake, Python, npm, and toolchain declarations from this file;
+   those files are generated projections, not independent authorities. Its check mode
+   fails on any diff.
+3. **Non-self-referential build provenance.** Do not put the repository's own commit in
+   tracked `release.toml`. The Lake and Hatch build paths generate Lean and Python build
+   information from `release.toml` plus the exact clean Git commit. Missing Git identity,
+   a dirty release tree, or an unknown value is a hard failure. The worker embeds that
+   identity in `ready` and `describe`; the adapter embeds its own, hashes the executed
+   worker, rejects disagreement before accepting cells, and exposes the combined object
+   through an `nbdsl_provenance` Jupyter comm. A release-provenance artifact binds the
+   commit, manifest hash, package files, worker binary, wheels, sdist, and npm tarball by
+   SHA-256.
+4. **Semantic observations use plugin API v1.** Do not add a registry-shaped Worker API.
+   Kernel-owned TOML profiles drive ordinary `execute`, `complete`, and `inspect`
+   requests and read plugin-authored structured MIME. NbDsl uses its registry diagnostic
+   commands; `lean-cas-dsl` uses its existing capabilities, route, gap, and canonical-map
+   MIME bundles. Profiles supply inputs and observations but cannot alter the shared
+   laws or result schema.
+5. **Official JupyterLab wheel builder.** Adopt the current JupyterLab extension-template
+   pattern: Hatchling, `hatch-nodejs-version`, `jupyter-builder>=1,<2`, and the
+   `hatch-jupyter-builder` npm build hook running `jlpm build:prod`. The wheel maps the
+   generated labextension to `share/jupyter/labextensions/jupyterlab_nbdsl` and requires
+   its `package.json` and production static entrypoints. Python frontend version metadata
+   reads the generated npm version instead of declaring another version.
+6. **Consumer baseline and transaction route.** Start from immutable consumer commit
+   `c756308851b6b201505a8b6da2ee67b3936c7d73`. Its Lake worker pin already names
+   `0008bda2c69f76abceab92a0b4a4e1b32d65f5c9`; its `just setup` adapter URL is
+   unpinned. Land the one-line adapter pin directly on consumer `main`, prove the current
+   clean baseline, and freeze the resulting commit as the qualification baseline.
+   Candidate overrides remain ephemeral. After publication, land the two exact-release
+   pins directly on consumer `main` and repeat the proof.
+7. **Published artifacts.** Publish `nbdsl-kernel==1.1.0` and
+   `jupyterlab-nbdsl==1.1.0` to PyPI, `jupyterlab_nbdsl@1.1.0` to npm, and `v1.1.0`
+   as the Lean/Lake and GitHub source identity. Attach both Python wheels and sdists, the
+   npm tarball, checksums, and release provenance to the GitHub release. Registry names
+   returned not-found responses on 2026-07-30; claim them and configure trusted
+   publication before tagging.
+8. **Repository protection.** Configure `main` to require PRs and the exact checks
+   `worker (mathlib-free gate)`, `NbDsl + kernel round-trip + e2e`,
+   `jupyterlab extension`, and `compatibility + external consumer`; forbid force pushes
+   and deletion. Require no human approvals while no second reviewer exists.
 
 ## Execution graph
 
 ### Intrinsic dependency chain
 
-1. Freeze the shared compatibility fields and resolve whether semantic observation
-   changes the public plugin API.
-2. Add structured semantic observations and runtime provenance.
-3. Apply the shared semantic laws to NbDsl, then to an immutable external-plugin
-   profile.
+1. Land the direct-to-main consumer baseline transaction from
+   `c756308851b6b201505a8b6da2ee67b3936c7d73`, prove both channels at kernel commit
+   `0008bda2c69f76abceab92a0b4a4e1b32d65f5c9`, and freeze the resulting consumer
+   commit.
+2. Add `release.toml`, generated package projections, exact build provenance, and the
+   runtime identity comparison.
+3. Implement the two fixed TOML semantic profiles and apply the shared laws first to
+   NbDsl, then to the frozen external consumer.
 4. Prove compatible toolchain selection, both worker-resolution layouts, and clean
    adapter/kernelspec installation.
-5. Reconcile extension versions, build the distributable wheel, and prove clean
+5. Build version `1.1.0` through the official JupyterLab wheel path and prove clean
    JupyterLab activation.
-6. Synchronize the consumer's baseline worker and adapter identities at one immutable
-   kernel source.
-7. Qualify the exact kernel candidate against the immutable consumer without changing
-   its worktree.
-8. Validate all declarations and observations against the compatibility record and run
-   the complete required-check composition on the exact PR head.
-9. Merge the one kernel PR. Qualify the actual release commit again if its tree or
-   commit differs from the qualified PR head.
-10. Publish the exact tag only after exact-head qualification, then read back that the
-    tag resolves to the qualified commit.
-11. Update both consumer dependency channels to the published immutable identity and
-    repeat clean consumer build, semantic conformance, Sage/Jupyter E2E, and provenance
-    proof.
+6. Qualify the exact kernel candidate against the frozen consumer without changing its
+   worktree.
+7. Run the four named required checks on the exact PR head, including generated-
+   projection equality, all runtime readbacks, and the deliberate mismatch case.
+8. Configure and read back live `main` protection with those four check names.
+9. Merge the one kernel PR. Qualify the actual release commit again if its commit differs
+   from the qualified PR head.
+10. Create `v1.1.0` only after exact-head qualification. Build and publish the selected
+    artifacts from that tag, then read back registry versions, artifact hashes, and
+    tag-to-commit equality.
+11. Land the two exact-release consumer pins directly on consumer `main` and repeat the
+    clean build, semantic conformance, Sage/Jupyter E2E, and provenance proof.
 
 Steps 7–11 are strict. PR checks against an earlier commit do not authorize tagging a
 different commit, and publication does not authorize declaring completion before the
@@ -224,20 +262,20 @@ consumer repin passes.
 
 ### Safe parallel work inside the one PR
 
-After the compatibility fields and affected API version are fixed:
+All work starts from the fixed choices above:
 
-- Lean semantic observation and shared-law design can proceed beside adapter provenance
+- Semantic-profile and shared-law implementation can proceed beside adapter provenance
   and clean-install fixtures.
-- Frontend version reconciliation and distributable-wheel work can proceed beside the
-  worker/adapter work when they consume the same frozen SemVer.
-- Live ruleset configuration/readback design can proceed beside code implementation
-  once required check identities are known.
-- Consumer baseline synchronization can proceed beside kernel conformance work, but
-  candidate qualification waits for both.
+- Frontend distributable-wheel work can proceed beside worker/adapter work because both
+  consume `release.toml` version `1.1.0`.
+- Live ruleset configuration/readback can proceed as soon as all four named checks
+  appear on the draft PR.
+- Consumer baseline synchronization can proceed beside kernel work, but external
+  qualification waits for the resulting immutable consumer commit.
 - CI composition can begin with existing proof families, but required status and
   release claims wait for the real new boundary jobs.
 
-Every parallel branch integrates back into the same PR. The compatibility validator,
+Every parallel branch integrates back into the same PR. Generated release projections,
 runtime identity, and claim-specific CI output are the integration contracts.
 
 ## Workstream 1: Lean worker semantic transaction and recovery
@@ -250,23 +288,24 @@ runtime identity, and claim-specific CI output are the integration contracts.
 isolation exist, but proof is coupled to NbDsl examples and no governed compatibility
 identity joins the worker to the adapter and release.
 
-**After:** the worker exposes enough structured, plugin-neutral observation and identity
-to prove the same transaction and recovery laws for both profiles without importing
-either plugin.
+**After:** the worker preserves its plugin-neutral transaction surface and exposes exact
+build identity. The conformance runner proves both profiles through ordinary worker
+operations and plugin-authored MIME without importing either plugin into the worker.
 
 Implementation obligations:
 
 - Preserve the selected-parent transaction in `handleExecute`: success commits the
   exact candidate; error and cooperative cancellation return the unchanged parent.
-- Define structured observations that discriminate environment content, registered
-  semantic objects, completion, inspection, replay, restart, and isolation. Keep
-  plugin-specific registry commands in profiles rather than adding their schema to the
-  worker.
+- Keep semantic observation on plugin API v1: profiles execute plugin-authored registry
+  diagnostics and compare their canonical MIME payloads before and after success,
+  failure, cancellation, replay, restart, completion, inspection, and isolation. Add no
+  registry schema or observer callback to the worker.
 - Add a real mid-command cancellation checkpoint case and a real process-death case.
   Drive recovery through the production client path in the appropriate REPL/document
   mode.
-- Make the worker's toolchain, package/API/wire versions, and exact source identity
-  available through the governed ready/description boundary.
+- Compile the generated Lean build-information module into `nbdsl_worker`; return its
+  release, commit, plugin API, wire, and toolchain fields from both `ready` and
+  `describe`.
 - Keep output request-local and verify that frame-shaped plugin/user output cannot enter
   the control decoder.
 - Retain request IDs, diagnostics, info trees, sorry accumulation, Unicode positions,
@@ -282,9 +321,9 @@ Acceptance:
 - An independent frame codec decodes control traffic while adversarial plugin/user
   output remains ordinary output.
 
-Stop if meaningful observation requires an unversioned public plugin surface, if
-recovery requires a non-production path, or if a profile-specific registry leaks into
-the worker.
+Stop if either plugin cannot produce the fixed structured observation contract through
+plugin API v1, if recovery requires a non-production path, or if a profile-specific
+registry leaks into the worker.
 
 ## Workstream 2: Python adapter, transport, kernelspec, and installation
 
@@ -312,8 +351,12 @@ Implementation obligations:
 - Install the adapter artifact and kernelspec in an empty Python/Jupyter environment.
   Run the installed kernelspec through a Jupyter client and perform a meaningful plugin
   state transition.
-- Propagate structured worker and adapter provenance into the Jupyter/runtime result and
-  compatibility checks.
+- Generate adapter build information from the exact same `release.toml` and Git commit.
+  On worker start, compare both embedded identities, hash the executed binary, and fail
+  before accepting cells on any disagreement.
+- Expose the compared identity through the `nbdsl_provenance` Jupyter comm so a clean
+  installed-kernelspec test and the external consumer can read it without parsing DSL
+  source or inferring a path.
 - Keep Pydantic validation at the protocol boundary. Do not turn malformed or
   incompatible frames into success-shaped replies.
 
@@ -322,7 +365,7 @@ Acceptance:
 - Each clean project starts the binary owned by its declared dependency graph, not one
   found in the source checkout or system.
 - Runtime worker identity, adapter identity, selected prelude, and toolchain agree with
-  the compatibility record.
+  `release.toml` and generated build provenance.
 - Installed-kernelspec observations preserve all existing execution, interrupt,
   completion, inspection, MIME, init, cache/replay, and document-mode obligations.
 
@@ -332,8 +375,8 @@ disagreement, or provenance that can only be inferred from a path.
 ## Workstream 3: plugin contract and shared semantic conformance
 
 **Owner surfaces:** the kernel-owned conformance runner and result model,
-`dsls/nbdsl/` as the reference profile, and an immutable `lean-cas-dsl` checkout as the
-external profile.
+`conformance/nbdsl.toml`, `conformance/lean-cas-dsl.toml`, `dsls/nbdsl/` as the
+reference plugin, and the frozen `lean-cas-dsl` checkout as the external plugin.
 
 **Before:** NbDsl proves rich behavior, but its examples do not establish a generic
 plugin contract.
@@ -357,9 +400,11 @@ Implementation obligations:
 
 - Extract the laws from the preserved runtime behavior without deleting the broader
   NbDsl cases.
-- Keep profile data declarative and discriminating: immutable plugin source,
-  package/prelude selection, commands, cancellation point, observations, and expected
-  semantic relationships.
+- Keep profile data in the two named TOML files: immutable plugin source,
+  package/prelude selection, execute/complete/inspect inputs, cancellation point,
+  expected MIME types, canonical projections of the payloads, and semantic
+  relationships. Profiles cannot supply law code, expected success booleans, or result
+  overrides.
 - Run NbDsl from repository source and `lean-cas-dsl` from a clean immutable checkout
   under the same compatible toolchain.
 - Publish a result that identifies kernel commit, plugin commit/profile, toolchain,
@@ -383,18 +428,27 @@ registered by `jupyterlab_nbdsl/src/index.ts`.
 **Before:** frontend unit tests and builds cover pure behavior, but Python and npm
 versions disagree and no clean artifact activation proves release packaging.
 
-**After:** npm and Python metadata share the governed SemVer; the built wheel contains
-the labextension, installs in clean JupyterLab 4, and activates without a development
-link.
+**After:** generated npm metadata and Python metadata both report `1.1.0`; the PyPI wheel
+contains the production labextension, installs in clean JupyterLab 4, and activates
+without a development link. The same frontend package is published to npm.
 
 Implementation obligations:
 
-- Reconcile npm `1.0.0` and Python `0.1.0` under the selected v1.x identity rather than
-  validating either disagreement.
-- Add the standard artifact build that places the compiled extension into the Python
-  wheel and does not consume stale developer output.
-- Inspect wheel contents, install that wheel into a clean JupyterLab 4 environment, and
-  verify extension discovery and activation.
+- Generate npm version `1.1.0` from `release.toml`; make the Python distribution read
+  that value through `hatch-nodejs-version` instead of declaring its own.
+- Replace the manual-build-only Hatch configuration with the official JupyterLab
+  extension-template path: Hatchling plus `jupyter-builder>=1,<2` and the
+  `hatch-jupyter-builder` npm hook running `jlpm build:prod`; follow the current
+  [`jupyterlab/extension-template` `pyproject.toml`](https://github.com/jupyterlab/extension-template/blob/main/template/pyproject.toml.jinja)
+  rather than inventing a package-local build convention.
+- Require the production `labextension/package.json` and static entrypoints as ensured
+  build targets, and map the generated directory and `install.json` into
+  `share/jupyter/labextensions/jupyterlab_nbdsl`.
+- Clean generated frontend output before every distribution build so the wheel cannot
+  consume a developer symlink or stale bundle.
+- Inspect wheel contents, install the exact wheel into a clean JupyterLab 4 environment,
+  and verify extension discovery and activation. Pack and inspect the npm tarball from
+  the same generated metadata.
 - Preserve language registration, document comm synchronization, stale-cell classes,
   and NbDsl path MIME validation/rendering.
 - Retain node tests for pure functions. If this PR changes browser-visible behavior,
@@ -407,57 +461,72 @@ adequacy. A successful TypeScript build proves none of the latter three by itsel
 Stop if the wheel requires `labextension develop`, a source symlink, pre-existing build
 output, or an undeclared service environment.
 
-## Workstream 5: compatibility identity, governance, and release controls
+## Workstream 5: compatibility authority, provenance, protection, and publication
 
-**Owner surfaces:** one new machine-readable compatibility record; Lean, Python, and
-frontend package declarations; worker/adapter runtime identity; CI release controls;
-and the live GitHub repository ruleset.
+**Owner surfaces:** root `release.toml`; a repository-owned release-projection tool;
+generated Lake, Python, npm, and toolchain declarations; Lake and Hatch build-information
+hooks; runtime provenance; release workflows; and the live GitHub repository ruleset.
 
 **Before:** owned packages mostly declare `1.0.0`, frontend Python declares `0.1.0`,
-wire version `1` is embedded in the worker, and no record binds these values to one
-commit and tag.
+wire version `1` is embedded in the worker, the broad `v1` GitHub release has no assets,
+and live `main` protection is absent.
 
-**After:** one record authoritatively names:
+**After:** `release.toml` is the only authored static compatibility source. It fixes:
 
-- Lean toolchain;
-- worker package SemVer;
-- Python adapter SemVer;
-- JupyterLab npm/Python SemVer;
-- plugin API compatibility version;
-- wire protocol version;
-- exact kernel commit; and
-- exact SemVer tag.
+- schema version `1`;
+- release SemVer `1.1.0`;
+- Lean toolchain `leanprover/lean4:v4.32.0`;
+- Mathlib revision `v4.32.0`;
+- plugin API version `1`; and
+- wire protocol version `1`.
+
+The tag is deterministically `v1.1.0`. Build provenance adds the exact clean commit and
+artifact hashes because a tracked source file cannot truthfully contain its own commit.
 
 Implementation obligations:
 
-- Choose a machine-readable schema with exact, bounded fields. Validate every owned
-  declaration and runtime readback against it.
-- Make development drift fail before release. Prove the validator rejects one
-  deliberately inconsistent governed value.
-- Inject or derive commit identity at build time without permitting an unknown/fallback
-  release identity.
-- Treat governed version changes as release work in this PR, not routine independent
-  package bumps.
-- Configure live `main` protection for PR admission, the compact required-check set, no
+- Add a standard TOML parser-backed projection tool. Its write mode regenerates every
+  tool-owned version/toolchain declaration from `release.toml`; its check mode generates
+  to a temporary tree and fails on any diff. Mark projections as generated where their
+  formats permit comments.
+- Generate a Lean build-information module and Python package build-information resource
+  from `release.toml` plus the exact clean Git commit. Build and release paths fail on
+  missing Git metadata, dirty state, malformed fields, or unknown identity.
+- Return the embedded worker identity from `ready` and `describe`. Compare it with the
+  adapter build identity before accepting cells, hash the executed worker binary, and
+  expose the combined object through `nbdsl_provenance`.
+- Generate `release-provenance.json` after building. It contains the release manifest
+  hash, commit, tag, package versions, worker hash, distribution filenames, and SHA-256
+  hashes. CI checks every built artifact and runtime observation against it.
+- Prove the projection checker and runtime comparison each reject a deliberately changed
+  governed value. The test must mutate a temporary projection or artifact, never the
+  authoritative file.
+- Configure live `main` protection for PR admission, the four fixed required checks, no
   force pushes, and no deletion. Read back the active rules from GitHub.
-- Apply a native ownership route to substantive programme issues while exempting typo
-  and routine maintenance. Do not build a parallel issue-state system.
-- Qualify the exact release commit after merge if it differs from the qualified PR head.
-  Publish the tag only after that run succeeds, then read back tag-to-commit equality.
+- Qualify the exact release commit after merge. Create `v1.1.0` only after that succeeds;
+  build all artifacts from the tag, publish them to GitHub, PyPI, and npm through trusted
+  publishers, then read back registry versions, hashes, and tag-to-commit equality.
+- Preserve historical `v1`; do not move, delete, or treat it as the immutable governed
+  identity.
 
-Acceptance requires agreement among source declarations, built artifacts, runtime
-observations, downstream provenance, CI revision, record commit, and tag target.
+Acceptance requires a one-way derivation from `release.toml` to generated declarations,
+build provenance, built artifacts, runtime observations, registry records, CI revision,
+and tag target. A parallel hand-edited record plus a validator does not satisfy this
+workstream.
 
-Stop if live rules cannot be read back, the release head changes, a package/runtime
-identity disagrees, or the tag does not resolve to the qualified commit.
+Stop if live rules cannot be read back, trusted publication cannot be configured for
+PyPI or npm, the release head changes, a projection or runtime identity disagrees,
+or the tag does not resolve to the qualified commit.
 
 ## Workstream 6: external `lean-cas-dsl` integration
 
 **Owner boundary:** kernel qualification orchestration in this PR; dependency updates
 and the real Sage-backed notebook boundary in the separate consumer repository.
 
-**Before:** the required two-channel alignment and Sage-backed proof are reported needs,
-not established facts in this plan.
+**Before:** consumer commit `c756308851b6b201505a8b6da2ee67b3936c7d73` pins the
+Lake worker channel to kernel commit
+`0008bda2c69f76abceab92a0b4a4e1b32d65f5c9`, but its `just setup` adapter URL
+floats on kernel `main`.
 
 **After:** one immutable consumer baseline resolves its Lake worker dependency and
 Python adapter dependency to the same kernel identity. Qualification can replace both
@@ -467,9 +536,14 @@ and repeats the proof.
 
 Implementation obligations:
 
-- Freeze an immutable consumer commit before treating its dependency layout or commands
-  as facts.
-- Establish a clean baseline in which both channels agree before testing an override.
+- Starting from `c756308851b6b201505a8b6da2ee67b3936c7d73`, change only the
+  consumer's adapter Git URL to
+  `0008bda2c69f76abceab92a0b4a4e1b32d65f5c9`. Land that dependency
+  transaction directly on consumer `main`, run its clean build and Sage/Jupyter proof,
+  and freeze the resulting commit as the external profile and qualification baseline.
+- Store that resulting immutable consumer commit in the kernel's generated qualification
+  inputs. Do not substitute a later consumer `main` without an explicit plan update and
+  repeated baseline proof.
 - In an isolated qualification checkout, override both channels to the exact kernel
   candidate without committing or pushing and without semantically adapting the
   consumer.
@@ -480,8 +554,10 @@ Implementation obligations:
 - Record consumer commit, kernel commit, toolchain, dependency resolutions, runtime
   identities, conformance result, Sage/Jupyter result, and before/after consumer
   worktree state.
-- After tag publication, make the normal consumer-repository change that adopts the
-  immutable release in both channels and repeat the clean proof.
+- After publication, land a second direct-to-main consumer dependency transaction that
+  pins both the Lake worker and `just setup` adapter URL to the exact qualified release
+  commit. Retain `v1.1.0` as human-readable release evidence, not as a floating resolver,
+  and repeat the clean proof.
 
 Acceptance requires the real consumer runtime and an unchanged candidate-qualification
 worktree. A metadata edit, clean status alone, or kernel-side simulation is insufficient.
@@ -497,10 +573,15 @@ release qualification.
 
 **Before:** worker, installed-kernelspec, frontend, and local sandbox checks exist, but
 CI does not compose the external-plugin, clean-install, provenance, compatibility,
-consumer, live-governance, or exact-release claims.
+consumer, live-protection, or exact-release claims.
 
-**After:** a compact required set reports distinct failure claims while reusing builds
-and fixtures where safe.
+**After:** the four fixed required checks report distinct failure claims while reusing
+builds and fixtures where safe:
+
+- `worker (mathlib-free gate)`;
+- `NbDsl + kernel round-trip + e2e`;
+- `jupyterlab extension`; and
+- `compatibility + external consumer`.
 
 Required claim families:
 
@@ -511,8 +592,9 @@ Required claim families:
 5. local-path and nested-Git/Lake resolution with executed-binary provenance;
 6. frontend unit/build/wheel/install/activation, plus browser proof for changed behavior;
 7. exact-candidate consumer build, external conformance, and Sage/Jupyter E2E;
-8. compatibility-record agreement and intentional mismatch rejection; and
-9. exact release-head qualification and tag-target readback.
+8. authoritative-release projection, build/runtime agreement, and intentional mismatch
+   rejection; and
+9. exact release-head qualification, publication readback, and tag-target readback.
 
 Implementation obligations:
 
@@ -526,6 +608,10 @@ Implementation obligations:
   floating consumer or kernel refs.
 - Bind all evidence to the commit and artifacts tested. A rerun on the actual release
   head is mandatory after any tree change.
+- Keep the four status names stable and aggregate claim-specific steps inside them. A
+  required aggregate fails if any owned claim is absent, skipped, or inconclusive.
+- Add a tag-triggered publication job that consumes only artifacts rebuilt from and
+  attested to the qualified `v1.1.0` target. It must not reuse unbound PR artifacts.
 
 A green omnibus exit code is not enough. A reviewer must be able to identify which
 runtime, installation, packaging, consumer, compatibility, or release claim failed.
@@ -542,9 +628,9 @@ runtime, installation, packaging, consumer, compatibility, or release claim fail
 | Clean resolution | Empty Python/Jupyter env and minimal clean Lean projects | Executed worker identity for both dependency layouts | `find_worker_exe` unit result or path string |
 | Frontend release | Built wheel installed into clean JupyterLab 4 | Wheel contents, discovery, activation; rendered inspection if changed | Node tests or build success alone |
 | External consumer | Immutable clean checkout and real Sage/Jupyter path | Both declarations, runtime identities, conformance, E2E, unchanged candidate tree | Consumer metadata or kernel simulation |
-| Compatibility | Record, declarations, artifacts, runtime, and negative case | Complete equality plus deliberate mismatch rejection | Record existence or source grep |
+| Compatibility | `release.toml`, generated projections, build provenance, artifacts, runtime, and negative case | One-way derivation plus deliberate mismatch rejection | Parallel hand-edited record, record existence, or source grep |
 | Governance | Live GitHub API readback | Active PR/CI/no-force/no-delete rules | YAML or policy prose |
-| Release | Exact-head CI, published tag, and consumer repin | Tag-to-commit equality and post-release downstream runtime proof | Merge, tag creation, or publication alone |
+| Release | Exact-head CI, GitHub/PyPI/npm readback, published tag, and consumer repin | Artifact hashes, registry versions, tag-to-commit equality, and post-release downstream runtime proof | Merge, tag creation, or one-channel publication alone |
 
 Evidence records must state the tested commit, immutable external commits, toolchain,
 artifact identities, and observed result. They support the implementation claim; they
@@ -558,15 +644,13 @@ do not become a parallel source of product requirements or completion.
 - A standalone public plugin SDK or separate conformance repository before a second
   independent external DSL needs one.
 - Mandatory human approval counts without a real second reviewer.
-- Issue ceremony for typo or routine maintenance.
-- A floating or broad `v1` tag.
+- Moving, deleting, or reusing the historical broad `v1` tag.
 - Semantic adaptation of `lean-cas-dsl` in candidate qualification.
 - Snapshot garbage collection.
 - Expected-type-aware completion beyond current environment/dot behavior.
 - Making every currently uncacheable Lean state cacheable.
 - NbDsl predicate iso-invariance or a free-group transport.
 - Resolution of the mixed console/document recovery ceiling.
-- Preservation of unsupported internal compatibility paths.
 - Rewriting the established Lean-worker/Python-adapter/JupyterLab ownership split.
 
 These exclusions do not permit loss of current runtime behavior or omission of generic
@@ -574,10 +658,10 @@ and external compatibility proof.
 
 ## Stop conditions
 
-Stop the affected workstream and obtain the named maintainer, API, or release decision
-when:
+Stop the affected workstream and report the concrete blocker when:
 
-1. meaningful plugin state cannot be observed without a public API change;
+1. either plugin cannot produce the fixed structured observation contract through
+   plugin API v1;
 2. the candidate requires a semantic consumer edit;
 3. worker and plugin cannot share the declared Lean toolchain;
 4. either dependency layout cannot identify and execute its intended worker;
@@ -585,10 +669,12 @@ when:
 6. clean installation depends on undeclared developer or service state;
 7. the frontend wheel cannot contain and activate the built extension;
 8. the qualified release head changes;
-9. any governed declaration, artifact, runtime identity, record, or tag disagrees;
+9. any generated projection, artifact, runtime identity, provenance record, registry
+   version, or tag disagrees with `release.toml` and the qualified commit;
 10. the published consumer repin fails the clean Sage-backed boundary;
-11. live branch protection cannot be read back; or
-12. a completion argument has only tests, records, logs, issue states, or metadata and
+11. live branch protection cannot be read back;
+12. trusted publication cannot be configured for PyPI or npm; or
+13. a completion argument has only tests, records, logs, issue states, or metadata and
     lacks the corresponding runtime, clean-install, consumer, and release observations.
 
 Do not route around a stop by adding a fallback, weakening an observation, filtering a
@@ -602,10 +688,12 @@ The programme is complete only when all of the following are true:
   implementation and proof-composition change in this plan.
 - The exact release target preserves existing core behavior and passes both semantic
   profiles, clean adapter/kernelspec installation, both worker dependency layouts,
-  extension artifact installation/activation, compatibility validation, and exact
-  candidate consumer qualification.
-- The governed v1.x tag resolves to that exact qualified target, and all package,
-  toolchain, API, wire, commit, tag, adapter, and worker identities agree.
+  extension artifact installation/activation, release-projection and provenance checks,
+  and exact candidate consumer qualification.
+- `v1.1.0` resolves to that exact qualified target; GitHub exposes the two wheels, two
+  sdists, npm tarball, checksums, and provenance; PyPI exposes both Python distributions;
+  npm exposes `jupyterlab_nbdsl@1.1.0`; and all package, toolchain, API, wire, commit,
+  tag, adapter, and worker identities agree.
 - Live repository protection is active and verified.
 - `lean-cas-dsl` consumes the published immutable release through both dependency
   channels and repeats its clean build, external semantic conformance, real Sage-backed
@@ -625,12 +713,28 @@ At every PR-head change that can affect behavior or identity:
 
 - invalidate superseded qualification evidence;
 - rerun the affected boundary on the new head;
-- update the decision log with any API, SemVer, consumer baseline, or release choice;
-  and
+- regenerate and check every release projection and invalidate any provenance object
+  bound to the previous head; and
 - keep unresolved stop conditions visible in the draft PR.
 
 ## Public traceability
 
-While the PR is draft, reference #2, #3, #4, #5, #6, #7, and #8. Add closing keywords
-only when the issue's full requirement is satisfied by merge; retain a reference when
-post-merge release or consumer-adoption proof remains.
+The kernel merge completes the release-control, semantic-conformance, clean-install, and
+candidate-qualification work units:
+
+Closes #2
+
+Closes #3
+
+Closes #4
+
+Closes #6
+
+The baseline consumer transaction, release publication, and post-release consumer
+transaction land outside the kernel PR and close only after their own real proof:
+
+Refs #5
+
+Refs #7
+
+Refs #8
