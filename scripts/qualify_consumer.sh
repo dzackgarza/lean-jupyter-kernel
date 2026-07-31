@@ -37,6 +37,16 @@ CO="$WORKDIR/lean-cas-dsl"
 git clone --quiet "$CONSUMER_URL" "$CO"
 git -C "$CO" switch --quiet --detach "$BASELINE"
 
+# Optional: seed the mathlib package clone from a local repository so the
+# ~300MB fetch doesn't ride the network (lake then fetches only the delta).
+if [ -n "${MATHLIB_SEED:-}" ] && [ -d "$MATHLIB_SEED" ]; then
+  mkdir -p "$CO/.lake/packages"
+  git clone --quiet "$MATHLIB_SEED" "$CO/.lake/packages/mathlib"
+  git -C "$CO/.lake/packages/mathlib" remote set-url origin \
+    https://github.com/leanprover-community/mathlib4.git
+  echo "mathlib seeded from $MATHLIB_SEED"
+fi
+
 # --- override both dependency channels to the exact candidate (ephemeral) ---
 # KERNEL_GIT_URL lets CI point the consumer at the runner's own kernel
 # checkout (file://$GITHUB_WORKSPACE) so pull-request merge commits — which
@@ -89,7 +99,9 @@ WORKER_BIN="$WORKER_PKG/worker/.lake/build/bin/nbdsl_worker"
 WORKER_SHA256=$(sha256sum "$WORKER_BIN" | cut -d' ' -f1)
 
 # --- external semantic conformance profile against this checkout ---
-python3 "$KERNEL_REPO/conformance/runner.py" "$PROFILE" \
+# The checkout's venv owns jupyter_client AND the casdsl kernelspec the
+# runner drives — the system python owns neither.
+"$CO/.venv/bin/python" "$KERNEL_REPO/conformance/runner.py" "$PROFILE" \
   --source-dir "$CO" --out "$WORKDIR/conformance-result.json"
 
 # --- unchanged-worktree proof: exactly the declared overrides, nothing else ---
