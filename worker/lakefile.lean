@@ -9,7 +9,7 @@ seconds and is the stable dependency surface for DSL plugin packages
 else). The QC gate rejects any `import NbDsl` under Worker sources.
 -/
 package «nbdsl-worker» where
-  version := v!"1.0.0"
+  version := v!"1.1.0"
 
 @[default_target]
 lean_lib Worker

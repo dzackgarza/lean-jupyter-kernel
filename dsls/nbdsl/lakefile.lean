@@ -7,7 +7,7 @@ module (here `NbDsl.Notebook`) and depends on the core only through the
 `Worker` library — see the repo README, "Bring your own DSL".
 -/
 package nbdsl where
-  version := v!"1.0.0"
+  version := v!"1.1.0"
 
 require «nbdsl-worker» from ".." / ".." / "worker"
 

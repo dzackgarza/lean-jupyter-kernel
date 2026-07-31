@@ -32,6 +32,7 @@ build:
 
 # Run the full repository QC gate
 test: build
+    @python3 scripts/release_projection.py check
     @just -f ~/ai-review-ci/justfiles/lean.just -d worker lean-no-sorry
     @just -f ~/ai-review-ci/justfiles/lean.just -d dsls/nbdsl lean-no-sorry
     @! grep -rn '^import NbDsl' worker/ --include='*.lean' || \
