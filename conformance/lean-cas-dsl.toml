@@ -4,52 +4,110 @@
 # nothing with this repository but the worker package and the plugin contract:
 # different surface syntax, a different registry, a different MIME namespace.
 # Nothing here is a law — the laws are in conformance/runner.py and are
-# byte-identical for both plugins. If a profile could weaken an obligation,
-# a plugin could pass by describing itself favourably.
+# byte-identical for both plugins. If a profile could weaken an obligation, a
+# plugin could pass by describing itself favourably.
+#
+# Every cell is vocabulary the consumer already ships; running this profile
+# requires no edit to lean-cas-dsl.
 
+[profile]
 name = "lean-cas-dsl"
-# CI points this at an immutable clean checkout; the default is a sibling
-# working tree for local runs.
-project_env = "CONFORMANCE_CAS_DSL"
-project = "../lean-cas-dsl"
-prelude = "CasDsl.Notebook"
-kernel_name = "casdsl-conformance"
 
-[state]
-# CasDsl binds into its own environment extension, not a Lean constant.
-define = "let confN := 360 in ℤ"
-observe = "confN"
-observe_expect = "360"
-# A false assertion — the plugin's own semantic failure, not a parse error.
-failing = "assert 2 + 3 = 6"
+[plugin]
+source = "https://github.com/dzackgarza/lean-cas-dsl"
+# The frozen qualification baseline. This field is the single owner of that
+# fact — the WS6 qualification script and CI read the pin from here. It pins
+# both kernel dependency channels to 92c0caefb9587f4fee0a0e67e79afd91c8cb4f49.
+# Promoted 2026-07-31 from 1b6822a after the owner-directed #32/#33 fixes
+# landed on consumer main through its full gate (named-refusal runtime change
+# + acceptance-notebook regeneration): the post-release repin ships from this
+# lineage, so qualification must prove it, not its two-commit-old ancestor.
+commit = "4c6fedafccfe77af80ac632efa780e967d726c14"
+# CI points this environment variable at the immutable clean checkout. The
+# fallback below is developer convenience for local runs and the result JSON
+# records which of the two was used, so a sibling working tree can never be
+# mistaken for qualification evidence.
+source_env = "CONFORMANCE_CAS_DSL"
+source_fallback = "../lean-cas-dsl"
+package = "."
+prelude_module = "CasDsl.Notebook"
+kernel_name = "casdsl"
+
+[registration]
+# CasDsl binds into a persistent env extension (`bindingExt`), never a Lean
+# constant — the state shape docs/plugins.md requires of a plugin. Under plugin
+# API v1 complete/inspect are constant-faithful, so the query laws apply in
+# their honest-negative form here, and the result records extension-state
+# visibility as a deferred plugin API v2 demand. The runner falsifies this
+# claim too: if the boundary CAN see this name, the declaration was wrong.
+shape = "extension"
+# CasDsl's commands are top-level; no opens are needed to make them resolve.
+setup = []
+# The discriminating command: one entry in the binding registry, with a checked
+# membership judgment against the ambient domain.
+command = "let confN := 360 in ℤ"
+
+[observation]
+# A method call on the bound name. Discriminating twice over: the receiver only
+# resolves from the binding registry, and the result is routed through the
+# registered capability, so the payload observes both registries.
+command = "confN.factor()"
+mimes = ["application/vnd.casdsl.value+json", "text/plain"]
+# The canonical projection: the rendered value, its presentation, and the whole
+# structured factorization (domain, unit, and the factor/multiplicity list).
+projection = ["render", "presentation", "value"]
+
+[control]
+# The independent environment: same prelude, no bindings.
+setup = []
+
+[failure]
+# A false assertion — the plugin's own semantic failure, decided by its
+# evaluator rather than by Lean's type checker.
+command = "assert 2 + 3 = 6"
+
+[cancellation]
+# The cancelled cell binds FIRST and then elaborates a wide, flat term whose
+# thousands of `have` steps each pass an elaboration cancellation checkpoint.
+prefix = "let confCancel := 7 in ℤ"
+slow_header = """set_option maxHeartbeats 0 in
+example : True := by"""
+slow_step = "  have h{i} : Nat := {i}"
+slow_repeat = 25000
+slow_footer = "  trivial"
+interrupt_after_seconds = 3
+# Succeeds only if the cancelled cell's binding survived, which it must not.
+probe = "assert confCancel = 7"
+
+[replay]
+# An open section makes the committed state uncacheable, forcing the next
+# worker death to recover by replaying the committed sources.
+force = ["section"]
+restore = ["end"]
+
+[completion]
+garbage = "zzzNoSuchNameZzz"
+# A name the PRELUDE registers as a Lean constant.
+constant_code = "CasDsl.Std.poly"
+constant_cursor = 15
+constant_match = "CasDsl.Std.polyZ"
+# The name THIS session bound, in the plugin's own registry.
+registered_code = "confN"
+registered_cursor = 5
+registered_match = "confN"
+
+[inspection]
+garbage = "zzzNoSuchNameZzz"
+constant_code = "CasDsl.Std.polyZ"
+constant_cursor = 0
+# The constant's OWN signature, not merely found=true.
+constant_signature = "CasDsl.Obj"
+registered_code = "confN"
+registered_cursor = 0
+registered_signature = "360"
+
+[output]
 # Genuine Lean commands still parse in a CasDsl cell, so the frame-forging
 # probe is the same one NbDsl gets.
-forge_frame = '#eval IO.println "999\n{\"op\": \"ready\"}"'
-
-[registry]
-# CasDsl's commands are top-level: no opens are needed to make them resolve.
-vocabulary = []
-# `register` and `observe_registered` are a matched PAIR, asserted in both
-# directions by the runner (absent after a rolled-back cell, present after the
-# same registration commits), so neither half can pass vacuously. A bare bound
-# name is the observation: unbound, it is a loud "not bound" error.
-register = "let confSet := {1, 2, 3} in 𝒫(ℤ)"
-observe_registered = "confSet"
-# Nothing further is needed for the structured observation below.
-setup = []
-observe = "confSet"
-mime = "application/vnd.casdsl.value+json"
-
-[query]
-# A name the PRELUDE registers: present in every session speaking this plugin.
-complete_code = "CasDsl.Std.poly"
-complete_expect = "CasDsl.Std.polyZ"
-inspect_code = "CasDsl.Std.polyZ"
-inspect_expect = "CasDsl.Obj"
-# A name this SESSION defines, which an independent session must not see.
-# CasDsl's own bindings live in an env extension rather than the Lean
-# namespace, so the name queries can see is an ordinary Lean definition —
-# which is exactly the session-scoped state this law is about.
-session_define = "def confQ : Nat := 7"
-session_complete_code = "#eval confQ"
-session_complete_expect = "confQ"
+command = '#eval IO.println "999\n{\"op\": \"ready\"}"'
+marker = "999"

@@ -222,9 +222,14 @@ smaller mechanism later.
    `1b6822aa80988d5ef06aafd4f430b22e7d41b7bb` and its clean-checkout proof passed
    (full build, no-sorry, real Sage roundtrip, 127 kernel E2E; evidence on #5). That
    commit is the FROZEN QUALIFICATION BASELINE, recorded in
-   `conformance/lean-cas-dsl.toml`. Candidate overrides remain ephemeral. After
-   publication, land the two exact-release pins directly on consumer `main` and repeat
-   the proof.
+   `conformance/lean-cas-dsl.toml`. *(Second dated update, later on 2026-07-31: the
+   baseline was promoted to `4c6fedafccfe77af80ac632efa780e967d726c14` after the
+   owner-directed cas#32/cas#33 fixes — named refusals for held features, acceptance
+   notebook regenerated — landed on consumer `main` through its full commit and push
+   gates; the post-release repin ships from that lineage, and the candidate
+   qualification run re-proves the promoted baseline from a clean checkout.)*
+   Candidate overrides remain ephemeral. After publication, land the two
+   exact-release pins directly on consumer `main` and repeat the proof.
 7. **Published artifacts.** Publish `nbdsl-kernel==1.1.0` and
    `jupyterlab-nbdsl==1.1.0` to PyPI, `jupyterlab_nbdsl@1.1.0` to npm, and `v1.1.0`
    as the Lean/Lake and GitHub source identity. Attach both Python wheels and sdists, the

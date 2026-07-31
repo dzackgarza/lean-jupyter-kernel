@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import shutil
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -122,9 +121,15 @@ def _write_project(proj: Path, lakefile: str) -> None:
 
 
 def _local_path_layout(root: Path) -> Layout:
-    """A clean project requiring the worker package from a local directory."""
-    worker_pkg = root / "nbdsl-worker"
-    shutil.copytree(WORKER_SRC, worker_pkg, ignore=shutil.ignore_patterns(".lake"))
+    """A clean project requiring the worker package from a local directory.
+
+    The worker build embeds its git identity and hard-fails without one, and
+    the adapter guard requires clean-tree identities to MATCH — so the local
+    directory must carry this repository's real history, not a bare copy or a
+    freshly initialized one. A file:// clone at HEAD is exactly that."""
+    kernel_src = root / "kernel-src"
+    _run(["git", "clone", "-q", f"file://{REPO}", str(kernel_src)])
+    worker_pkg = kernel_src / "worker"
     proj = root / "project"
     _write_project(proj, "import Lake\nopen Lake DSL\n\n"
                          "package cleanpath\n\n"

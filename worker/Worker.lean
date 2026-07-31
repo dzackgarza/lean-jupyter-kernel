@@ -16,6 +16,8 @@ import Worker.Frontend
 import Worker.Query
 import Worker.Output
 import Worker.SessionCache
+import Worker.ReleaseInfo
+import Worker.BuildCommit
 
 open Worker.Protocol
 open Lean (Json toJson)
@@ -59,6 +61,22 @@ structure Session where
   value, so retaining it is the whole snapshot mechanism. -/
   snapshots : Array Snapshot
   current : Nat
+
+/--
+This binary's immutable identity: the authored compatibility contract
+(`Worker.ReleaseInfo`, a projection of the repository's `release.toml`) plus
+the exact commit it was built from (`Worker.BuildCommit`, generated at build
+time). Reported by both `ready` and `describe`; the adapter refuses to execute
+cells against a worker whose identity disagrees with its own.
+-/
+def identity : List (String × Json) :=
+  [("release", Json.str ReleaseInfo.version),
+   ("commit", Json.str BuildCommit.commit),
+   ("dirty", toJson BuildCommit.dirty),
+   ("plugin_api", toJson ReleaseInfo.pluginApi),
+   ("wire", toJson ReleaseInfo.wireProtocol),
+   ("toolchain", Json.str ReleaseInfo.toolchain),
+   ("mathlib", Json.str ReleaseInfo.mathlibRev)]
 
 /-- Echo the request id (if any) into a reply object. -/
 def reply (req : Json) (fields : List (String × Json)) : Json :=
@@ -185,9 +203,17 @@ def handleRequest (session : IO.Ref Session) (inflight : Inflight)
         let mut found : Option String := none
         for tree in result.cmdState.infoState.trees do
           if let some iwc := tree.hoverableInfoAtM? (m := Id) pos (includeStop := true) then
-            if let some f ← Lean.Elab.Info.fmtHover? iwc.ctx iwc.info then
-              found := some (toString f.fmt)
-              break
+            -- Only an identifier-anchored info describes what was asked
+            -- about. A plugin's low-priority catch-all production (a bare
+            -- `term : command`) matches ANY cell, and the info covering the
+            -- position is then that syntax declaration — whose hover is its
+            -- own docstring, returned identically for every input. Inspect
+            -- must discriminate, so non-identifier infos fall through to the
+            -- environment lookup below instead of answering for them.
+            if iwc.info.stx.isIdent then
+              if let some f ← Lean.Elab.Info.fmtHover? iwc.ctx iwc.info then
+                found := some (toString f.fmt)
+                break
         pure found
       -- Environment fallback still supplies name/type/doc when it resolves.
       let global? ← Query.inspect parent.cmdState code cursor
@@ -233,12 +259,12 @@ def handleRequest (session : IO.Ref Session) (inflight : Inflight)
           return reply req [("status", Json.str "ok"), ("snapshot", toJson id)]
   | .ok "describe" =>
       let s ← session.get
-      return reply req
+      return reply req <|
         [("status", Json.str "ok"),
-         ("protocol", toJson (1 : Nat)),
+         ("protocol", toJson ReleaseInfo.wireProtocol),
          ("lean", Json.str Lean.versionString),
          ("snapshot", toJson s.current),
-         ("snapshot_count", toJson s.snapshots.size)]
+         ("snapshot_count", toJson s.snapshots.size)] ++ identity
   | .ok op =>
       return reply req
         [("status", Json.str "unsupported"), ("op", Json.str op)]
@@ -313,10 +339,10 @@ unsafe def main (argv : List String) : IO UInt32 := do
       let inflight : Worker.Inflight ← IO.mkRef none
       let queue ← Std.CloseableChannel.Sync.new
       let _reader ← IO.asTask (Worker.readerTask ch queue inflight) .dedicated
-      writeFrame ch <| Json.mkObj
+      writeFrame ch <| Json.mkObj <|
         [("op", Json.str "ready"),
-         ("protocol", toJson (1 : Nat)),
+         ("protocol", toJson Worker.ReleaseInfo.wireProtocol),
          ("lean", Json.str Lean.versionString),
-         ("snapshot", toJson (0 : Nat))]
+         ("snapshot", toJson (0 : Nat))] ++ Worker.identity
       Worker.mainLoop ch queue session inflight
       return 0

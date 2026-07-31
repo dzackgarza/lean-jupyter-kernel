@@ -96,6 +96,79 @@ jobs:
       # grant, so the sandbox proof runs locally via scripts/check.sh only.
       # CI green therefore does NOT cover the sandbox claim.
 
+  compat:
+    name: compatibility + external consumer
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      # -- compatibility authority: one-way derivation, and the negative case
+      - name: release projections agree with release.toml (and reject mutation)
+        run: |
+          python3 scripts/release_projection.py check
+          python3 scripts/release_projection.py selftest
+
+      - uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: worker
+          build-args: nbdsl_worker
+          use-mathlib-cache: false
+          use-github-cache: false
+
+      # -- adapter artifact + runtime identity: wheel build runs the
+      #    hatch_build hook; the identity/provenance and clean-install suites
+      #    prove the runtime comparison and both dependency layouts.
+      - name: adapter wheel, identity comparison, clean installation
+        run: |
+          pip install 'jupyter_client>=8' pytest pydantic ipykernel
+          pip install ./nbdsl_kernel
+          pytest nbdsl_kernel/tests/test_identity.py nbdsl_kernel/tests/test_clean_install.py
+
+      # -- the real Sage backend for the external consumer's boundary
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: sage
+          create-args: sage python=3.12
+          cache-environment: true
+          generate-run-shell: true
+
+      - name: install just
+        uses: extractions/setup-just@v3
+
+      # Mathlib oleans for the consumer build, keyed on the profile that owns
+      # the frozen baseline (rolls automatically when the baseline promotes).
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/mathlib
+          key: consumer-mathlib-${{ runner.os }}-${{ hashFiles('conformance/lean-cas-dsl.toml') }}
+
+      # -- exact-candidate qualification (#6): frozen consumer baseline,
+      #    both channels overridden to THIS commit via the runner's own
+      #    checkout, real build + Sage roundtrip + Jupyter E2E + external
+      #    semantic conformance, provenance readback, unchanged worktree.
+      - name: qualify the exact kernel candidate against the frozen consumer
+        shell: micromamba-shell {0}
+        env:
+          KERNEL_GIT_URL: file://${{ github.workspace }}
+        run: |
+          bash scripts/qualify_consumer.sh "$(git rev-parse HEAD)" "$RUNNER_TEMP/qualification"
+
+      - name: publish qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qualification-evidence
+          path: |
+            ${{ runner.temp }}/qualification/qualification-evidence.json
+            ${{ runner.temp }}/qualification/conformance-result.json
+            ${{ runner.temp }}/qualification/worktree-status.txt
+          if-no-files-found: error
+
   frontend:
     name: jupyterlab extension
     runs-on: ubuntu-latest
@@ -119,3 +192,17 @@ jobs:
           jlpm install
           jlpm test
           jlpm build
+
+      # The release claim is the ARTIFACT, not the build: the wheel must
+      # contain the production labextension and activate in a clean
+      # JupyterLab 4 environment with no dev symlink.
+      - name: distributable wheel builds, installs, and activates cleanly
+        working-directory: jupyterlab_nbdsl
+        run: |
+          pip install build
+          python -m build --wheel
+          python -m venv /tmp/labclean
+          /tmp/labclean/bin/pip install jupyterlab dist/jupyterlab_nbdsl-*.whl
+          /tmp/labclean/bin/jupyter labextension list 2>&1 | tee /tmp/labext.txt
+          grep -E "jupyterlab_nbdsl v.*(enabled|OK)" /tmp/labext.txt
+          jlpm pack

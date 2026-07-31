@@ -1,57 +1,107 @@
 # Semantic conformance profile: the in-repository NbDsl reference (issue #3).
 #
-# Vocabulary only. Every command here is ordinary NbDsl surface syntax and
-# every expectation is an observation of NbDsl's own semantic state; the laws
-# that consume them live in conformance/runner.py and are identical for every
-# plugin. A profile that contained a law would be a profile that could excuse
-# its own plugin from one.
+# Vocabulary only. Every entry is either a cell of ordinary NbDsl surface
+# syntax or a description of the structured payload the laws read back. The
+# laws live in conformance/runner.py and are identical for every plugin; a
+# profile that contained a law would be a profile that could excuse its own
+# plugin from one.
 
+[profile]
 name = "nbdsl"
-project = "dsls/nbdsl"
-prelude = "NbDsl.Notebook"
-kernel_name = "nbdsl-conformance"
 
-[state]
-# A definition, and an observation that can only succeed if it committed.
-define = "def confDefined : Nat := 41"
-observe = "#eval confDefined + 1"
-observe_expect = "42"
-# A command that must fail — ill-typed, so the failure is elaboration's and
-# not a parse accident.
-failing = 'def confBroken : Nat := "not a Nat"'
-# Output shaped exactly like a control frame. It must arrive as plugin output
-# and never as protocol traffic.
-forge_frame = '#eval IO.println "999\n{\"op\": \"ready\"}"'
+[plugin]
+source = "https://github.com/dzackgarza/lean-jupyter-kernel"
+commit = "IN-REPOSITORY"          # the checkout under test is this repository
+package = "dsls/nbdsl"
+prelude_module = "NbDsl.Notebook"
+kernel_name = "nbdsl"
 
-[registry]
-# NbDsl's semantic registry: `prefer` records a preferred functor and `let`
-# declares an object, both as persistent env extensions.
-#
-# `register` and `observe_registered` are a matched PAIR: the runner asserts
-# the observation in both directions (absent after a rolled-back cell, present
-# after the same registration commits), so neither half can pass vacuously.
-# Names only — opens that make the commands below parse and resolve. This
-# carries no semantic state, which is what lets an independent session run it
-# and still fail `observe_registered`.
-vocabulary = ["open NbDsl NbDsl.Std"]
-register = "let confG := GrpCat.of PUnit ∈ Groups"
-observe_registered = "#home confG"
-# What the structured observation below additionally needs. `register`
-# already committed by the time this runs, so it is not repeated here.
-setup = ["prefer groupsToSets"]
-# The observation that proves registered state structurally, through NbDsl's
-# own MIME payload rather than a status string.
-observe = "#via confG ∈ Sets"
-mime = "application/vnd.nbdsl.path+json"
+[registration]
+# `let … ∈ Groups` lowers to a real `noncomputable abbrev`, so NbDsl's
+# registrations are constant-shaped and the query laws apply in their strong
+# form. The runner falsifies this claim rather than trusting it: a constant the
+# registering session cannot see fails the law.
+shape = "constant"
+# Context the candidate environment needs before the discriminating command.
+# The object alone proves nothing about the preferred-functor registry, which
+# is what the next line commits.
+setup = [
+  "open NbDsl NbDsl.Std",
+  "let confG := GrpCat.of PUnit ∈ Groups",
+]
+# The discriminating command: `prefer` writes one entry into NbDsl's
+# preferred-functor env extension. Before it the observation below cannot be
+# made at all; after it, the observation is a path through that entry.
+command = "prefer groupsToSets"
 
-[query]
-# Completion and inspection of a name the PRELUDE registers: present in every
-# session speaking this plugin.
-complete_code = "prefer groupsToS"
-complete_expect = "groupsToSets"
-inspect_code = "groupsToSets"
-inspect_expect = "Underlying-set functor"
-# A name this SESSION defines, which an independent session must not see.
-session_define = "let confQ := GrpCat.of PUnit ∈ Groups"
-session_complete_code = "#home confQ"
-session_complete_expect = "confQ"
+[observation]
+# NbDsl's registry diagnostic: it resolves a path through the preferred-functor
+# registry and publishes it as a plugin-authored MIME bundle, so the
+# observation is structured semantic state and not a status string.
+command = "#via confG ∈ Sets"
+mimes = ["application/vnd.nbdsl.path+json", "text/plain"]
+# The canonical projection: the whole semantic relationship — which object,
+# from which category, to which category, through which functors.
+projection = ["object", "source", "target", "steps"]
+
+[control]
+# The independent environment: the same prelude and the same opens, none of the
+# registrations. Anything it can observe was never candidate-local.
+setup = ["open NbDsl NbDsl.Std"]
+
+[failure]
+# Ill-typed, so the failure is elaboration's and not a parse accident.
+command = 'def confBroken : Nat := "not a Nat"'
+
+[cancellation]
+# The cancelled cell registers FIRST and then elaborates a wide, flat term:
+# thousands of `have` steps, each passing an elaboration cancellation
+# checkpoint — the mechanism the language server cancels on. Interrupting
+# mid-term must discard the registration on the first line with it.
+prefix = "let confH := GrpCat.of PUnit ∈ Groups"
+slow_header = """set_option maxHeartbeats 0 in
+example : True := by"""
+slow_step = "  have h{i} : Nat := {i}"
+slow_repeat = 25000
+slow_footer = "  trivial"
+interrupt_after_seconds = 3
+# Succeeds only if the cancelled cell's registration survived, which it must not.
+probe = "#home confH"
+
+[replay]
+# An open section makes the committed state uncacheable (its scope stack cannot
+# be serialised), so the next worker death must recover by replaying the
+# committed sources instead of loading the session olean.
+force = ["section"]
+restore = ["end"]
+
+[completion]
+# A name that exists nowhere. The boundary must not answer for it, or it is not
+# answering about the environment at all.
+garbage = "zzzNoSuchNameZzz"
+# A name the PRELUDE defines: present in every session speaking this plugin.
+constant_code = "prefer groupsToS"
+constant_cursor = 16
+constant_match = "groupsToSets"
+# A name THIS session registered: an independent session must not offer it.
+registered_code = "confG"
+registered_cursor = 5
+registered_match = "confG"
+
+[inspection]
+garbage = "zzzNoSuchNameZzz"
+constant_code = "groupsToSets"
+constant_cursor = 0
+# The constant's OWN signature, not merely found=true. Inspect pretty-prints
+# the type without notation, so this is the head of `Object Groups ⥤ Object
+# Sets` as it actually renders.
+constant_signature = "CategoryTheory.Functor"
+registered_code = "confG"
+registered_cursor = 0
+registered_signature = "Object"
+
+[output]
+# Output shaped exactly like a control frame: a length line followed by a
+# frame-shaped JSON object claiming to be the worker's `ready` handshake.
+command = '#eval IO.println "999\n{\"op\": \"ready\"}"'
+marker = "999"

@@ -1,34 +1,40 @@
 #!/usr/bin/env python3
-"""Kernel-owned semantic conformance runner (issue #3).
+"""Kernel-owned semantic conformance: one law set, many plugin profiles.
 
-One invocation identifies a plugin package and prelude module through a
-profile; this runner owns the LAWS and the profile owns only the vocabulary
-that discriminates them. A profile carries commands and expected
-observations — never assertion logic, never a law.
+Every law is proven through the ordinary Jupyter protocol against an installed
+kernelspec — `execute`, `complete`, `inspect`, a real `interrupt_request`, and
+a real SIGKILL of the worker process group. Claims about Jupyter semantics are
+never made from direct kernel or helper calls. The one addition is
+`output-control-separated`, which ALSO decodes the worker's frames with the
+INDEPENDENT oracle codec in nbdsl_kernel/tests/roundtrip.py: proving plugin
+output never becomes control traffic needs a decoder that is not production's,
+or a codec bug would pass both sides.
 
+A profile is DATA ONLY (plugin selection, commands, cancellation point,
+expected MIME types, canonical projections, and the shape of the plugin's
+registration). It cannot supply law code, expected success booleans, or result
+overrides; `load_profile` rejects any key that would.
+
+Usage:
     python3 conformance/runner.py conformance/nbdsl.toml
+    python3 conformance/runner.py conformance/lean-cas-dsl.toml \\
+        [--source-dir DIR] [--kernel-name NAME] [--output result.json]
 
-The laws are the semantics the core silently relies on (docs/plugins.md):
-registration lands in the Environment, a success commits exactly its change,
-a failure commits nothing, cancellation discards, replay and restart
-reconstruct, control frames stay separate from plugin output, and
-completion/inspection see the environment this session actually built.
+Exit status is 0 only when every law passes, 1 on a law failure, 2 when the
+profile or the environment it names is unusable.
 
-Two transports, because the laws live at two boundaries:
-
-  * the framed worker transport (this file decodes frames with the
-    independent oracle in nbdsl_kernel/tests/roundtrip.py, NOT with
-    production's codec — a codec bug must not pass both sides);
-  * the real Jupyter kernel, for the laws production owns (worker death,
-    restart, replay, session cache).
-
-Each law prints the plausible breakage it detects, so a passing run is a
-fault model and not a green tick.
+Resource contract: at most ONE mathlib-loaded worker is alive at any moment.
+The candidate session is shut down before the independent control session
+starts; the laws compare observations, not simultaneity.
 """
 
 from __future__ import annotations
 
+import argparse
+import json
 import os
+import queue
+import signal
 import subprocess
 import sys
 import time
@@ -36,434 +42,909 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-REPO = Path(__file__).resolve().parents[1]
+
+def _kernel_repo() -> Path:
+    """The kernel repository whose identity this result reports, located by its
+    authored compatibility source — never guessed."""
+    for start in (Path(__file__).resolve().parent, Path.cwd().resolve()):
+        for candidate in (start, *start.parents):
+            if ((candidate / "release.toml").exists()
+                    and (candidate / "nbdsl_kernel").is_dir()):
+                return candidate
+    raise RuntimeError("cannot locate the kernel repository")
+
+
+REPO = _kernel_repo()
 sys.path.insert(0, str(REPO / "nbdsl_kernel/tests"))
 
-# The INDEPENDENT frame codec (see the module docstring in roundtrip.py: it
-# deliberately duplicates production's). Reusing it here keeps this runner's
-# decoding independent of nbdsl_kernel/worker.py, which is the property
-# "independently decoded framed control messages" asks for.
+# The INDEPENDENT frame codec. roundtrip.py's docstring explains why it
+# deliberately duplicates production's: sharing production's codec would let a
+# codec bug pass both sides unnoticed. Do not "deduplicate" this import.
 from roundtrip import FrameReader, write_frame  # noqa: E402
 
-TIMEOUT = 600.0  # a first prelude import pulls the plugin's whole olean set
+from jupyter_client.kernelspec import KernelSpecManager  # noqa: E402
+from jupyter_client.manager import start_new_kernel  # noqa: E402
+
+# The first execute of a session waits for the worker's prelude import (all of
+# mathlib, from oleans); later replies get the same budget because elaboration
+# is legitimately slow.
+STARTUP = 900.0
+QUERY_TIMEOUT = 120.0
+MIN_FREE_GB = 6  # a mathlib worker is 3-4 GB; never start one into swap
+
+LAWS = [
+    "registration-isolated",
+    "success-commits",
+    "error-rolls-back",
+    "cancellation-rolls-back",
+    "replay-reconstructs",
+    "restart-reconstructs",
+    "completion-sees-environment",
+    "inspection-sees-environment",
+    "output-control-separated",
+]
+
+# Keys that would move law authority into the data file. Fixed decision 4:
+# profiles supply inputs and observations, never verdicts.
+FORBIDDEN_PROFILE_KEYS = {
+    "expect", "expected", "expects", "status", "verdict", "result", "results",
+    "laws", "law", "override", "overrides", "skip", "skips", "xfail",
+    "allow_failure", "optional", "assert", "asserts", "pass", "fail",
+}
+
+REQUIRED = {
+    "profile": ["name"],
+    "plugin": ["source", "commit", "package", "prelude_module", "kernel_name"],
+    "registration": ["setup", "command", "shape"],
+    "observation": ["command", "mimes", "projection"],
+    "control": ["setup"],
+    "failure": ["command"],
+    "cancellation": ["prefix", "slow_header", "slow_step", "slow_repeat",
+                     "slow_footer", "probe", "interrupt_after_seconds"],
+    "replay": ["force", "restore"],
+    "completion": ["garbage", "constant_code", "constant_cursor",
+                   "constant_match", "registered_code", "registered_cursor",
+                   "registered_match"],
+    "inspection": ["garbage", "constant_code", "constant_cursor",
+                   "constant_signature", "registered_code",
+                   "registered_cursor", "registered_signature"],
+    "output": ["command", "marker"],
+}
+
+# A registration either creates a Lean constant or lives only in a persistent
+# env extension. Under plugin API v1 complete/inspect are constant-faithful, so
+# the shape decides which form of the query laws applies — and the runner
+# FALSIFIES the declaration both ways: a "constant" the registering session
+# cannot see fails, and an "extension" that is visible fails too.
+SHAPES = ("constant", "extension")
 
 
-class Failure(Exception):
-    """A law was violated. The message names the law and what it observed."""
+class ProfileError(RuntimeError):
+    """The profile or the environment it names is unusable — not a law failure."""
 
 
-def check(ok: bool, law: str, detail: object = "") -> None:
-    if not ok:
-        raise Failure(f"{law}: {detail}")
+# --------------------------------------------------------------------------
+# profile
+# --------------------------------------------------------------------------
+
+def _reject_forbidden(node: Any, path: str = "") -> None:
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key.lower() in FORBIDDEN_PROFILE_KEYS:
+                raise ProfileError(
+                    f"profile key {path}{key!r} would let the profile decide a "
+                    "law outcome; profiles are data only")
+            _reject_forbidden(value, f"{path}{key}.")
+    elif isinstance(node, list):
+        for item in node:
+            _reject_forbidden(item, path)
 
 
-def law(name: str, detects: str) -> None:
-    print(f"ok: {name}\n    detects: {detects}")
+def load_profile(path: Path) -> dict[str, Any]:
+    with path.open("rb") as fh:
+        profile = tomllib.load(fh)
+    _reject_forbidden(profile)
+    for section, keys in REQUIRED.items():
+        if section not in profile:
+            raise ProfileError(f"profile is missing section [{section}]")
+        for key in keys:
+            if key not in profile[section]:
+                raise ProfileError(f"profile is missing {section}.{key}")
+    shape = profile["registration"]["shape"]
+    if shape not in SHAPES:
+        raise ProfileError(
+            f"registration.shape must be one of {SHAPES}, not {shape!r}")
+    return profile
 
 
-# --- the framed worker transport -----------------------------------------
+def cancellation_cell(cfg: dict[str, Any]) -> str:
+    """The cancellation cell: register FIRST, then elaborate a wide, flat term
+    whose thousands of steps each pass an elaboration cancellation checkpoint —
+    the real mid-command checkpoint the law names. `{i}` is the step index."""
+    steps = "\n".join(cfg["slow_step"].replace("{i}", str(i))
+                      for i in range(int(cfg["slow_repeat"])))
+    return "\n".join([cfg["prefix"], cfg["slow_header"], steps,
+                      cfg["slow_footer"]])
 
 
-class Worker:
-    """A worker process for one plugin profile, spoken to over framed fds."""
+# --------------------------------------------------------------------------
+# process identity
+# --------------------------------------------------------------------------
 
-    def __init__(self, project: Path, prelude: str) -> None:
-        req_r, req_w = os.pipe()
-        rep_r, rep_w = os.pipe()
-        # The worker binary comes from the PLUGIN's own dependency tree, the
-        # way production resolves it — an external plugin's clean checkout
-        # builds its own, and must not silently borrow this repo's.
-        from nbdsl_kernel.worker import find_worker_exe
-        exe = find_worker_exe(project)
-        check(exe is not None,
-              f"worker binary for {project} (run `lake build nbdsl_worker` there)",
-              project)
-        self.proc = subprocess.Popen(
-            ["lake", "env", str(exe),
-             "--req-fd", str(req_r), "--rep-fd", str(rep_w),
-             "--prelude-module", prelude],
-            cwd=project, pass_fds=(req_r, rep_w),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        os.close(req_r)
-        os.close(rep_w)
-        self.req_fd = req_w
-        self.replies = FrameReader(rep_r)
-        self._rid = 0
-
-    def ready(self) -> dict[str, Any]:
-        frame: dict[str, Any] = self.replies.read_frame()
-        check(frame.get("op") == "ready", "ready handshake", frame)
-        return frame
-
-    def request(self, op: str, **fields: object) -> dict[str, Any]:
-        self._rid += 1
-        rid = f"c{self._rid}"
-        write_frame(self.req_fd, {"op": op, "request_id": rid, **fields})
-        rep: dict[str, Any] = self.replies.read_frame()
-        check(rep.get("request_id") == rid, "request_id echo", rep)
-        return rep
-
-    def execute(self, code: str) -> dict[str, Any]:
-        return self.request("execute", code=code, cell_id=f"cell{self._rid}")
-
-    def snapshot(self) -> int:
-        n: int = self.request("describe")["snapshot"]
-        return n
-
-    def shutdown(self) -> tuple[int, bytes]:
-        os.close(self.req_fd)
-        rc = self.proc.wait(timeout=TIMEOUT)
-        out, _ = self.proc.communicate(timeout=10)
-        return rc, out
-
-    def kill(self) -> None:
-        self.proc.kill()
-        self.proc.wait(timeout=30)
+def _kernel_pid(km: Any) -> int:
+    provisioner = getattr(km, "provisioner", None)
+    for owner in (getattr(provisioner, "process", None), provisioner,
+                  getattr(km, "kernel", None)):
+        pid = getattr(owner, "pid", None)
+        if isinstance(pid, int):
+            return pid
+    raise ProfileError("cannot determine the kernel process pid")
 
 
-def messages(rep: dict[str, Any]) -> str:
-    return " ".join(d["message"] for d in rep.get("diagnostics", []))
-
-
-def bundles(rep: dict[str, Any]) -> list[dict[str, Any]]:
-    return [o["data"] for o in rep.get("outputs", [])]
-
-
-def run_all(w: Worker, cells: list[str], label: str) -> None:
-    for cell in cells:
-        rep = w.execute(cell)
-        check(rep["status"] == "ok", f"{label} setup", (cell, rep))
-
-
-# --- the laws -------------------------------------------------------------
-
-
-def law_commit(w: Worker, p: dict[str, Any]) -> None:
-    """A successful command commits its exact environment change."""
-    st = p["state"]
-    before = w.snapshot()
-    rep = w.execute(st["define"])
-    check(rep["status"] == "ok", "commit", rep)
-    check(rep["snapshot"] == before + 1, "commit advances the snapshot", rep)
-    rep = w.execute(st["observe"])
-    check(rep["status"] == "ok", "observe after commit", rep)
-    check(st["observe_expect"] in messages(rep), "observe sees the commit", rep)
-    law("commit-on-success",
-        "a command whose environment change is discarded, or committed to a "
-        "snapshot the session does not continue from")
-
-
-def law_rollback(w: Worker, p: dict[str, Any]) -> None:
-    """A failed command leaves exact pre/post semantic state equal."""
-    st = p["state"]
-    before = w.snapshot()
-    rep = w.execute(st["failing"])
-    check(rep["status"] == "error", "failing command must fail", rep)
-    check(rep["snapshot"] == before, "failed cell keeps the parent snapshot", rep)
-    check(w.snapshot() == before, "post-failure snapshot equals pre", None)
-    rep = w.execute(st["observe"])
-    check(rep["status"] == "ok" and st["observe_expect"] in messages(rep),
-          "state intact after a failure", rep)
-    law("rollback-on-error",
-        "a partially-applied cell: declarations or registrations from a cell "
-        "that failed later surviving into the session")
-
-
-def law_registry_rollback(w: Worker, p: dict[str, Any]) -> None:
-    """Plugin registry state is Environment state, so it rolls back too.
-
-    This is the load-bearing state law (docs/plugins.md): a registration held
-    in a module-level IO.Ref would survive a failed cell, and every derived
-    guarantee — atomicity, replay, the session cache — would be silently wrong.
-
-    The law observes the SAME object it registers, in both directions: absent
-    after the failed cell, present after the identical registration succeeds.
-    Without the second half the first is satisfied by an object that was never
-    registrable at all, and the law would pass on a plugin with no registry.
-    """
-    reg = p["registry"]
-    st = p["state"]
-    run_all(w, reg["vocabulary"], "vocabulary")
-    rep = w.execute(f"{reg['register']}\n{st['failing']}")
-    check(rep["status"] == "error", "registration+failure cell must fail", rep)
-    rep = w.execute(reg["observe_registered"])
-    check(rep["status"] == "error",
-          "a registration inside a failed cell must not survive it", rep)
-    # …and the same observation must SUCCEED once the same registration
-    # commits, or the error above proved incapacity rather than absence.
-    rep = w.execute(reg["register"])
-    check(rep["status"] == "ok", "the registration alone must commit", rep)
-    rep = w.execute(reg["observe_registered"])
-    check(rep["status"] == "ok",
-          "the observation must flip once the registration commits", rep)
-    law("registration-is-environment-state",
-        "semantic state kept in a module-level IO.Ref instead of a persistent "
-        "env extension — invisible until a rollback, replay or cache restore")
-
-
-def law_structured_state(w: Worker, p: dict[str, Any]) -> None:
-    """Registered state is observable as plugin-authored structured output."""
-    reg = p["registry"]
-    run_all(w, reg["setup"], "registry")
-    rep = w.execute(reg["observe"])
-    check(rep["status"] == "ok", "structured observation", rep)
-    data = next((b for b in bundles(rep) if reg["mime"] in b), None)
-    check(data is not None, f"structured output {reg['mime']}", rep)
-    assert data is not None
-    check("text/plain" in data, "structured output carries text/plain", data)
-    law("structured-state-observation",
-        "a status-string proxy passing for semantic proof: the assertion "
-        "reads the plugin's own MIME payload, not an ok/error verdict")
-
-
-def law_query_agreement(w: Worker, p: dict[str, Any]) -> None:
-    """Completion and inspection expose THIS environment's objects."""
-    q = p["query"]
-    # a name THIS session defines, so the isolation law below has a subject
-    # that provably exists here and provably does not exist elsewhere
-    rep = w.execute(q["session_define"])
-    check(rep["status"] == "ok", "session definition", rep)
-    rep = w.request("complete", code=q["complete_code"],
-                    cursor=len(q["complete_code"]))
-    check(rep["status"] == "ok", "complete", rep)
-    check(q["complete_expect"] in rep["matches"], "completion match", rep)
-    rep = w.request("inspect", code=q["inspect_code"], cursor=0)
-    check(rep["status"] == "ok" and rep["found"], "inspect", rep)
-    text = f"{rep.get('type', '')} {rep.get('doc') or ''} {rep.get('hover', '')}"
-    check(q["inspect_expect"] in text, "inspection content", rep)
-    law("completion-and-inspection-agreement",
-        "queries answered from a stale or untouched environment — the "
-        "isolation law below proves the same names are absent elsewhere")
-
-
-def law_control_frame_separation(w: Worker, p: dict[str, Any]) -> None:
-    """Plugin output stays off the independently decoded control channel."""
-    rep = w.execute(p["state"]["forge_frame"])
-    check(rep["status"] == "ok", "frame-shaped output cell", rep)
-    check("999" in messages(rep), "forged frame text arrived as a diagnostic", rep)
-    check(w.snapshot() >= 0, "control channel still in sync", None)
-    law("control-frame-separation",
-        "plugin or user output written to the control fds, where a "
-        "frame-shaped print would desynchronize or forge protocol traffic")
-
-
-def law_cancellation(w: Worker, p: dict[str, Any]) -> None:
-    """Cancellation at a real checkpoint discards candidate state.
-
-    Plain Lean, not plugin vocabulary: every prelude is a Lean environment, and
-    the checkpoints are the elaborator's own.
-    """
-    before = w.snapshot()
-    w._rid += 1
-    rid = f"c{w._rid}"
-    slow = ("set_option maxHeartbeats 0 in\nexample : True := by\n"
-            + "".join(f"  have h{i} : Nat := {i}\n" for i in range(25000))
-            + "  trivial")
-    write_frame(w.req_fd, {"op": "execute", "request_id": rid,
-                           "cell_id": "conf-slow", "code": slow})
-    time.sleep(1.0)
-    write_frame(w.req_fd, {"op": "cancel", "request_id": rid})
-    t0 = time.monotonic()
-    rep = w.replies.read_frame()
-    took = time.monotonic() - t0
-    check(rep["request_id"] == rid and rep["status"] == "cancelled",
-          "cancel reply", rep)
-    check(took < 30, "cancel is cooperative, not a timeout", took)
-    check(w.snapshot() == before, "cancelled work committed nothing", None)
-    rep = w.execute(p["state"]["observe"])
-    check(rep["status"] == "ok"
-          and p["state"]["observe_expect"] in messages(rep),
-          "worker alive and state intact after cancel", rep)
-    law("cancellation-discards",
-        "a cancelled elaboration committing partial state, or killing the "
-        "worker instead of unwinding at a checkpoint")
-
-
-def law_isolation(project: Path, prelude: str, p: dict[str, Any],
-                  other: Worker) -> None:
-    """Registration affects only the candidate environment.
-
-    `other` has run this profile's registry setup. A second, independent
-    worker on the same profile must not observe any of it: the two sessions
-    share a plugin package, a prelude and a machine, and nothing else.
-    """
-    fresh = Worker(project, prelude)
-    try:
-        fresh.ready()
-        # the fresh session gets the vocabulary too, so the only thing it
-        # lacks is the other session's registration
-        run_all(fresh, p["registry"]["vocabulary"], "fresh vocabulary")
-        rep = fresh.execute(p["registry"]["observe_registered"])
-        check(rep["status"] == "error",
-              "an independent session must not see another's registrations", rep)
-        # the same observation succeeds in the session that registered, so the
-        # error above is absence and not an observation that never works
-        rep = other.execute(p["registry"]["observe_registered"])
-        check(rep["status"] == "ok",
-              "the registering session still observes its own registration", rep)
-        q = p["query"]
-        rep = fresh.request("complete", code=q["session_complete_code"],
-                            cursor=len(q["session_complete_code"]))
-        check(q["session_complete_expect"] not in rep.get("matches", []),
-              "completion must not leak a session-registered name", rep)
-        # …while the session that DID register still sees it, so the check
-        # above is discriminating and not just a broken second worker.
-        rep = other.request("complete", code=q["session_complete_code"],
-                            cursor=len(q["session_complete_code"]))
-        check(q["session_complete_expect"] in rep.get("matches", []),
-              "the registering session still sees its own name", rep)
-    finally:
-        fresh.kill()
-    law("environment-isolation",
-        "semantic state escaping one session — a process-global registry, or "
-        "a session cache key colliding across independent sessions")
-
-
-def law_stdout_clean(w: Worker) -> None:
-    rc, out = w.shutdown()
-    check(rc == 0, "clean shutdown", rc)
-    check(out == b"", "control traffic never reaches stdout", out)
-    law("transport-hygiene",
-        "control frames leaking onto stdout, where a notebook would render "
-        "them as plugin output")
-
-
-# --- the Jupyter transport: restart, replay, session cache ----------------
-
-
-def law_restart_and_replay(p: dict[str, Any]) -> None:
-    """Real worker death and production restart reconstruct the session.
-
-    Driven through the installed kernelspec, because restart, replay and the
-    session cache are production's code, not this runner's.
-    """
-    from jupyter_client.manager import start_new_kernel
-
-    st, reg = p["state"], p["registry"]
-    km, kc = start_new_kernel(kernel_name=p["kernel_name"], startup_timeout=120)
-    try:
-        # the full session the framed laws built, in one production kernel
-        for cell in [st["define"], *reg["vocabulary"], reg["register"],
-                     *reg["setup"]]:
-            reply, _ = kernel_cell(kc, cell)
-            check(reply["status"] == "ok", "kernel setup", (cell, reply))
-        kill_worker(km)
-        reply, outputs = kernel_cell(kc, st["observe"])
-        check(reply["status"] == "ok", "first cell after worker death", reply)
-        text = stream_text(outputs)
-        check(st["observe_expect"] in text, "state reconstructed", text)
-        check("Restored session from cache." in text or "Replayed" in text,
-              "recovery announced its mechanism", text)
-        # The reconstruction is semantic, not textual: the plugin's registered
-        # state must answer through its own structured output again.
-        reply, outputs = kernel_cell(kc, reg["observe"])
-        check(reply["status"] == "ok", "registry observation after restart", reply)
-        check(any(reg["mime"] in m["content"].get("data", {}) for m in outputs
-                  if m["msg_type"] in ("execute_result", "display_data")),
-              "registered state survived the restart", [m["msg_type"] for m in outputs])
-    finally:
-        kc.stop_channels()
-        km.shutdown_kernel(now=True)
-    law("restart-and-replay",
-        "a restart that loses registered plugin state, or an olean session "
-        "cache that restores an environment the sources no longer describe")
-
-
-def kill_worker(km: Any) -> None:
-    """Kill the Lean worker under the kernel — real process death, not a flag."""
-    out = subprocess.run(["pgrep", "-P", str(km.provisioner.pid), "-f",
-                          "nbdsl_worker"], capture_output=True, text=True)
-    pids = [int(x) for x in out.stdout.split()]
-    if not pids:
-        out = subprocess.run(["pgrep", "-f", "nbdsl_worker"],
-                             capture_output=True, text=True)
-        pids = [int(x) for x in out.stdout.split()]
-    check(bool(pids), "found a worker process to kill", out.stdout)
-    for pid in pids:
-        os.kill(pid, 9)
-    time.sleep(1.0)
-
-
-def kernel_cell(kc: Any, code: str,
-                timeout: float = TIMEOUT) -> tuple[dict[str, Any], list[Any]]:
-    msg_id = kc.execute(code)
-    outputs = []
-    while True:
-        msg = kc.get_iopub_msg(timeout=timeout)
-        if msg["parent_header"].get("msg_id") != msg_id:
+def _ppid_table() -> dict[int, int]:
+    table: dict[int, int] = {}
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
             continue
-        if (msg["msg_type"] == "status"
-                and msg["content"]["execution_state"] == "idle"):
-            break
-        outputs.append(msg)
-    while True:
-        reply = kc.get_shell_msg(timeout=timeout)
-        if reply["parent_header"].get("msg_id") == msg_id:
-            content: dict[str, Any] = reply["content"]
-            return content, outputs
+        try:
+            stat = Path(f"/proc/{entry}/stat").read_text()
+        except OSError:
+            continue
+        # comm (field 2) is parenthesised and may itself contain spaces.
+        table[int(entry)] = int(stat[stat.rindex(")") + 2:].split()[1])
+    return table
 
 
-def stream_text(outputs: list[Any]) -> str:
+def _alive(pid: int) -> bool:
+    """Running, not merely present in /proc. A killed child stays visible as a
+    zombie until its parent reaps it, and the adapter only reaps on its next
+    execute."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return False
+    return stat[stat.rindex(")") + 2:].split()[0] != "Z"
+
+
+def _cmdline(pid: int) -> str:
+    try:
+        return (Path(f"/proc/{pid}/cmdline").read_bytes()
+                .replace(b"\0", b" ").decode(errors="replace"))
+    except OSError:
+        return ""
+
+
+def worker_processes(kernel_pid: int) -> list[tuple[int, str]]:
+    """Live worker processes descended from this kernel. Descent matters: no
+    other session's worker may be mistaken for this one's."""
+    table = _ppid_table()
+    found = []
+    for pid in table:
+        ancestor = pid
+        for _ in range(32):
+            ancestor = table.get(ancestor, 0)
+            if ancestor <= 1:
+                break
+            if ancestor == kernel_pid:
+                cmd = _cmdline(pid)
+                if "nbdsl_worker" in cmd and "--req-fd" in cmd and _alive(pid):
+                    found.append((pid, cmd))
+                break
+    return found
+
+
+def _free_gb() -> int:
+    for line in Path("/proc/meminfo").read_text().splitlines():
+        if line.startswith("MemAvailable:"):
+            return int(line.split()[1]) // (1024 * 1024)
+    raise ProfileError("/proc/meminfo has no MemAvailable")
+
+
+def await_memory() -> int:
+    """One mathlib worker at a time, and never into swap."""
+    deadline = time.monotonic() + 600
+    while time.monotonic() < deadline:
+        free = _free_gb()
+        if free >= MIN_FREE_GB:
+            return free
+        time.sleep(15)
+    raise ProfileError(
+        f"only {_free_gb()} GB available after waiting; refusing to start a "
+        f"mathlib worker (need {MIN_FREE_GB} GB)")
+
+
+# --------------------------------------------------------------------------
+# session
+# --------------------------------------------------------------------------
+
+class Session:
+    """One live kernel session driven through the production Jupyter client."""
+
+    def __init__(self, kernel_name: str) -> None:
+        await_memory()
+        self.km, self.kc = start_new_kernel(kernel_name=kernel_name,
+                                            startup_timeout=60)
+        self.pid = _kernel_pid(self.km)
+        self.comms: list[dict[str, Any]] = []
+
+    def close(self) -> None:
+        """Shut down, then make sure no mathlib worker outlived the kernel — an
+        orphan holds gigabytes for the rest of the run."""
+        pids = worker_processes(self.pid)
+        try:
+            self.kc.stop_channels()
+            self.km.shutdown_kernel(now=True)
+        finally:
+            for pid, _ in pids:
+                if _alive(pid):
+                    try:
+                        os.killpg(os.getpgid(pid), signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError):
+                        pass
+
+    # -- messaging ---------------------------------------------------------
+
+    def _collect(self, msg_id: str, timeout: float) -> list[dict[str, Any]]:
+        outputs: list[dict[str, Any]] = []
+        while True:
+            msg = self.kc.get_iopub_msg(timeout=timeout)
+            if msg["msg_type"].startswith("comm_"):
+                self.comms.append(msg)
+            if msg["parent_header"].get("msg_id") != msg_id:
+                continue
+            if (msg["msg_type"] == "status"
+                    and msg["content"]["execution_state"] == "idle"):
+                return outputs
+            outputs.append(msg)
+
+    def _shell(self, msg_id: str, timeout: float) -> dict[str, Any]:
+        while True:
+            reply = self.kc.get_shell_msg(timeout=timeout)
+            if reply["parent_header"].get("msg_id") == msg_id:
+                content: dict[str, Any] = reply["content"]
+                return content
+
+    def run(self, code: str,
+            timeout: float = STARTUP) -> tuple[dict[str, Any], list[Any]]:
+        msg_id = self.kc.execute(code)
+        outputs = self._collect(msg_id, timeout)
+        return self._shell(msg_id, timeout), outputs
+
+    def complete(self, code: str, cursor: int) -> dict[str, Any]:
+        return self._shell(self.kc.complete(code, cursor), QUERY_TIMEOUT)
+
+    def inspect(self, code: str, cursor: int) -> dict[str, Any]:
+        return self._shell(self.kc.inspect(code, cursor), QUERY_TIMEOUT)
+
+    def run_and_interrupt(self, code: str, after: float,
+                          timeout: float = STARTUP) -> dict[str, Any]:
+        """Execute, let elaboration reach its checkpoints, then send a real
+        interrupt_request through the kernel manager."""
+        msg_id = self.kc.execute(code)
+        try:
+            self._shell(msg_id, after)
+            raise ProfileError(
+                "the cancellation cell returned before the interrupt; it is "
+                "not a cancellation point")
+        except queue.Empty:
+            pass
+        self.km.interrupt_kernel()
+        reply = self._shell(msg_id, timeout)
+        self._collect(msg_id, timeout)
+        return reply
+
+    def kill_worker(self) -> dict[str, Any]:
+        """SIGKILL the real worker process group and prove it is gone."""
+        before = worker_processes(self.pid)
+        if not before:
+            raise ProfileError(
+                "no live worker process found under the kernel; the restart "
+                "law has nothing to kill")
+        killed: list[dict[str, Any]] = []
+        for pid, cmd in before:
+            pgid = os.getpgid(pid)
+            os.killpg(pgid, signal.SIGKILL)
+            killed.append({"pid": pid, "pgid": pgid, "cmdline": cmd[:200]})
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if not any(_alive(k["pid"]) for k in killed):
+                break
+            time.sleep(0.2)
+        survivors = [k["pid"] for k in killed if _alive(k["pid"])]
+        if survivors:
+            raise ProfileError(f"worker processes survived SIGKILL: {survivors}")
+        return {"killed": killed}
+
+
+def texts(outputs: list[Any]) -> str:
     return "".join(m["content"]["text"] for m in outputs
                    if m["msg_type"] == "stream")
 
 
-# --- driver ---------------------------------------------------------------
+def mime_bundles(outputs: list[Any]) -> list[dict[str, Any]]:
+    return [m["content"]["data"] for m in outputs
+            if m["msg_type"] in ("execute_result", "display_data")]
 
 
-def install_kernelspec(p: dict[str, Any], project: Path) -> None:
-    """Install the profile's kernelspec, so the Jupyter-transport laws drive
-    the same package and prelude the framed laws did."""
-    r = subprocess.run(
-        [sys.executable, "-m", "nbdsl_kernel.install",
-         "--project", str(project), "--name", p["kernel_name"],
-         "--prelude-module", p["prelude"],
-         "--display-name", f"{p['name']} conformance"],
-        capture_output=True, text=True)
-    check(r.returncode == 0,
-          f"install kernelspec {p['kernel_name']} (is nbdsl_kernel installed "
-          f"in {sys.executable}?)", r.stderr.strip() or r.stdout.strip())
+# --------------------------------------------------------------------------
+# observation
+# --------------------------------------------------------------------------
 
+def _dig(payload: Any, dotted: str) -> Any:
+    node = payload
+    for part in dotted.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+    return node
+
+
+def _read(reply: dict[str, Any], outputs: list[Any],
+          cfg: dict[str, Any]) -> dict[str, Any]:
+    """The canonical projection of a plugin-authored MIME payload.
+
+    Absence is an observation too: a command that cannot run because the
+    registration is missing is exactly what discriminates the environments.
+    """
+    mimes: list[str] = cfg["mimes"]
+    bundle = next((b for b in mime_bundles(outputs)
+                   if all(m in b for m in mimes)), None)
+    if reply["status"] != "ok" or bundle is None:
+        return {"present": False, "status": reply["status"],
+                "detail": str(reply.get("evalue", ""))[:400]}
+    return {"present": True, "mimes": sorted(mimes),
+            "projection": {k: _dig(bundle[mimes[0]], k)
+                           for k in cfg["projection"]}}
+
+
+def observe(session: Session, cfg: dict[str, Any]) -> dict[str, Any]:
+    reply, outputs = session.run(cfg["command"])
+    return _read(reply, outputs, cfg)
+
+
+def _route(stream: str) -> str:
+    """Which production recovery path the kernel reported taking."""
+    if "Restored session from cache" in stream:
+        return "cache"
+    if "Replayed" in stream:
+        return "replay"
+    return "unknown"
+
+
+def query_answers(session: Session, profile: dict[str, Any]) -> dict[str, Any]:
+    """What complete and inspect answer for the three probes the query laws
+    need: a name that does not exist, a name the PRELUDE defines, and the name
+    this profile registers."""
+    comp, insp = profile["completion"], profile["inspection"]
+    out: dict[str, Any] = {}
+    for label, code, cursor, match in (
+            ("garbage", comp["garbage"], len(comp["garbage"]), None),
+            ("constant", comp["constant_code"], comp["constant_cursor"],
+             comp["constant_match"]),
+            ("registered", comp["registered_code"], comp["registered_cursor"],
+             comp["registered_match"])):
+        rep = session.complete(code, cursor)
+        matches = rep.get("matches", [])
+        out[f"complete_{label}"] = {
+            "code": code, "cursor": cursor, "want": match,
+            "found": bool(matches) if match is None else match in matches,
+            "n_matches": len(matches), "sample": matches[:8]}
+    for label, code, cursor, sig in (
+            ("garbage", insp["garbage"], 0, None),
+            ("constant", insp["constant_code"], insp["constant_cursor"],
+             insp["constant_signature"]),
+            ("registered", insp["registered_code"], insp["registered_cursor"],
+             insp["registered_signature"])):
+        rep = session.inspect(code, cursor)
+        data = rep.get("data", {})
+        text = json.dumps(data, ensure_ascii=False)
+        out[f"inspect_{label}"] = {
+            "code": code, "cursor": cursor, "want": sig,
+            "reply_found": bool(rep.get("found")),
+            "found": bool(rep.get("found")) if sig is None
+            else bool(rep.get("found")) and sig in text,
+            "data": {k: str(v)[:400] for k, v in data.items()}}
+    return out
+
+
+# --------------------------------------------------------------------------
+# report
+# --------------------------------------------------------------------------
+
+class Report:
+    def __init__(self) -> None:
+        self.laws: dict[str, dict[str, Any]] = {}
+
+    def record(self, law: str, ok: bool, observation: dict[str, Any],
+               detail: str) -> None:
+        if law not in LAWS:
+            raise AssertionError(f"unknown law {law!r}")
+        self.laws[law] = {"law": law, "status": "pass" if ok else "fail",
+                          "observation": observation, "detail": detail}
+
+    def ordered(self) -> list[dict[str, Any]]:
+        for law in LAWS:
+            self.laws.setdefault(law, {"law": law, "status": "fail",
+                                       "observation": {},
+                                       "detail": "law did not run"})
+        return [self.laws[law] for law in LAWS]
+
+    def verdict(self) -> str:
+        return ("pass" if all(v["status"] == "pass" for v in self.ordered())
+                else "fail")
+
+
+# --------------------------------------------------------------------------
+# candidate-session laws
+# --------------------------------------------------------------------------
+
+def run_candidate(session: Session, profile: dict[str, Any],
+                  report: Report) -> dict[str, Any]:
+    """Every law provable inside the registering environment, plus the
+    observations the control session will be compared against."""
+    obs_cfg = profile["observation"]
+
+    for code in profile["registration"]["setup"]:
+        reply, outputs = session.run(code)
+        if reply["status"] != "ok":
+            raise ProfileError(
+                f"profile setup cell failed: {code!r} -> {reply}\n"
+                f"{texts(outputs)[:800]}")
+
+    # -- success-commits ---------------------------------------------------
+    before = observe(session, obs_cfg)
+    reply, _ = session.run(profile["registration"]["command"])
+    committed = observe(session, obs_cfg)
+    again = observe(session, obs_cfg)
+    report.record(
+        "success-commits",
+        reply["status"] == "ok" and not before["present"]
+        and committed["present"] and committed == again,
+        {"before": before, "after": committed, "reobserved": again,
+         "registration_command": profile["registration"]["command"],
+         "registration_status": reply["status"]},
+        "the discriminating command commits exactly its observation change: "
+        "unobservable before, the canonical projection after, unchanged when "
+        "observed again")
+
+    # -- error-rolls-back --------------------------------------------------
+    reply, _ = session.run(profile["failure"]["command"])
+    after_error = observe(session, obs_cfg)
+    report.record(
+        "error-rolls-back",
+        reply["status"] == "error" and after_error == committed,
+        {"failing_command": profile["failure"]["command"],
+         "failing_status": reply["status"],
+         "failing_error": str(reply.get("evalue", ""))[:400],
+         "pre": committed, "post": after_error},
+        "a failing command leaves the pre/post structured observation equal")
+
+    candidate_queries = query_answers(session, profile)
+
+    # -- output-control-separated, Jupyter half ----------------------------
+    out_cfg = profile["output"]
+    comms_before = len(session.comms)
+    reply, outputs = session.run(out_cfg["command"])
+    ordinary = texts(outputs) + json.dumps(mime_bundles(outputs),
+                                           ensure_ascii=False)
+    after_output = observe(session, obs_cfg)
+    jupyter_half = {
+        "command": out_cfg["command"], "status": reply["status"],
+        "marker_in_ordinary_output": out_cfg["marker"] in ordinary,
+        "new_comm_messages": len(session.comms) - comms_before,
+        "ordinary_output": ordinary[:400],
+        "observation_after": after_output,
+        "ok": (reply["status"] == "ok" and out_cfg["marker"] in ordinary
+               and len(session.comms) == comms_before
+               and after_output == committed)}
+
+    # -- cancellation-rolls-back -------------------------------------------
+    cancel_cfg = profile["cancellation"]
+    # Cooperative cancellation is a claim about the WORKER PROCESS, not the
+    # reply text: the interrupt escalation path also answers `Interrupted`, but
+    # only after killing the worker. Same live pid before and after is the
+    # structural difference between the two.
+    pids_before = {pid for pid, _ in worker_processes(session.pid)}
+    reply = session.run_and_interrupt(
+        cancellation_cell(cancel_cfg),
+        float(cancel_cfg["interrupt_after_seconds"]))
+    pids_after = {pid for pid, _ in worker_processes(session.pid)}
+    probe_reply, _ = session.run(cancel_cfg["probe"])
+    after_cancel = observe(session, obs_cfg)
+    cooperative = (reply.get("ename") == "Interrupted"
+                   and bool(pids_before) and pids_before == pids_after)
+    report.record(
+        "cancellation-rolls-back",
+        cooperative and probe_reply["status"] == "error"
+        and after_cancel == committed,
+        {"reply_ename": reply.get("ename"),
+         "reply_evalue": str(reply.get("evalue", ""))[:300],
+         "cooperative": cooperative,
+         "worker_pids_before": sorted(pids_before),
+         "worker_pids_after": sorted(pids_after),
+         "cancelled_registration": cancel_cfg["prefix"],
+         "probe": cancel_cfg["probe"], "probe_status": probe_reply["status"],
+         "probe_detail": str(probe_reply.get("evalue", ""))[:300],
+         "observation_after": after_cancel},
+        "cooperative cancellation at an elaboration checkpoint discarded the "
+        "cancelled cell's candidate registration and left the committed "
+        "observation equal")
+
+    # -- restart-reconstructs ----------------------------------------------
+    killed = session.kill_worker()
+    reply, outputs = session.run(obs_cfg["command"])
+    stream = texts(outputs)
+    after_restart = _read(reply, outputs, obs_cfg)
+    report.record(
+        "restart-reconstructs", after_restart == committed,
+        {**killed, "recovery_route": _route(stream),
+         "recovery_stream": stream[:400], "observation_after": after_restart},
+        "the worker process was SIGKILLed from outside the kernel and the "
+        "production restart path reconstructed the committed observation")
+
+    # -- replay-reconstructs -----------------------------------------------
+    for code in profile["replay"]["force"]:
+        reply, _ = session.run(code)
+        if reply["status"] != "ok":
+            raise ProfileError(f"replay-forcing cell failed: {code!r} -> {reply}")
+    killed = session.kill_worker()
+    reply, outputs = session.run(obs_cfg["command"])
+    stream = texts(outputs)
+    after_replay = _read(reply, outputs, obs_cfg)
+    route = _route(stream)
+    report.record(
+        "replay-reconstructs", route == "replay" and after_replay == committed,
+        {**killed, "recovery_route": route, "recovery_stream": stream[:400],
+         "cache_invalidated_by": profile["replay"]["force"],
+         "observation_after": after_replay},
+        "with the session cache invalidated the worker recovered by replaying "
+        "the committed sources and reconstructed the same observation")
+    for code in profile["replay"]["restore"]:
+        session.run(code)
+
+    return {"committed": committed, "queries": candidate_queries,
+            "jupyter_output_half": jupyter_half}
+
+
+# --------------------------------------------------------------------------
+# control-session laws
+# --------------------------------------------------------------------------
+
+def run_control(session: Session, profile: dict[str, Any],
+                candidate: dict[str, Any], report: Report) -> None:
+    """The independent environment. It never saw the candidate's registrations,
+    so anything it can observe was never candidate-local."""
+    for code in profile["control"]["setup"]:
+        reply, outputs = session.run(code)
+        if reply["status"] != "ok":
+            raise ProfileError(
+                f"control setup cell failed: {code!r} -> {reply}\n"
+                f"{texts(outputs)[:800]}")
+
+    control_obs = observe(session, profile["observation"])
+    report.record(
+        "registration-isolated",
+        candidate["committed"]["present"] and not control_obs["present"],
+        {"candidate": candidate["committed"], "control": control_obs,
+         "control_setup": profile["control"]["setup"]},
+        "a second independent kernel session, running the same cells minus "
+        "the registration, cannot make the observation the candidate commits")
+
+    control_queries = query_answers(session, profile)
+    shape = profile["registration"]["shape"]
+    cand = candidate["queries"]
+
+    for law, prefix, kind in (
+            ("completion-sees-environment", "complete", "completion"),
+            ("inspection-sees-environment", "inspect", "inspection")):
+        # Honest discrimination first: a boundary answering the same thing for
+        # a name that does not exist and for one that does is not answering
+        # about the environment at all.
+        garbage_ok = not (cand[f"{prefix}_garbage"]["found"]
+                          or control_queries[f"{prefix}_garbage"]["found"])
+        constant_ok = (cand[f"{prefix}_constant"]["found"]
+                       and control_queries[f"{prefix}_constant"]["found"])
+        cand_sees = cand[f"{prefix}_registered"]["found"]
+        control_sees = control_queries[f"{prefix}_registered"]["found"]
+        if shape == "constant":
+            # The strong form: visible where it was registered, nowhere else.
+            registered_ok = cand_sees and not control_sees
+        else:
+            # Extension-shaped state is outside the v1 law set, but the honest
+            # negative is not: it must be invisible in BOTH. A name the profile
+            # calls extension-shaped that the boundary CAN see means the
+            # profile mis-declared its own registration.
+            registered_ok = not cand_sees and not control_sees
+        report.record(
+            law, garbage_ok and constant_ok and registered_ok,
+            {"registration_shape": shape,
+             "discriminates": garbage_ok and constant_ok,
+             "garbage": {"candidate": cand[f"{prefix}_garbage"],
+                         "control": control_queries[f"{prefix}_garbage"]},
+             "constant": {"candidate": cand[f"{prefix}_constant"],
+                          "control": control_queries[f"{prefix}_constant"]},
+             "registered": {"candidate": cand[f"{prefix}_registered"],
+                            "control": control_queries[f"{prefix}_registered"]}},
+            f"{kind} discriminates (a name that does not exist is not found, a "
+            "prelude constant answers with its own signature in both "
+            "environments) and answers about the environment that registered "
+            "the object")
+
+
+# --------------------------------------------------------------------------
+# output-control-separated: the independent decoder
+# --------------------------------------------------------------------------
+
+def independent_frame_check(project: Path, prelude: str,
+                            out_cfg: dict[str, Any]) -> dict[str, Any]:
+    """Decode the worker's real frames with roundtrip.py's oracle codec.
+
+    Adversarial frame-shaped plugin output must arrive INSIDE an ordinary
+    reply's payload and never as a frame of its own: had it been decoded as
+    one, the reply stream would desynchronise and the next request's id would
+    not echo.
+    """
+    await_memory()
+    exe = REPO / "worker/.lake/build/bin/nbdsl_worker"
+    req_r, req_w = os.pipe()
+    rep_r, rep_w = os.pipe()
+    proc = subprocess.Popen(
+        ["lake", "env", str(exe), "--req-fd", str(req_r),
+         "--rep-fd", str(rep_w), "--prelude-module", prelude],
+        cwd=project, pass_fds=(req_r, rep_w), stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+    os.close(req_r)
+    os.close(rep_w)
+    replies = FrameReader(rep_r)
+    try:
+        ready = replies.read_frame()
+        write_frame(req_w, {"op": "execute", "request_id": "forge",
+                            "cell_id": "forge", "code": out_cfg["command"]})
+        forged = replies.read_frame()
+        # The next frame must answer the NEXT request: a forged frame decoded
+        # as control traffic would be read here instead.
+        write_frame(req_w, {"op": "describe", "request_id": "after-forge"})
+        following = replies.read_frame()
+        payload = json.dumps(forged, ensure_ascii=False)
+        os.close(req_w)
+        rc = proc.wait(timeout=120)
+        stdout, _ = proc.communicate(timeout=10)
+        return {
+            "ready_op": ready.get("op"),
+            "forged_request_id": forged.get("request_id"),
+            "forged_status": forged.get("status"),
+            "marker_inside_reply_payload": out_cfg["marker"] in payload,
+            "following_request_id": following.get("request_id"),
+            "worker_stdout": stdout.decode(errors="replace")[:200],
+            "exit_code": rc,
+            "ok": (ready.get("op") == "ready"
+                   and forged.get("request_id") == "forge"
+                   and forged.get("status") == "ok"
+                   and out_cfg["marker"] in payload
+                   and following.get("request_id") == "after-forge"
+                   and stdout == b"" and rc == 0)}
+    finally:
+        if proc.poll() is None:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            proc.wait()
+
+
+# --------------------------------------------------------------------------
+# identity
+# --------------------------------------------------------------------------
+
+def git_identity(root: Path) -> dict[str, Any]:
+    def git(*args: str) -> str | None:
+        try:
+            return subprocess.run(["git", "-C", str(root), *args],
+                                  capture_output=True, text=True,
+                                  check=True).stdout.strip()
+        except (subprocess.CalledProcessError, OSError):
+            return None
+    status = git("status", "--porcelain")
+    return {"root": str(root), "commit": git("rev-parse", "HEAD"),
+            "dirty": None if status is None else status != ""}
+
+
+def release_declaration() -> dict[str, Any]:
+    with (REPO / "release.toml").open("rb") as fh:
+        data: dict[str, Any] = tomllib.load(fh)
+        return data
+
+
+def resolve_checkout(profile: dict[str, Any],
+                     override: Path | None) -> dict[str, Any]:
+    """Where the plugin source under test came from, and how it was chosen.
+
+    CI points the profile's `source_env` at the frozen checkout explicitly; the
+    sibling fallback is developer convenience and is recorded as such, so it
+    can never be mistaken for qualification evidence.
+    """
+    env_name = profile["plugin"].get("source_env")
+    env_value = os.environ.get(env_name) if env_name else None
+    if override is not None:
+        path, how = override, "--source-dir"
+    elif env_value:
+        path, how = Path(env_value), f"${env_name}"
+    elif profile["plugin"].get("source_fallback"):
+        path, how = (Path(profile["plugin"]["source_fallback"]),
+                     "profile fallback (developer convenience, NOT CI evidence)")
+    else:
+        path, how = REPO, "this repository"
+    path = path.expanduser().resolve()
+    if not path.is_dir():
+        raise ProfileError(f"plugin checkout {path} does not exist (via {how})")
+    return {"checkout": str(path), "resolved_via": how, **git_identity(path)}
+
+
+def check_kernelspec(profile: dict[str, Any], kernel_name: str,
+                     project: Path) -> dict[str, Any]:
+    """The kernelspec must actually drive the checkout under test."""
+    try:
+        spec = KernelSpecManager().get_kernel_spec(kernel_name)
+    except Exception as exc:  # jupyter_client raises NoSuchKernel
+        raise ProfileError(
+            f"kernelspec {kernel_name!r} is not installed: {exc}") from exc
+    meta = (spec.metadata or {}).get("nbdsl", {})
+    spec_project = Path(meta.get("project_root", "/nonexistent")).resolve()
+    if spec_project != project.resolve():
+        raise ProfileError(
+            f"kernelspec {kernel_name!r} runs {spec_project}, not the checkout "
+            f"under test {project.resolve()}")
+    prelude = spec.env.get("NBDSL_PRELUDE")
+    if prelude != profile["plugin"]["prelude_module"]:
+        raise ProfileError(
+            f"kernelspec {kernel_name!r} imports prelude {prelude!r}, not the "
+            f"profile's {profile['plugin']['prelude_module']!r}")
+    toolchain = project / "lean-toolchain"
+    return {"kernel_name": kernel_name, "project_root": str(spec_project),
+            "prelude_module": prelude, "argv": list(spec.argv),
+            "lean_toolchain": (toolchain.read_text().strip()
+                               if toolchain.exists() else None)}
+
+
+def read_provenance(session: Session) -> dict[str, Any]:
+    """The runtime identity comm, when the kernel offers one. Its absence is
+    recorded, not fatal: no law depends on it yet."""
+    target, comm_id = "nbdsl_provenance", "conformance-provenance"
+
+    def matches(msg: dict[str, Any]) -> bool:
+        # The kernel answers on the comm_id the request opened; the target name
+        # appears only in the request, so keying on it would miss the reply.
+        content = msg.get("content", {})
+        return (content.get("comm_id") == comm_id
+                or target in json.dumps(content, default=str))
+
+    seen = [m for m in session.comms if matches(m)]
+    if not seen:
+        session.kc.shell_channel.send(session.kc.session.msg(
+            "comm_open", {"comm_id": comm_id, "target_name": target,
+                          "data": {}}))
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and not seen:
+            try:
+                got = session.kc.get_iopub_msg(timeout=2)
+            except queue.Empty:
+                continue
+            if got["msg_type"].startswith("comm_"):
+                session.comms.append(got)
+                if matches(got):
+                    seen.append(got)
+    if not seen:
+        return {"comm_target": target, "status": "absent",
+                "detail": "the kernel opened no nbdsl_provenance comm"}
+    return {"comm_target": target, "status": "present",
+            "data": [m["content"].get("data") for m in seen]}
+
+
+# --------------------------------------------------------------------------
+# main
+# --------------------------------------------------------------------------
 
 def main() -> int:
-    if len(sys.argv) != 2:
-        print(__doc__)
-        return 2
-    profile = tomllib.loads(Path(sys.argv[1]).read_text())
-    project = Path(os.environ.get(profile.get("project_env", ""), "")
-                   or profile["project"])
-    if not project.is_absolute():
-        project = (REPO / project).resolve()
-    check(project.is_dir(), "profile project", project)
-    print(f"== conformance: {profile['name']} "
-          f"({project}, prelude {profile['prelude']})")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("profile", type=Path)
+    parser.add_argument("--source-dir", type=Path, default=None,
+                        help="clean checkout of the plugin source; overrides "
+                             "the profile's source_env")
+    parser.add_argument("--kernel-name", default=None,
+                        help="override the profile's kernelspec name")
+    parser.add_argument("--output", type=Path, default=None,
+                        help="write the result JSON here (default: stdout)")
+    args = parser.parse_args()
 
-    install_kernelspec(profile, project)
-    w = Worker(project, profile["prelude"])
-    ready = w.ready()
-    print(f"   worker ready (lean {ready.get('lean')})")
+    profile = load_profile(args.profile)
+    source = resolve_checkout(profile, args.source_dir)
+    project = (Path(source["checkout"]) / profile["plugin"]["package"]).resolve()
+    kernel_name = args.kernel_name or profile["plugin"]["kernel_name"]
+
+    declared = profile["plugin"]["commit"]
+    pinned = (len(declared) == 40
+              and all(c in "0123456789abcdef" for c in declared))
+    if pinned and source["commit"] != declared:
+        raise ProfileError(
+            f"profile pins plugin commit {declared} but {source['checkout']} "
+            f"is at {source['commit']}")
+
+    shape = profile["registration"]["shape"]
+    result: dict[str, Any] = {
+        "schema": 1,
+        "profile": profile["profile"]["name"],
+        "profile_path": str(args.profile.resolve()),
+        "kernel": {**git_identity(REPO), "release": release_declaration()},
+        "plugin": {"source": profile["plugin"]["source"],
+                   "declared_commit": declared, "commit_pinned": pinned,
+                   "observed_commit": source["commit"],
+                   "observed_dirty": source["dirty"],
+                   "checkout": source["checkout"],
+                   "resolved_via": source["resolved_via"],
+                   "package": profile["plugin"]["package"],
+                   "prelude_module": profile["plugin"]["prelude_module"],
+                   "registration_shape": shape},
+        # Plugin API v1 makes complete/inspect constant-faithful. Visibility of
+        # persistent-env-extension state through them is deliberately outside
+        # this law set — recorded here so it is never silently absent.
+        "extension_state_visibility": (
+            "deferred: plugin API v2 demand" if shape == "extension"
+            else "not applicable: this plugin registers Lean constants"),
+        "toolchain": check_kernelspec(profile, kernel_name, project),
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+
+    report = Report()
     try:
-        law_commit(w, profile)
-        law_rollback(w, profile)
-        law_registry_rollback(w, profile)
-        law_structured_state(w, profile)
-        law_query_agreement(w, profile)
-        law_control_frame_separation(w, profile)
-        law_cancellation(w, profile)
-        law_isolation(project, profile["prelude"], profile, w)
-    except BaseException:
-        w.kill()
-        raise
-    law_stdout_clean(w)
-    law_restart_and_replay(profile)
-    print(f"PASS: {profile['name']} satisfies every semantic obligation")
-    return 0
+        # One mathlib worker at a time: the candidate session is fully shut
+        # down before the independent control session starts.
+        candidate = Session(kernel_name)
+        try:
+            outcome = run_candidate(candidate, profile, report)
+            result["provenance"] = read_provenance(candidate)
+        finally:
+            candidate.close()
+
+        control = Session(kernel_name)
+        try:
+            run_control(control, profile, outcome, report)
+        finally:
+            control.close()
+
+        frames = independent_frame_check(
+            project, profile["plugin"]["prelude_module"], profile["output"])
+        jupyter = outcome["jupyter_output_half"]
+        report.record(
+            "output-control-separated", jupyter["ok"] and frames["ok"],
+            {"jupyter_boundary": jupyter, "independent_decoder": frames},
+            "frame-shaped output stayed ordinary output at the Jupyter "
+            "boundary, and an independent frame decoder confirms it never "
+            "became a control frame on the worker transport")
+    except Exception as exc:
+        # Laws already proven are real observations; a failure later in the run
+        # must not throw them away. Unrun laws stay failed, and so does the
+        # verdict.
+        result["setup_error"] = f"{type(exc).__name__}: {exc}"
+
+    result["laws"] = report.ordered()
+    result["verdict"] = report.verdict()
+    result["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+    text = json.dumps(result, indent=2, ensure_ascii=False)
+    if args.output:
+        args.output.write_text(text + "\n")
+    else:
+        print(text)
+    for law in result["laws"]:
+        print(f"{law['status']:>4}  {law['law']}", file=sys.stderr)
+    if "setup_error" in result:
+        print(f"setup error: {result['setup_error']}", file=sys.stderr)
+    print(f"verdict: {result['verdict']}", file=sys.stderr)
+    if "setup_error" in result:
+        return 2
+    return 0 if result["verdict"] == "pass" else 1
 
 
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except Failure as e:
-        print(f"FAIL: {e}", file=sys.stderr)
-        sys.exit(1)
+    except ProfileError as exc:
+        print(f"conformance setup error: {exc}", file=sys.stderr)
+        sys.exit(2)

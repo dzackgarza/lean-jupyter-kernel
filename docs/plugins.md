@@ -38,9 +38,16 @@ The invariants the core silently relies on:
 - Never touch stdout framing or the control fds.
 
 The payoff: obey the state law and the core provides cell atomicity,
-document-order semantics, completion, hover with your docstrings, sorry
-tracking, staleness marking, session caching, and crash recovery — with
-zero plugin code.
+document-order semantics, sorry tracking, staleness marking, session
+caching, and crash recovery — with zero plugin code. Completion and hover
+are likewise free, but scoped: they are delivered for declarations the
+plugin elaborates into the environment (constants — the worker's
+completion folds over `env.constants`), not for names that exist only
+inside a plugin's own env-extension tables. A DSL whose registrations are
+extension-shaped (rather than lowering to real declarations) gets
+atomicity, replay, and recovery for that state, but its registered names
+are invisible to completion and inspection under plugin API v1 — surfacing
+extension state there is a recorded plugin API v2 demand (issue #3).
 
 ## Reducibility
 

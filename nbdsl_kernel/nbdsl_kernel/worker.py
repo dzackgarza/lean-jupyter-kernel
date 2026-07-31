@@ -19,9 +19,10 @@ from pathlib import Path
 from typing import IO, Callable
 
 from .protocol import (COMPLETE_REPLY, INSPECT_REPLY, IS_COMPLETE_REPLY,
-                       LOAD_SESSION_REPLY, SAVE_SESSION_REPLY, CompleteOk,
-                       ExecuteReply, InspectOk, IsCompleteOk, LoadSessionOk,
-                       ReadyFrame, SaveSessionOk, WorkerError)
+                       LOAD_SESSION_REPLY, SAVE_SESSION_REPLY, BuildInfo,
+                       CompleteOk, ExecuteReply, InspectOk, IsCompleteOk,
+                       LoadSessionOk, ReadyFrame, SaveSessionOk, WorkerError,
+                       compare)
 
 RawFrame = dict[str, object]
 
@@ -29,9 +30,39 @@ READY_TIMEOUT = 600.0  # first prelude import loads mathlib oleans
 REPLY_TIMEOUT = 3600.0  # elaboration can legitimately be slow; interrupt kills
 CANCEL_GRACE = 3.0  # cooperative-cancel window before the worker is killed
 
+BUILD_INFO = Path(__file__).parent / "_build_info.json"
+
 
 class WorkerDied(RuntimeError):
     pass
+
+
+class ProvenanceError(RuntimeError):
+    """This adapter cannot prove it may run against this worker."""
+
+
+def adapter_identity() -> BuildInfo:
+    """This adapter's build identity, generated at wheel build time.
+
+    Read on worker start, never at kernel construction: a kernel that dies
+    before answering kernel_info is an opaque failure ("Kernel died before
+    replying to kernel_info"), not a loud one. Missing identity must reach the
+    notebook as a typed error on execute, like the init-cell path.
+
+    NBDSL_BUILD_INFO overrides the path. That seam exists so refusal can be
+    proved against a real kernel and a real worker: a test points it at a
+    scratch copy with one field changed. The authoritative file is never
+    written by anything but the build hook.
+    """
+    path = Path(os.environ.get("NBDSL_BUILD_INFO") or BUILD_INFO)
+    try:
+        raw = path.read_text()
+    except OSError as e:
+        raise ProvenanceError(
+            f"adapter build identity missing at {path}; install nbdsl-kernel "
+            "from a built wheel or an editable install so hatch_build.py "
+            f"generates it ({e})") from e
+    return BuildInfo.model_validate_json(raw)
 
 
 def find_worker_exe(project_root: str | Path) -> Path | None:
@@ -102,6 +133,9 @@ class WorkerClient:
         self.cache_dir: str | None = None
         self._rid = 0
         self._pending: dict[object, RawFrame] = {}
+        # Set by every start(): the compared identities and the hash of the
+        # binary actually executed. Published over the nbdsl_provenance comm.
+        self.provenance: dict[str, object] | None = None
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -173,8 +207,36 @@ class WorkerClient:
             threading.Thread(target=self._pump, args=(pipe, name),
                              daemon=True).start()
         ready = ReadyFrame.model_validate(self.replies.read_frame(READY_TIMEOUT))
+        self._check_identity(ready, worker_exe)
         self.snapshot = ready.snapshot
         return ready
+
+    def _check_identity(self, ready: ReadyFrame, worker_exe: Path) -> None:
+        """Bind this session to one pair of built artifacts.
+
+        Every restart path goes through start(), so this runs against the
+        binary that will actually elaborate cells — including one rebuilt
+        under a running kernel. `compare` owns which disagreements are fatal.
+        """
+        adapter = adapter_identity()
+        worker = BuildInfo.model_validate(ready.model_dump())
+        disagree, agreed = compare(adapter, worker)
+        with worker_exe.open("rb") as f:
+            digest = hashlib.file_digest(f, "sha256").hexdigest()
+        self.provenance = {
+            "adapter": adapter.model_dump(),
+            "worker": worker.model_dump(),
+            "worker_binary_sha256": digest,
+            "agreed": agreed,
+        }
+        if disagree:
+            self.kill()
+            raise ProvenanceError(
+                f"adapter and worker disagree on {', '.join(disagree)}; "
+                "refusing to execute cells. "
+                f"adapter={adapter.model_dump_json()} "
+                f"worker={worker.model_dump_json()} "
+                f"worker_binary={worker_exe}")
 
     def _pump(self, pipe: IO[bytes], name: str) -> None:
         for line in iter(pipe.readline, b""):
@@ -215,12 +277,21 @@ class WorkerClient:
         self.start()
         if self._try_restore_session():
             return -1
+        # The ledger is the canonical record of committed state, so a failed
+        # replay must not consume it: a worker that dies mid-replay would
+        # otherwise truncate it permanently, and the NEXT restart would replay
+        # the stump and report success over a half-empty environment. Cleared
+        # only so execute() can rebuild it, restored on any failure.
         ledger, self.ledger = self.ledger, []
-        for cell_id, code in ledger:
-            rep = self.execute(code, cell_id=cell_id)
-            if rep.status != "ok":
-                raise WorkerDied(
-                    f"replay diverged on {cell_id}: {rep.first_error()}")
+        try:
+            for cell_id, code in ledger:
+                rep = self.execute(code, cell_id=cell_id)
+                if rep.status != "ok":
+                    raise WorkerDied(
+                        f"replay diverged on {cell_id}: {rep.first_error()}")
+        except BaseException:
+            self.ledger = ledger
+            raise
         return len(ledger)
 
     # -- session cache -----------------------------------------------------
@@ -239,7 +310,10 @@ class WorkerClient:
         try:
             rep = SAVE_SESSION_REPLY.validate_python(self._request(
                 "save_session", {"path": str(self.cache_dir)}, timeout=60))
-        except (WorkerDied, TimeoutError):
+        except (WorkerDied, TimeoutError) as e:
+            # Not fatal — the ledger still describes the state — but silence
+            # here makes the later replay look inexplicable. Name the cause.
+            self.on_stream("stderr", f"session cache not saved: {e}\n")
             return
         key = Path(self.cache_dir) / "key.txt"
         if isinstance(rep, SaveSessionOk) and rep.saved:
@@ -255,12 +329,17 @@ class WorkerClient:
         key = Path(self.cache_dir) / "key.txt"
         if not key.exists() or key.read_text() != self._ledger_key():
             return False
+        # Past this point the key matched, so a miss is something going wrong
+        # rather than ordinary uncacheable state: say what, then replay.
         try:
             rep = LOAD_SESSION_REPLY.validate_python(self._request(
                 "load_session", {"path": str(self.cache_dir)}, timeout=120))
-        except (WorkerDied, TimeoutError):
+        except (WorkerDied, TimeoutError) as e:
+            self.on_stream("stderr", f"session cache not restored: {e}\n")
             return False
         if not isinstance(rep, LoadSessionOk):
+            self.on_stream("stderr",
+                           f"session cache not restored: {rep.message}\n")
             return False
         self.snapshot = rep.snapshot
         return True

@@ -22,7 +22,7 @@ from pydantic import ValidationError
 
 from .protocol import (CellState, CommParent, CompleteOk, DocumentMessage,
                        ExecuteReply, InspectOk, IsCompleteOk)
-from .worker import WorkerClient, WorkerDied
+from .worker import ProvenanceError, WorkerClient, WorkerDied
 
 JupyterReply = dict[str, object]
 
@@ -77,6 +77,19 @@ class NbDslKernel(Kernel):
         msg = CommParent.model_validate(parent)
         if msg.content.target_name == "nbdsl_document":
             self._doc_comms.add(msg.content.comm_id)
+        elif msg.content.target_name == "nbdsl_provenance":
+            # Provenance is of the worker that actually runs cells, so it
+            # requires a started worker — the same path do_execute takes.
+            # Answers on the opener's comm_id, per Jupyter comm semantics.
+            try:
+                self._ensure_worker()
+                prov = self.worker.provenance
+                assert prov is not None  # invariant: set by every start()
+            except (ProvenanceError, WorkerDied) as e:
+                prov = {"agreed": False, "error": str(e)}
+            assert self.session is not None
+            self.session.send(self.iopub_socket, "comm_msg",
+                              {"comm_id": msg.content.comm_id, "data": prov})
 
     async def comm_msg(self, stream: object, ident: object,
                        parent: object) -> None:
@@ -282,6 +295,13 @@ class NbDslKernel(Kernel):
             self.worker.kill()
             return self._error_reply("Interrupted", "execution interrupted",
                                      silent)
+        except ProvenanceError as e:
+            # Loud-init-failure pattern: the kernel starts and answers
+            # kernel_info, and every execute reports this instead. Refusing
+            # here rather than dying at construction is what makes the cause
+            # readable from the notebook. Each execute re-checks, so
+            # rebuilding a matching pair recovers without a restart.
+            return self._error_reply("ProvenanceError", str(e), silent)
         except WorkerDied as e:
             return self._error_reply("WorkerDied", str(e), silent)
         finally:

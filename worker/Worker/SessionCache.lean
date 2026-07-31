@@ -21,7 +21,24 @@ namespace Worker.SessionCache
 
 open Lean
 
-def cacheModule : Name := `NbdslSessionCache
+/-- Cache module names are generation-numbered. A state restored from
+generation `n` still *imports* it, so saving that state under the same name
+would write an olean importing itself — which the next `importModules`
+follows forever ("Stack overflow detected. Aborting.", observed on the second
+recovery of one session). Each save therefore writes the next free
+generation, and the chain `n → n-1 → … → 0 → prelude` stays intact.
+ponytail: one small olean per worker lifetime in a session-scoped temp dir,
+all dropped at shutdown; prune the chain only if a session's restart count
+ever makes that matter. -/
+def cacheModule (gen : Nat) : Name := Name.mkSimple s!"NbdslSessionCache{gen}"
+
+/-- The generation to save as: the length of the chain already imported. -/
+private def freshModule (env : Environment) : Name :=
+  cacheModule <| env.allImportedModuleNames.filter
+    (·.toString.startsWith "NbdslSessionCache") |>.size
+
+/-- Records which generation is current, so `load` knows the chain head. -/
+def headFile : String := "module.txt"
 
 private def dataValueToJson : DataValue → Except String Json
   | .ofString s => .ok <| Json.mkObj [("k", "string"), ("v", Json.str s)]
@@ -93,15 +110,18 @@ def save (cmdState : Elab.Command.State) (dir : System.FilePath)
   | .error e => return .error e
   | .ok scJson =>
       IO.FS.createDirAll dir
-      let env := cmdState.env.setMainModule cacheModule
-      Lean.writeModule env (dir / s!"{cacheModule}.olean")
+      let mod := freshModule cmdState.env
+      let env := cmdState.env.setMainModule mod
+      Lean.writeModule env (dir / s!"{mod}.olean")
       IO.FS.writeFile (dir / "scope.json") scJson.compress
+      IO.FS.writeFile (dir / headFile) mod.toString
       return .ok ()
 
 /-- Rebuild a `Command.State` from `save`'s output. Throws on any problem —
 the caller treats that as a cache miss. -/
 unsafe def loadUnsafe (dir : System.FilePath) : IO Elab.Command.State := do
   let scText ← IO.FS.readFile (dir / "scope.json")
+  let mod := (← IO.FS.readFile (dir / headFile)).trimAsciiEnd.copy.toName
   let sc ← match Json.parse scText >>= scopeOfJson with
     | .ok sc => pure sc
     | .error e => throw <| IO.userError s!"session cache scope: {e}"
@@ -109,7 +129,7 @@ unsafe def loadUnsafe (dir : System.FilePath) : IO Elab.Command.State := do
   -- `withImporting` (inside importModules) resets the initializer-execution
   -- flag on every import, so it must be re-enabled for each one.
   enableInitializersExecution
-  let env ← importModules #[{ module := cacheModule }] {} (loadExts := true)
+  let env ← importModules #[{ module := mod }] {} (loadExts := true)
   let st := Elab.Command.mkState env {} sc.opts
   return { st with scopes := [sc], infoState.enabled := true }
 

@@ -17,5 +17,12 @@ dev = ["jupyter_client>=8", "pytest"]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# Generates nbdsl_kernel/_build_info.json for every target (wheel and
+# editable). See hatch_build.py.
+[tool.hatch.build.hooks.custom]
+
 [tool.hatch.build.targets.wheel]
 packages = ["nbdsl_kernel"]
+# The build identity is generated, hence gitignored; hatchling excludes
+# VCS-ignored files unless they are declared as build artifacts.
+artifacts = ["nbdsl_kernel/_build_info.json"]
