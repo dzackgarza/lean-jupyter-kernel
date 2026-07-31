@@ -652,6 +652,51 @@ Evidence records must state the tested commit, immutable external commits, toolc
 artifact identities, and observed result. They support the implementation claim; they
 do not become a parallel source of product requirements or completion.
 
+## What the conformance laws found (delivered, 2026-07-31)
+
+Recorded here because these are product behaviour changes a reviewer should see, not
+plan revisions: the plan's before/after table anticipated a proof exercise, and the
+proof exercise found real shipped defects. Every one was reproduced first, fixed
+against that reproduction, and is pinned by a test.
+
+- **Committed session state could vanish silently.** The replay ledger — the canonical
+  record of a session — was emptied *before* replay and refilled only by cells that
+  replayed successfully, so a worker dying mid-replay truncated it permanently; the
+  next restart then replayed the stump and reported success over a half-empty
+  environment. Found by the external profile's `restart-reconstructs` law.
+- **A restart could abort the worker.** A session restored from cache and killed again
+  died with "Stack overflow detected": saving a restored state wrote an olean that
+  imported itself. The cache chain is now generation-numbered.
+- **Worker death was detected on the wrong process.** Recovery was gated on `poll()` of
+  the `lake env` wrapper, so a worker that died under a live wrapper (crash, OOM kill,
+  an unreaped exit window) produced a spurious `WorkerDied` or a silent hang instead of
+  transparent recovery. The worker now reports its own pid in `ready` and the client
+  probes that. Diagnosed from two conformance runs that failed *different* laws each
+  time — the alternation was the signal.
+- **Inspection did not discriminate.** For a plugin with a catch-all bare-term
+  production, `do_inspect` returned the hover alone whenever a hover existed, so every
+  query answered `found=true` with that production's syntax docstring — including
+  garbage input, and including in an untouched session. Hover no longer shadows the
+  resolved environment answer.
+- **Plugin API v1 boundary, ruled and recorded** (evidence on #3): completion and
+  inspection are constant-environment-faithful with honest negatives; a plugin whose
+  registrations live only in env-extension tables — the shape `docs/plugins.md`
+  mandates — cannot surface them there. That documentation contradiction is corrected,
+  and surfacing extension state is recorded as a plugin API v2 demand rather than
+  silently absent.
+
+Two identity-surface refinements ship with them, both strengthening the guard rather
+than relaxing it:
+
+- `dirty` means the *source* differs from the named commit — tracked modifications
+  only. Installers write into the trees they build from (`uv pip install git+…` leaves
+  an untracked `.ok` sentinel), which had made every git-installed adapter read dirty
+  and so kept the strict clean-pair commit check from ever running, including in CI.
+- Because that check is now live, `just build` refreshes **both** halves through one
+  shared identity generator. A refused pair therefore means the two artifacts really
+  did come from different sources, not that one half was rebuilt a moment ago; and an
+  unverified pair now says so on stderr instead of passing silently.
+
 ## Non-goals
 
 - Hostile-notebook certification or a broader sandbox-security programme.
