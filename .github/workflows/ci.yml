@@ -70,7 +70,7 @@ jobs:
         run: |
           curl -fsSL https://raw.githubusercontent.com/dzackgarza/ai-review-ci/main/tool-configs/mypy-global.ini -o /tmp/mypy-global.ini
           pip install mypy pydantic ipykernel jupyter_client pytest
-          MYPYPATH=nbdsl_kernel/tests mypy --config-file /tmp/mypy-global.ini \
+          MYPYPATH=nbdsl_kernel/tests:nbdsl_kernel mypy --config-file /tmp/mypy-global.ini \
             nbdsl_kernel/nbdsl_kernel nbdsl_kernel/tests conformance
 
       - name: protocol round-trip
