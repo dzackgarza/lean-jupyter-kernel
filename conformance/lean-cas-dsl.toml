@@ -1,0 +1,55 @@
+# Semantic conformance profile: lean-cas-dsl, an EXTERNAL plugin (issue #3).
+#
+# The same obligations as conformance/nbdsl.toml, in a plugin that shares
+# nothing with this repository but the worker package and the plugin contract:
+# different surface syntax, a different registry, a different MIME namespace.
+# Nothing here is a law — the laws are in conformance/runner.py and are
+# byte-identical for both plugins. If a profile could weaken an obligation,
+# a plugin could pass by describing itself favourably.
+
+name = "lean-cas-dsl"
+# CI points this at an immutable clean checkout; the default is a sibling
+# working tree for local runs.
+project_env = "CONFORMANCE_CAS_DSL"
+project = "../lean-cas-dsl"
+prelude = "CasDsl.Notebook"
+kernel_name = "casdsl-conformance"
+
+[state]
+# CasDsl binds into its own environment extension, not a Lean constant.
+define = "let confN := 360 in ℤ"
+observe = "confN"
+observe_expect = "360"
+# A false assertion — the plugin's own semantic failure, not a parse error.
+failing = "assert 2 + 3 = 6"
+# Genuine Lean commands still parse in a CasDsl cell, so the frame-forging
+# probe is the same one NbDsl gets.
+forge_frame = '#eval IO.println "999\n{\"op\": \"ready\"}"'
+
+[registry]
+# CasDsl's commands are top-level: no opens are needed to make them resolve.
+vocabulary = []
+# `register` and `observe_registered` are a matched PAIR, asserted in both
+# directions by the runner (absent after a rolled-back cell, present after the
+# same registration commits), so neither half can pass vacuously. A bare bound
+# name is the observation: unbound, it is a loud "not bound" error.
+register = "let confSet := {1, 2, 3} in 𝒫(ℤ)"
+observe_registered = "confSet"
+# Nothing further is needed for the structured observation below.
+setup = []
+observe = "confSet"
+mime = "application/vnd.casdsl.value+json"
+
+[query]
+# A name the PRELUDE registers: present in every session speaking this plugin.
+complete_code = "CasDsl.Std.poly"
+complete_expect = "CasDsl.Std.polyZ"
+inspect_code = "CasDsl.Std.polyZ"
+inspect_expect = "CasDsl.Obj"
+# A name this SESSION defines, which an independent session must not see.
+# CasDsl's own bindings live in an env extension rather than the Lean
+# namespace, so the name queries can see is an ordinary Lean definition —
+# which is exactly the session-scoped state this law is about.
+session_define = "def confQ : Nat := 7"
+session_complete_code = "#eval confQ"
+session_complete_expect = "confQ"

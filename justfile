@@ -40,6 +40,21 @@ test: build
     @just -f ~/ai-review-ci/justfiles/python.just -d nbdsl_kernel _mypy
     @python3 nbdsl_kernel/tests/roundtrip.py
 
+# Interpreter for the recipes needing the kernel package installed. CI
+# installs into the job python; locally: `just python=.venv/bin/python …`.
+python := "python3"
+
+# Semantic plugin conformance (#3): the same laws against the in-repo
+# reference plugin. Needs the kernel package installed (jupyter_client, a
+# kernelspec) — like the e2e suite, it runs in CI rather than the local gate.
+conformance:
+    @{{python}} conformance/runner.py conformance/nbdsl.toml
+
+# …and against an EXTERNAL plugin. Point CONFORMANCE_CAS_DSL at a clean
+# checkout; the profile falls back to a sibling working tree.
+conformance-external:
+    @{{python}} conformance/runner.py conformance/lean-cas-dsl.toml
+
 [private]
 test-commit: test
 

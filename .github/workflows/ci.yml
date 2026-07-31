@@ -70,7 +70,8 @@ jobs:
         run: |
           curl -fsSL https://raw.githubusercontent.com/dzackgarza/ai-review-ci/main/tool-configs/mypy-global.ini -o /tmp/mypy-global.ini
           pip install mypy pydantic ipykernel jupyter_client pytest
-          mypy --config-file /tmp/mypy-global.ini nbdsl_kernel/nbdsl_kernel nbdsl_kernel/tests
+          MYPYPATH=nbdsl_kernel/tests mypy --config-file /tmp/mypy-global.ini \
+            nbdsl_kernel/nbdsl_kernel nbdsl_kernel/tests conformance
 
       - name: protocol round-trip
         run: python3 nbdsl_kernel/tests/roundtrip.py
@@ -82,6 +83,13 @@ jobs:
 
       - name: end-to-end through the Jupyter protocol
         run: pytest nbdsl_kernel/tests/test_e2e.py
+
+      # Semantic plugin conformance (#3). The in-repository reference plugin
+      # runs here, where the worker, the DSL and the kernel package are all
+      # already built. The external plugin's profile is driven by the consumer
+      # qualification job, which owns clean checkouts (#6).
+      - name: semantic conformance — NbDsl profile
+        run: python3 conformance/runner.py conformance/nbdsl.toml
 
       # NOT run here: nbdsl_kernel/tests/sandbox_check.py. bubblewrap needs
       # user-namespace privileges that GitHub's ubuntu runners don't reliably

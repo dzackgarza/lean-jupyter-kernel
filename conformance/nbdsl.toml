@@ -1,0 +1,57 @@
+# Semantic conformance profile: the in-repository NbDsl reference (issue #3).
+#
+# Vocabulary only. Every command here is ordinary NbDsl surface syntax and
+# every expectation is an observation of NbDsl's own semantic state; the laws
+# that consume them live in conformance/runner.py and are identical for every
+# plugin. A profile that contained a law would be a profile that could excuse
+# its own plugin from one.
+
+name = "nbdsl"
+project = "dsls/nbdsl"
+prelude = "NbDsl.Notebook"
+kernel_name = "nbdsl-conformance"
+
+[state]
+# A definition, and an observation that can only succeed if it committed.
+define = "def confDefined : Nat := 41"
+observe = "#eval confDefined + 1"
+observe_expect = "42"
+# A command that must fail — ill-typed, so the failure is elaboration's and
+# not a parse accident.
+failing = 'def confBroken : Nat := "not a Nat"'
+# Output shaped exactly like a control frame. It must arrive as plugin output
+# and never as protocol traffic.
+forge_frame = '#eval IO.println "999\n{\"op\": \"ready\"}"'
+
+[registry]
+# NbDsl's semantic registry: `prefer` records a preferred functor and `let`
+# declares an object, both as persistent env extensions.
+#
+# `register` and `observe_registered` are a matched PAIR: the runner asserts
+# the observation in both directions (absent after a rolled-back cell, present
+# after the same registration commits), so neither half can pass vacuously.
+# Names only — opens that make the commands below parse and resolve. This
+# carries no semantic state, which is what lets an independent session run it
+# and still fail `observe_registered`.
+vocabulary = ["open NbDsl NbDsl.Std"]
+register = "let confG := GrpCat.of PUnit ∈ Groups"
+observe_registered = "#home confG"
+# What the structured observation below additionally needs. `register`
+# already committed by the time this runs, so it is not repeated here.
+setup = ["prefer groupsToSets"]
+# The observation that proves registered state structurally, through NbDsl's
+# own MIME payload rather than a status string.
+observe = "#via confG ∈ Sets"
+mime = "application/vnd.nbdsl.path+json"
+
+[query]
+# Completion and inspection of a name the PRELUDE registers: present in every
+# session speaking this plugin.
+complete_code = "prefer groupsToS"
+complete_expect = "groupsToSets"
+inspect_code = "groupsToSets"
+inspect_expect = "Underlying-set functor"
+# A name this SESSION defines, which an independent session must not see.
+session_define = "let confQ := GrpCat.of PUnit ∈ Groups"
+session_complete_code = "#home confQ"
+session_complete_expect = "confQ"
