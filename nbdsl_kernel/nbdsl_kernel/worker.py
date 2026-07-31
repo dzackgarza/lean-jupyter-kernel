@@ -15,6 +15,7 @@ import select
 import signal
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import IO, Callable
 
@@ -35,6 +36,29 @@ BUILD_INFO = Path(__file__).parent / "_build_info.json"
 
 class WorkerDied(RuntimeError):
     pass
+
+
+class WorkerInterrupted(WorkerDied):
+    """The worker was killed because a Jupyter interrupt escalated past the
+    cooperative-cancel grace window. Deliberate — recovery paths must never
+    auto-restart on this, or an interrupted cell would be transparently
+    re-executed."""
+
+
+LIVENESS_SLICE = 5.0  # reply-wait slice between worker liveness probes
+
+
+def _process_running(pid: int) -> bool:
+    """True while `pid` names a live, non-zombie process. A SIGKILLed worker
+    whose `lake env` wrapper has not (yet) reaped it is a zombie —
+    `os.kill(pid, 0)` still succeeds on those, so read the state field."""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as f:
+            stat = f.read()
+    except OSError:
+        return False
+    state = stat.rsplit(b")", 1)[1].split()[0]
+    return state not in (b"Z", b"X")
 
 
 class ProvenanceError(RuntimeError):
@@ -123,6 +147,10 @@ class WorkerClient:
         self.proc: subprocess.Popen[bytes] | None = None
         self.req_fd: int | None = None
         self.replies: _FrameReader | None = None
+        #: The worker process itself, from its ready frame — `self.proc` is
+        #: the `lake env` wrapper, whose liveness proves nothing about the
+        #: worker's.
+        self.worker_pid: int | None = None
         self.snapshot = 0
         # Committed (cell_id, code) pairs, for restart replay.
         self.ledger: list[tuple[str, str]] = []
@@ -209,6 +237,7 @@ class WorkerClient:
         ready = ReadyFrame.model_validate(self.replies.read_frame(READY_TIMEOUT))
         self._check_identity(ready, worker_exe)
         self.snapshot = ready.snapshot
+        self.worker_pid = ready.pid
         return ready
 
     def _check_identity(self, ready: ReadyFrame, worker_exe: Path) -> None:
@@ -244,6 +273,16 @@ class WorkerClient:
         pipe.close()
 
     def kill(self) -> None:
+        if self.worker_pid is not None:
+            # Worker and wrapper die independently (both directions observed:
+            # a worker outliving a dead wrapper spins as an orphan; a wrapper
+            # outliving a dead worker hides the death from poll()). Target
+            # the worker directly first, then the wrapper's group.
+            try:
+                os.kill(self.worker_pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            self.worker_pid = None
         if self.proc and self.proc.poll() is None:
             # `lake env` FORKS the worker rather than exec'ing it, so killing
             # proc.pid alone kills only the wrapper and a busy worker (e.g. an
@@ -374,7 +413,7 @@ class WorkerClient:
                 return self._await(rid, CANCEL_GRACE)
             except (TimeoutError, KeyboardInterrupt, WorkerDied):
                 self.kill()
-                raise WorkerDied(
+                raise WorkerInterrupted(
                     "interrupted: worker killed (did not cancel in time)"
                 ) from None
 
@@ -382,8 +421,27 @@ class WorkerClient:
         if rid in self._pending:
             return self._pending.pop(rid)
         assert self.replies is not None  # invariant: requests follow start()
+        deadline = time.monotonic() + timeout
         while True:
-            rep = self.replies.read_frame(timeout)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("timed out waiting for worker reply")
+            if not self.replies.buf:
+                # Nothing in flight: wait in short slices, probing the WORKER
+                # pid between them. A worker dead under a live wrapper sends
+                # no EOF (the wrapper holds duplicates of both pipe ends) and
+                # `proc.poll()` watches only the wrapper, so this probe is the
+                # one honest liveness signal. Frame reads themselves stay
+                # unsliced so a partial frame is never re-parsed.
+                r, _, _ = select.select(
+                    [self.replies.fd], [], [], min(LIVENESS_SLICE, remaining))
+                if not r:
+                    if (self.worker_pid is not None
+                            and not _process_running(self.worker_pid)):
+                        raise WorkerDied(
+                            f"worker process {self.worker_pid} is gone")
+                    continue
+            rep = self.replies.read_frame(remaining)
             if rep.get("request_id") == rid:
                 return rep
             # out-of-order reply: stash it

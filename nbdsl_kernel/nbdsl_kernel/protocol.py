@@ -97,6 +97,10 @@ class ReadyFrame(_Frame, BuildInfo):
     op: Literal["ready"]
     protocol: int
     lean: str
+    #: The worker process itself — NOT the `lake env` wrapper the client
+    #: spawned. Liveness probes must target this pid; the wrapper can outlive
+    #: (or lag) the worker and its poll() proves nothing about the worker.
+    pid: int
     snapshot: int
 
 

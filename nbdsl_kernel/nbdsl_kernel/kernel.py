@@ -22,7 +22,8 @@ from pydantic import ValidationError
 
 from .protocol import (CellState, CommParent, CompleteOk, DocumentMessage,
                        ExecuteReply, InspectOk, IsCompleteOk)
-from .worker import ProvenanceError, WorkerClient, WorkerDied
+from .worker import (ProvenanceError, WorkerClient, WorkerDied,
+                     WorkerInterrupted)
 
 JupyterReply = dict[str, object]
 
@@ -257,37 +258,19 @@ class NbDslKernel(Kernel):
                          cell_id: str | None = None) -> JupyterReply:
         self._silent = silent
         try:
-            self._ensure_worker()
-            if self._init_error:
-                return self._error_reply("InitCellError", self._init_error,
-                                         silent)
-            if cell_id and cell_id in self.doc_sources:
-                # Document mode: make the prefix invariant true, then run this
-                # cell against its prefix snapshot. The request's code is the
-                # authoritative source for the cell itself.
-                self.doc_sources[cell_id] = code
-                err, parent = self._ensure_prefix(cell_id, silent)
-                if err is not None:
-                    return err
-                rep = self.worker.execute_at(code, cell_id, parent)
-                if rep.status == "ok":
-                    self.cell_state[cell_id] = CellState(
-                        source=code, snapshot=rep.snapshot, parent=parent)
-                self._broadcast_status()
-            else:
-                rep = self.worker.execute(code, cell_id=cell_id or "cell")
-                if rep.status == "ok":
-                    self.worker.save_session()
-            if not silent:
-                self._publish_reply(rep)
-            if rep.status == "ok":
-                return {"status": "ok", "execution_count": self.execution_count,
-                        "payload": [], "user_expressions": {}}
-            if rep.status == "cancelled":
-                return self._error_reply(
-                    "Interrupted", "execution cancelled; state unchanged",
-                    silent)
-            return self._error_reply("LeanError", rep.first_error(), silent)
+            try:
+                return self._execute_once(code, silent, cell_id)
+            except WorkerInterrupted:
+                raise
+            except WorkerDied:
+                # An UNREQUESTED worker death observed mid-request (crash,
+                # OOM kill, external kill) — _ensure_worker's poll() gate
+                # watches only the `lake env` wrapper and can miss it. Reap
+                # whatever is left so the gate turns truthful, then run the
+                # cell once more through the standard restart-and-replay
+                # path. A second death is a real, reported failure.
+                self.worker.kill()
+                return self._execute_once(code, silent, cell_id)
         except KeyboardInterrupt:
             # Jupyter interrupts SIGINT the whole process group; the worker is
             # (being) killed. Kill it outright so no stale elaboration lingers;
@@ -302,10 +285,48 @@ class NbDslKernel(Kernel):
             # readable from the notebook. Each execute re-checks, so
             # rebuilding a matching pair recovers without a restart.
             return self._error_reply("ProvenanceError", str(e), silent)
+        except WorkerInterrupted:
+            return self._error_reply(
+                "Interrupted", "execution interrupted; worker killed after "
+                "the cooperative-cancel window", silent)
         except WorkerDied as e:
             return self._error_reply("WorkerDied", str(e), silent)
         finally:
             self._silent = False
+
+    def _execute_once(self, code: str, silent: bool,
+                      cell_id: str | None) -> JupyterReply:
+        self._ensure_worker()
+        if self._init_error:
+            return self._error_reply("InitCellError", self._init_error,
+                                     silent)
+        if cell_id and cell_id in self.doc_sources:
+            # Document mode: make the prefix invariant true, then run this
+            # cell against its prefix snapshot. The request's code is the
+            # authoritative source for the cell itself.
+            self.doc_sources[cell_id] = code
+            err, parent = self._ensure_prefix(cell_id, silent)
+            if err is not None:
+                return err
+            rep = self.worker.execute_at(code, cell_id, parent)
+            if rep.status == "ok":
+                self.cell_state[cell_id] = CellState(
+                    source=code, snapshot=rep.snapshot, parent=parent)
+            self._broadcast_status()
+        else:
+            rep = self.worker.execute(code, cell_id=cell_id or "cell")
+            if rep.status == "ok":
+                self.worker.save_session()
+        if not silent:
+            self._publish_reply(rep)
+        if rep.status == "ok":
+            return {"status": "ok", "execution_count": self.execution_count,
+                    "payload": [], "user_expressions": {}}
+        if rep.status == "cancelled":
+            return self._error_reply(
+                "Interrupted", "execution cancelled; state unchanged",
+                silent)
+        return self._error_reply("LeanError", rep.first_error(), silent)
 
     def _error_reply(self, ename: str, evalue: str,
                      silent: bool) -> JupyterReply:

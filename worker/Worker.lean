@@ -343,6 +343,10 @@ unsafe def main (argv : List String) : IO UInt32 := do
         [("op", Json.str "ready"),
          ("protocol", toJson Worker.ReleaseInfo.wireProtocol),
          ("lean", Json.str Lean.versionString),
+         -- The client probes this pid between reply-read slices: a worker
+         -- that dies under a still-live `lake env` wrapper is otherwise
+         -- invisible to `proc.poll()` and would hang the read.
+         ("pid", toJson (← IO.Process.getPID).toNat),
          ("snapshot", toJson (0 : Nat))] ++ Worker.identity
       Worker.mainLoop ch queue session inflight
       return 0
