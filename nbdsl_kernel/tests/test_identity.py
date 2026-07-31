@@ -30,6 +30,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 from typing import Any, Iterator
@@ -198,6 +199,36 @@ def test_clean_trees_must_agree_on_the_commit() -> None:
     # …and the same pair, either side dirty, is unverifiable rather than wrong.
     assert compare(clean.model_copy(update={"dirty": True}), other) == \
         ([], "unverifiable-dirty")
+
+
+def _build_identity(clone: Path) -> BuildInfo:
+    """Build the adapter wheel in `clone` and read the identity it embedded."""
+    subprocess.run([sys.executable, "-m", "build", "--wheel",
+                    str(clone / "nbdsl_kernel")],
+                   check=True, capture_output=True, cwd=clone)
+    return BuildInfo.model_validate_json(
+        (clone / "nbdsl_kernel/nbdsl_kernel/_build_info.json").read_text())
+
+
+def test_an_installers_own_droppings_do_not_make_the_source_dirty(
+        tmp_path: Path) -> None:
+    """`dirty` must mean the SOURCE differs from the commit, not that some
+    tool wrote a file into the checkout — package managers do exactly that:
+    `uv pip install git+…` leaves an untracked `.ok` sentinel, which made
+    every uv-installed adapter report dirty and so permanently disabled the
+    strict clean-pair commit comparison for the documented consumer install
+    path. A real modification must still be caught."""
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "clone", "--quiet", f"file://{REPO}", str(clone)],
+                   check=True, capture_output=True)
+
+    (clone / ".ok").write_text("")               # uv's real sentinel, verbatim
+    (clone / "stray-tool-output.log").write_text("noise")
+    assert _build_identity(clone).dirty is False
+
+    tracked = clone / "nbdsl_kernel/nbdsl_kernel/kernel.py"
+    tracked.write_text(tracked.read_text() + "\n# a real source change\n")
+    assert _build_identity(clone).dirty is True
 
 
 def _await_comm(kc: Any, comm_id: str, timeout: float = 30) -> dict[str, Any]:

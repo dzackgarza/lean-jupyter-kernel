@@ -38,7 +38,12 @@ target buildCommit pkg : FilePath := Job.async do
         {pkg.dir} (exit {out.exitCode}): {out.stderr}"
     return out.stdout
   let commit := (← git #["rev-parse", "HEAD"]).trimAsciiEnd.copy
-  let status := (← git #["status", "--porcelain"]).trimAsciiEnd.copy
+  -- Tracked modifications only, matching the adapter's hatch hook (the two
+  -- flags feed one comparison) and `git describe --dirty`: `dirty` must mean
+  -- the SOURCE differs from this commit, not that a tool wrote a file into
+  -- the checkout — package managers do exactly that.
+  let status := (← git #["status", "--porcelain",
+                         "--untracked-files=no"]).trimAsciiEnd.copy
   let stamp := s!"{commit} {if status.isEmpty then "clean" else "dirty"}"
   addPureTrace stamp "build-commit"
   let path := pkg.buildDir / "build-commit.txt"

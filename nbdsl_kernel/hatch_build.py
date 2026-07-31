@@ -46,9 +46,20 @@ class CustomBuildHook(BuildHookInterface):
         (root / BUILD_INFO).write_text(json.dumps({
             "release": release["release"]["version"],
             "commit": _git(root, "rev-parse", "HEAD"),
+            # Tracked modifications only — `dirty` must mean "the SOURCE
+            # differs from this commit", not "some tool wrote a file here".
+            # Installers do exactly that: `uv pip install git+…` leaves its
+            # own untracked `.ok` sentinel in the checkout, which made every
+            # uv-installed adapter report dirty and so permanently disabled
+            # the strict clean-pair commit comparison for the documented
+            # consumer install path (observed, 2026-07-31). Same definition
+            # as `git describe --dirty`, and the same one the worker's
+            # lakefile uses — the two flags feed one comparison.
+            #
             # Recorded, never a build failure: dev builds must run, and
             # release qualification is what rejects a dirty tree.
-            "dirty": bool(_git(root, "status", "--porcelain")),
+            "dirty": bool(_git(root, "status", "--porcelain",
+                               "--untracked-files=no")),
             "plugin_api": release["compat"]["plugin_api"],
             "wire": release["compat"]["wire_protocol"],
             "toolchain": release["toolchain"]["lean"],
