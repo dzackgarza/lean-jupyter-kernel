@@ -1,17 +1,14 @@
-# Tag-triggered publication (issue #7, Workstream 5).
+# Tag-triggered release (issue #7, Workstream 5).
 #
-# Runs ONLY on the governed tag. Rebuilds every artifact from the tagged
-# commit, binds them with release-provenance.json, publishes the GitHub
-# release, then PyPI (trusted publishing / OIDC) and npm (OIDC provenance).
-# Nothing here reuses PR-run artifacts: the tag target is rebuilt and
-# re-attested from scratch, so the published artifacts are provably the
-# qualified tree's.
+# Runs ONLY on the governed tag. Rebuilds the worker from the tagged commit,
+# binds it to that commit with release-provenance.json, and publishes the
+# GitHub release carrying the compatibility contract. Nothing here reuses
+# PR-run artifacts: the tag target is rebuilt and re-attested from scratch,
+# so the released identity is provably the qualified tree's.
 #
-# Owner-side prerequisites (one-time, cannot be automated from here):
-#   - PyPI: projects nbdsl-kernel and jupyterlab-nbdsl claimed, with a
-#     trusted publisher for this repo + this workflow (environment: release).
-#   - npm: package jupyterlab_nbdsl claimed, trusted publisher (OIDC)
-#     configured for this repo + workflow.
+# Consumers install from GitHub at this tag's commit, so the release
+# publishes an identity — tag, commit, worker hash, compatibility contract —
+# not installable bundles.
 
 name: release
 
@@ -21,25 +18,18 @@ on:
 
 permissions:
   contents: write   # create the GitHub release
-  id-token: write   # PyPI trusted publishing + npm provenance (OIDC)
 
 jobs:
   publish:
-    name: build, attest, publish ${{ github.ref_name }}
+    name: build, attest, release ${{ github.ref_name }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    environment: release
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: lts/*
-          registry-url: https://registry.npmjs.org
 
       - name: the tag names the governed release and the tree is exact
         run: |
@@ -55,50 +45,25 @@ jobs:
           use-mathlib-cache: false
           use-github-cache: false
 
-      - name: build distributions
-        run: |
-          pip install build jupyterlab
-          python -m build --sdist --wheel nbdsl_kernel --outdir dist/py
-          python -m build --sdist --wheel jupyterlab_nbdsl --outdir dist/py
-          cd jupyterlab_nbdsl && jlpm install && jlpm build:prod && npm pack --pack-destination ../dist
-
       - name: bind provenance to the exact tagged commit
         run: |
+          mkdir -p dist
           python3 scripts/release_provenance.py generate \
             --worker worker/.lake/build/bin/nbdsl_worker \
-            $(for f in dist/py/* dist/*.tgz; do printf -- '--dist %s ' "$f"; done) \
             --out dist/release-provenance.json
-          cd dist && sha256sum *.json *.tgz py/* > SHA256SUMS
+          cd dist && sha256sum release-provenance.json > SHA256SUMS
 
       - name: publish the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create '${{ github.ref_name }}' dist/py/* dist/*.tgz \
+          gh release create '${{ github.ref_name }}' \
             dist/release-provenance.json dist/SHA256SUMS \
             --title '${{ github.ref_name }}' \
-            --notes "Governed release ${{ github.ref_name }}. Compatibility contract: release.toml at this tag; artifact hashes: SHA256SUMS + release-provenance.json."
+            --notes "Governed release ${{ github.ref_name }}. Compatibility contract: release.toml at this tag. Release identity — commit, tag, package versions, worker binary hash: release-provenance.json, checksummed in SHA256SUMS. Install from GitHub at this tag's commit."
 
-      - name: publish to PyPI (trusted publishing)
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          packages-dir: dist/py
-
-      - name: publish to npm (OIDC provenance)
-        working-directory: jupyterlab_nbdsl
-        run: npm publish --provenance --access public
-
-      - name: registry readback — published versions resolve to this tag
+      - name: release readback — the tag resolves to this exact commit
         run: |
-          VERSION=$(python3 -c "import tomllib; print(tomllib.load(open('release.toml','rb'))['release']['version'])")
-          for i in 1 2 3 4 5 6 7 8 9 10; do
-            ok=1
-            pip index versions nbdsl-kernel 2>/dev/null | grep -q "$VERSION" || ok=0
-            pip index versions jupyterlab-nbdsl 2>/dev/null | grep -q "$VERSION" || ok=0
-            npm view jupyterlab_nbdsl@"$VERSION" version >/dev/null 2>&1 || ok=0
-            [ $ok = 1 ] && break; sleep 30
-          done
-          [ $ok = 1 ] || { echo "registry readback failed for $VERSION"; exit 1; }
           gh release view '${{ github.ref_name }}' --json tagName,targetCommitish
           test "$(git rev-parse HEAD)" = "${{ github.sha }}"
         env:
