@@ -84,6 +84,12 @@ jobs:
       - name: end-to-end through the Jupyter protocol
         run: pytest nbdsl_kernel/tests/test_e2e.py
 
+      # The identity/provenance laws that drive the INSTALLED kernelspec run
+      # here, where that spec exists; the compat job proves the wheel-and-
+      # clean-environment claims with fixtures that install their own specs.
+      - name: adapter/worker identity through the installed kernelspec
+        run: pytest nbdsl_kernel/tests/test_identity.py nbdsl_kernel/tests/test_restart.py
+
       # Semantic plugin conformance (#3). The in-repository reference plugin
       # runs here, where the worker, the DSL and the kernel package are all
       # already built. The external plugin's profile is driven by the consumer
@@ -123,11 +129,11 @@ jobs:
       # -- adapter artifact + runtime identity: wheel build runs the
       #    hatch_build hook; the identity/provenance and clean-install suites
       #    prove the runtime comparison and both dependency layouts.
-      - name: adapter wheel, identity comparison, clean installation
+      - name: adapter wheel and clean installation (both worker layouts)
         run: |
           pip install 'jupyter_client>=8' pytest pydantic ipykernel
           pip install ./nbdsl_kernel
-          pytest nbdsl_kernel/tests/test_identity.py nbdsl_kernel/tests/test_clean_install.py
+          pytest nbdsl_kernel/tests/test_clean_install.py
 
       # -- the real Sage backend for the external consumer's boundary
       - uses: mamba-org/setup-micromamba@v2

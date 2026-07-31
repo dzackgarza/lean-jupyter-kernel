@@ -63,11 +63,13 @@ for name, pat, repl in rewrites:
     print(f"override: {name} -> {url} @ {sha}")
 EOF
 (cd "$CO" && lake update nbdsl-worker >/dev/null)
-RESOLVED=$(python3 -c "import json,sys; m=json.load(open('$CO/lake-manifest.json')); print([p['rev'] for p in m['packages'] if p['name']=='nbdsl-worker'][0])")
+RESOLVED=$(python3 -c "import json; m=json.load(open('$CO/lake-manifest.json')); print([p['rev'] for p in m['packages'] if p['name'].strip('«»')=='nbdsl-worker'][0])")
 [ "$RESOLVED" = "$CANDIDATE" ] || { echo "lake manifest resolved $RESOLVED != candidate"; exit 1; }
 
 # --- consumer build + full real gate (Sage roundtrip + Jupyter E2E) ---
-(cd "$CO" && just setup && just test) 2>&1 | tee "$WORKDIR/consumer-gate.log"
+# `setup` requires the built worker (it installs the kernelspec against the
+# exe), so build first — the same order the consumer's own gate uses.
+(cd "$CO" && just build && just setup && just test) 2>&1 | tee "$WORKDIR/consumer-gate.log"
 grep -q "passed" "$WORKDIR/consumer-gate.log"
 
 # --- runtime provenance readback ---

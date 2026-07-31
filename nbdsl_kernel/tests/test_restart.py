@@ -25,6 +25,7 @@ from typing import Any, Iterator
 import pytest
 from jupyter_client.kernelspec import KernelSpecManager
 from jupyter_client.manager import KernelManager
+from jupyter_client.provisioning import LocalProvisioner
 
 from test_e2e import run_cell, texts
 
@@ -166,7 +167,9 @@ def test_a_worker_death_under_a_live_wrapper_recovers_transparently(
         kc.wait_for_ready(timeout=120)
         reply, _ = run_cell(kc, "def x : Nat := 41", timeout=120)
         assert reply["status"] == "ok", reply
-        worker, wrapper = _worker_and_wrapper(km.provisioner.process.pid)
+        prov = km.provisioner
+        assert isinstance(prov, LocalProvisioner) and prov.process is not None
+        worker, wrapper = _worker_and_wrapper(prov.process.pid)
         os.kill(wrapper, signal.SIGSTOP)   # the wrapper can neither exit nor reap
         os.kill(worker, signal.SIGKILL)    # the worker is simply gone
         reply, outputs = run_cell(kc, "#eval x + 1", timeout=120)
