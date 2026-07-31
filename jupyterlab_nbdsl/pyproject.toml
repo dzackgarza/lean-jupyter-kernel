@@ -1,20 +1,57 @@
 [build-system]
-requires = ["hatchling>=1.21"]
+requires = ["hatchling>=1.5.0", "hatch-nodejs-version>=0.3.2", "jupyter-builder>=1.2.0,<2"]
 build-backend = "hatchling.build"
 
 [project]
 name = "jupyterlab_nbdsl"
-version = "0.1.0"
-description = "Lean 4 syntax highlighting for JupyterLab (nbdsl kernel)"
+readme = "README.md"
+license = "BSD-3-Clause"
 requires-python = ">=3.9"
+classifiers = [
+    "Framework :: Jupyter",
+    "Framework :: Jupyter :: JupyterLab",
+    "Framework :: Jupyter :: JupyterLab :: 4",
+    "Framework :: Jupyter :: JupyterLab :: Extensions",
+    "Framework :: Jupyter :: JupyterLab :: Extensions :: Prebuilt",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+]
 dependencies = ["jupyterlab>=4.0.0,<5"]
+# All of these are read from package.json, whose "version" is the generated
+# projection of release.toml. This distribution declares no version of its own.
+dynamic = ["version", "description", "authors", "urls", "keywords"]
 
-[tool.hatch.build.targets.wheel]
-packages = ["jupyterlab_nbdsl"]
+[tool.hatch.version]
+source = "nodejs"
 
-# ponytail: no hatch-jupyter-builder; `jlpm build` runs by hand and
-# `jupyter labextension develop` symlinks the output. Add the builder plugin
-# only if this ever needs to produce a distributable wheel.
+[tool.hatch.metadata.hooks.nodejs]
+fields = ["description", "authors", "urls", "keywords"]
+
+[tool.hatch.build.targets.sdist]
+artifacts = ["jupyterlab_nbdsl/labextension"]
+
 [tool.hatch.build.targets.wheel.shared-data]
 "jupyterlab_nbdsl/labextension" = "share/jupyter/labextensions/jupyterlab_nbdsl"
 "install.json" = "share/jupyter/labextensions/jupyterlab_nbdsl/install.json"
+
+[tool.hatch.build.hooks.version]
+path = "jupyterlab_nbdsl/_version.py"
+
+[tool.hatch.build.hooks.jupyter-builder]
+dependencies = ["hatch-jupyter-builder>=0.5"]
+build-function = "hatch_jupyter_builder.npm_builder"
+ensured-targets = [
+    "jupyterlab_nbdsl/labextension/static/style.js",
+    "jupyterlab_nbdsl/labextension/package.json",
+]
+skip-if-exists = ["jupyterlab_nbdsl/labextension/static/style.js"]
+
+[tool.hatch.build.hooks.jupyter-builder.build-kwargs]
+build_cmd = "build:prod"
+npm = ["jlpm"]
+
+[tool.hatch.build.hooks.jupyter-builder.editable-build-kwargs]
+build_cmd = "install:extension"
+npm = ["jlpm"]
+source_dir = "src"
+build_dir = "jupyterlab_nbdsl/labextension"

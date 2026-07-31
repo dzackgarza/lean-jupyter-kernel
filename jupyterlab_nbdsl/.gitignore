@@ -6,5 +6,7 @@ lib/
 tsconfig.tsbuildinfo
 jupyterlab-debug.log
 jupyterlab_nbdsl/labextension/
+jupyterlab_nbdsl/_version.py
+dist/
 *.egg-info/
 __pycache__/

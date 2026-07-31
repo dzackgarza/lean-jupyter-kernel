@@ -209,13 +209,22 @@ smaller mechanism later.
    generated labextension to `share/jupyter/labextensions/jupyterlab_nbdsl` and requires
    its `package.json` and production static entrypoints. Python frontend version metadata
    reads the generated npm version instead of declaring another version.
-6. **Consumer baseline and transaction route.** Start from immutable consumer commit
-   `c756308851b6b201505a8b6da2ee67b3936c7d73`. Its Lake worker pin already names
-   `0008bda2c69f76abceab92a0b4a4e1b32d65f5c9`; its `just setup` adapter URL is
-   unpinned. Land the one-line adapter pin directly on consumer `main`, prove the current
-   clean baseline, and freeze the resulting commit as the qualification baseline.
-   Candidate overrides remain ephemeral. After publication, land the two exact-release
-   pins directly on consumer `main` and repeat the proof.
+6. **Consumer baseline and transaction route.** *Plan update, 2026-07-31 (landed with
+   repeated baseline proof, per this decision's own substitution rule):* the baseline
+   transaction started from consumer `main` at
+   `47bce1626a2f5e340557eaa131e5153d64fd6b06` — the head after the owner-directed #31
+   SPEC-conformance queue closed, superseding the pre-#31 commit `c756308…` named when
+   this plan was authored — and pinned BOTH dependency channels to kernel commit
+   `92c0caefb9587f4fee0a0e67e79afd91c8cb4f49` rather than `0008bda…`: the adapter at
+   `0008bda…` predates the subDir worker-exe resolution fix (`92c0cae`, Python-only,
+   worker Lean source identical) that the consumer's `/ "worker"` git dependency shape
+   requires. The transaction landed directly on consumer `main` as
+   `1b6822aa80988d5ef06aafd4f430b22e7d41b7bb` and its clean-checkout proof passed
+   (full build, no-sorry, real Sage roundtrip, 127 kernel E2E; evidence on #5). That
+   commit is the FROZEN QUALIFICATION BASELINE, recorded in
+   `conformance/lean-cas-dsl.toml`. Candidate overrides remain ephemeral. After
+   publication, land the two exact-release pins directly on consumer `main` and repeat
+   the proof.
 7. **Published artifacts.** Publish `nbdsl-kernel==1.1.0` and
    `jupyterlab-nbdsl==1.1.0` to PyPI, `jupyterlab_nbdsl@1.1.0` to npm, and `v1.1.0`
    as the Lean/Lake and GitHub source identity. Attach both Python wheels and sdists, the
@@ -231,10 +240,10 @@ smaller mechanism later.
 
 ### Intrinsic dependency chain
 
-1. Land the direct-to-main consumer baseline transaction from
-   `c756308851b6b201505a8b6da2ee67b3936c7d73`, prove both channels at kernel commit
-   `0008bda2c69f76abceab92a0b4a4e1b32d65f5c9`, and freeze the resulting consumer
-   commit.
+1. Land the direct-to-main consumer baseline transaction (DONE: consumer
+   `1b6822aa80988d5ef06aafd4f430b22e7d41b7bb`, both channels at kernel commit
+   `92c0caefb9587f4fee0a0e67e79afd91c8cb4f49` per the dated plan update in fixed
+   decision 6, clean-checkout proof green, #5 closed).
 2. Add `release.toml`, generated package projections, exact build provenance, and the
    runtime identity comparison.
 3. Implement the two fixed TOML semantic profiles and apply the shared laws first to
@@ -523,10 +532,10 @@ or the tag does not resolve to the qualified commit.
 **Owner boundary:** kernel qualification orchestration in this PR; dependency updates
 and the real Sage-backed notebook boundary in the separate consumer repository.
 
-**Before:** consumer commit `c756308851b6b201505a8b6da2ee67b3936c7d73` pins the
+**Before:** consumer commit `c756308851b6b201505a8b6da2ee67b3936c7d73` pinned the
 Lake worker channel to kernel commit
 `0008bda2c69f76abceab92a0b4a4e1b32d65f5c9`, but its `just setup` adapter URL
-floats on kernel `main`.
+floated on kernel `main`.
 
 **After:** one immutable consumer baseline resolves its Lake worker dependency and
 Python adapter dependency to the same kernel identity. Qualification can replace both
@@ -536,11 +545,13 @@ and repeats the proof.
 
 Implementation obligations:
 
-- Starting from `c756308851b6b201505a8b6da2ee67b3936c7d73`, change only the
-  consumer's adapter Git URL to
-  `0008bda2c69f76abceab92a0b4a4e1b32d65f5c9`. Land that dependency
-  transaction directly on consumer `main`, run its clean build and Sage/Jupyter proof,
-  and freeze the resulting commit as the external profile and qualification baseline.
+- DONE (dated plan update, fixed decision 6): from consumer `main`
+  `47bce1626a2f5e340557eaa131e5153d64fd6b06`, both the Lake worker pin and the
+  adapter Git URL moved to kernel `92c0caefb9587f4fee0a0e67e79afd91c8cb4f49`;
+  the transaction landed directly on consumer `main` as
+  `1b6822aa80988d5ef06aafd4f430b22e7d41b7bb`, its clean build and Sage/Jupyter
+  proof passed, and that commit is the frozen external profile and qualification
+  baseline.
 - Store that resulting immutable consumer commit in the kernel's generated qualification
   inputs. Do not substitute a later consumer `main` without an explicit plan update and
   repeated baseline proof.
