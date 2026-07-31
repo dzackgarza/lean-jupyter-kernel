@@ -105,13 +105,18 @@ WORKER_SHA256=$(sha256sum "$WORKER_BIN" | cut -d' ' -f1)
   --source-dir "$CO" --out "$WORKDIR/conformance-result.json"
 
 # --- unchanged-worktree proof: exactly the declared overrides, nothing else ---
-git -C "$CO" status --porcelain | sort > "$WORKDIR/worktree-status.txt"
-DIFF_FILES=$(awk '{print $2}' "$WORKDIR/worktree-status.txt" | sort | tr '\n' ' ')
-EXPECTED=" M justfile / M lakefile.lean / M lake-manifest.json"
-case "$DIFF_FILES" in
-  "justfile lake-manifest.json lakefile.lean ") : ;;
-  *) echo "worktree carries more than the declared overrides: $DIFF_FILES"; exit 1 ;;
-esac
+git -C "$CO" status --porcelain > "$WORKDIR/worktree-status.txt"
+# LC_ALL=C so the comparison cannot depend on the runner's collation (a
+# locale that folds punctuation orders lakefile.lean before
+# lake-manifest.json; the C locale does the reverse).
+DIRTY=$(awk '{print $NF}' "$WORKDIR/worktree-status.txt" | LC_ALL=C sort | tr '\n' ' ')
+DECLARED="justfile lake-manifest.json lakefile.lean "
+if [ "$DIRTY" != "$DECLARED" ]; then
+  echo "worktree carries more than the declared overrides"
+  echo "  declared: $DECLARED"
+  echo "  actual:   $DIRTY"
+  exit 1
+fi
 [ "$(git -C "$CO" rev-parse HEAD)" = "$BASELINE" ] || { echo "checkout moved off baseline"; exit 1; }
 
 TOOLCHAIN=$(cat "$WORKER_PKG/worker/lean-toolchain" 2>/dev/null || cat "$CO/lean-toolchain")

@@ -146,6 +146,10 @@ jobs:
       - name: install just
         uses: extractions/setup-just@v3
 
+      # The consumer's own `just setup` provisions its venv with uv.
+      - name: install uv
+        uses: astral-sh/setup-uv@v6
+
       # Mathlib oleans for the consumer build, keyed on the profile that owns
       # the frozen baseline (rolls automatically when the baseline promotes).
       - uses: actions/cache@v6
