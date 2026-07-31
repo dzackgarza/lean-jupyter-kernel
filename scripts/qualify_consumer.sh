@@ -99,10 +99,39 @@ WORKER_BIN="$WORKER_PKG/worker/.lake/build/bin/nbdsl_worker"
 WORKER_SHA256=$(sha256sum "$WORKER_BIN" | cut -d' ' -f1)
 
 # --- external semantic conformance profile against this checkout ---
+# (its result carries the runtime provenance this job asserts on below)
 # The checkout's venv owns jupyter_client AND the casdsl kernelspec the
 # runner drives — the system python owns neither.
 "$CO/.venv/bin/python" "$KERNEL_REPO/conformance/runner.py" "$PROFILE" \
   --source-dir "$CO" --out "$WORKDIR/conformance-result.json"
+
+# --- the pair this candidate actually ran must agree, strictly ---
+# Runtime already refuses a clean commit mismatch (see protocol.compare); this
+# is the independent second gate. Both halves here come from one controlled
+# checkout at one candidate SHA, so the bar is exactly `True` — a session that
+# merely was not refused (unverifiable-dirty) does not qualify a release.
+python3 - "$WORKDIR/conformance-result.json" "$CANDIDATE" <<'EOF'
+import json, sys
+res = json.load(open(sys.argv[1]))
+candidate = sys.argv[2]
+prov = res.get("provenance", {})
+if prov.get("status") != "present":
+    sys.exit(f"qualification: no runtime provenance observed ({prov!r})")
+records = prov.get("data") or []
+if not records:
+    sys.exit("qualification: provenance channel carried no record")
+for p in records:
+    if p.get("agreed") is not True:
+        sys.exit(f"qualification: adapter/worker pair not strictly agreed: "
+                 f"{p.get('agreed')!r}\n  adapter={p.get('adapter')}\n"
+                 f"  worker={p.get('worker')}")
+    for half in ("adapter", "worker"):
+        got = (p.get(half) or {}).get("commit")
+        if got != candidate:
+            sys.exit(f"qualification: {half} ran at {got}, not the candidate "
+                     f"{candidate}")
+print(f"provenance: adapter and worker both at {candidate}, strictly agreed")
+EOF
 
 # --- unchanged-worktree proof: exactly the declared overrides, nothing else ---
 git -C "$CO" status --porcelain > "$WORKDIR/worktree-status.txt"

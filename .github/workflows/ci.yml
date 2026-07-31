@@ -76,9 +76,11 @@ jobs:
       - name: protocol round-trip
         run: python3 nbdsl_kernel/tests/roundtrip.py
 
+      # `build` is the identity suite's: one law builds a wheel from a scratch
+      # clone to prove an installer's own droppings do not read as dirty.
       - name: install kernel package and kernelspec
         run: |
-          pip install -e './nbdsl_kernel[test]'
+          pip install -e './nbdsl_kernel[test]' build
           python -m nbdsl_kernel.install --project "$PWD/dsls/nbdsl"
 
       - name: end-to-end through the Jupyter protocol
@@ -149,6 +151,13 @@ jobs:
       # The consumer's own `just setup` provisions its venv with uv.
       - name: install uv
         uses: astral-sh/setup-uv@v6
+
+      # The consumer's `just test` delegates its Lean QC to the global
+      # justfiles at ~/ai-review-ci, which a workstation has and a runner does
+      # not. Qualification runs that gate verbatim — the stop rule is to
+      # provision what the consumer needs, never to adapt the consumer.
+      - name: provision the global QC justfiles the consumer gate delegates to
+        run: git clone --depth 1 https://github.com/dzackgarza/ai-review-ci ~/ai-review-ci
 
       # Mathlib oleans for the consumer build, keyed on the profile that owns
       # the frozen baseline (rolls automatically when the baseline promotes).

@@ -110,8 +110,14 @@ def test_provenance_comm_publishes_the_executed_pair() -> None:
     # Clean pair: True. Dev tree: the commit cannot identify the sources.
     assert prov["agreed"] in (True, "unverifiable-dirty"), prov
     adapter, worker = prov["adapter"], prov["worker"]
-    for field in ("release", "commit", "plugin_api", "wire", "toolchain"):
+    for field in ("release", "plugin_api", "wire", "toolchain"):
         assert adapter[field] == worker[field], (field, prov)
+    # The commit is only required to match when the pair was actually
+    # verified. Asserting it unconditionally would fail for the right reason
+    # in CI and the wrong one here: an unverifiable-dirty pair is allowed to
+    # straddle a commit, which is the whole reason that state exists.
+    if prov["agreed"] is True:
+        assert adapter["commit"] == worker["commit"], prov
     assert COMMIT.fullmatch(worker["commit"]), prov
     with WORKER_EXE.open("rb") as f:
         assert prov["worker_binary_sha256"] == \
@@ -146,9 +152,10 @@ def test_static_contract_mismatch_refuses_cells(tmp_path: Path) -> None:
 
 
 def test_commit_mismatch_on_a_dirty_tree_still_runs(tmp_path: Path) -> None:
-    """A dirty tree's commit is not an identity, so it cannot refuse: any
-    unrelated commit between installing the adapter and rebuilding the worker
-    would otherwise brick the session. Reported, not enforced."""
+    """A dirty tree's commit is not an identity — the source no longer matches
+    what it names — so it can neither confirm nor deny agreement and is
+    reported rather than enforced. Two CLEAN commits disagreeing is the case
+    that refuses; see test_clean_trees_must_agree_on_the_commit."""
     info = json.loads(BUILD_INFO.read_text())
     scratch = tmp_path / "_build_info.json"
     scratch.write_text(json.dumps({**info, "commit": "0" * 40, "dirty": True}))
@@ -201,11 +208,27 @@ def test_clean_trees_must_agree_on_the_commit() -> None:
         ([], "unverifiable-dirty")
 
 
+def test_a_dirty_tree_suspends_only_the_commit_comparison() -> None:
+    """`dirty` withdraws the COMMIT evidence, never the contract check: the
+    static fields are projections of release.toml and disagree for real
+    however either side was built. Guards the reordering that would answer
+    "unverifiable-dirty" before looking at STATIC at all — which the other
+    tests here cannot catch, because they inherit `dirty` from the
+    authoritative build info (true in a dev tree, false in CI)."""
+    base = BuildInfo.model_validate_json(BUILD_INFO.read_text())
+    dirty = base.model_copy(update={"dirty": True})
+    assert compare(dirty, dirty.model_copy(update={"wire": 99})) == \
+        (["wire"], False)
+
+
 def _build_identity(clone: Path) -> BuildInfo:
     """Build the adapter wheel in `clone` and read the identity it embedded."""
-    subprocess.run([sys.executable, "-m", "build", "--wheel",
-                    str(clone / "nbdsl_kernel")],
-                   check=True, capture_output=True, cwd=clone)
+    # Not check=True: CalledProcessError with captured output reports only the
+    # exit status, and the build's own diagnostic is the thing worth reading.
+    proc = subprocess.run([sys.executable, "-m", "build", "--wheel",
+                           str(clone / "nbdsl_kernel")],
+                          capture_output=True, text=True, cwd=clone)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
     return BuildInfo.model_validate_json(
         (clone / "nbdsl_kernel/nbdsl_kernel/_build_info.json").read_text())
 
@@ -229,6 +252,38 @@ def test_an_installers_own_droppings_do_not_make_the_source_dirty(
     tracked = clone / "nbdsl_kernel/nbdsl_kernel/kernel.py"
     tracked.write_text(tracked.read_text() + "\n# a real source change\n")
     assert _build_identity(clone).dirty is True
+
+
+def test_building_refreshes_both_halves_into_a_matched_pair() -> None:
+    """The atomic-rebuild property `just build` exists to provide.
+
+    The worker re-embeds its identity on every build, while an editable
+    install keeps the `_build_info.json` it was installed with — so refreshing
+    one half alone strands the session behind a refusal that describes the
+    build workflow rather than any real incompatibility. Running the two steps
+    the `build` recipe runs must leave a pair the real decision function
+    accepts. Mathlib-free: the worker package is its own project, and identity
+    needs no prelude.
+    """
+    subprocess.run(["lake", "build", "nbdsl_worker"], cwd=REPO / "worker",
+                   check=True, capture_output=True)
+    subprocess.run([sys.executable, str(REPO / "scripts/sync_build_info.py")],
+                   check=True, capture_output=True)
+
+    w = BareWorker(prelude="Init")
+    try:
+        ready = w.replies.read_frame()
+    finally:
+        w.shutdown()
+
+    adapter = BuildInfo.model_validate_json(BUILD_INFO.read_text())
+    worker = BuildInfo.model_validate(ready)
+    disagree, agreed = compare(adapter, worker)
+    assert disagree == [], (disagree, adapter, worker)
+    # True on a clean tree, "unverifiable-dirty" on a dev one — never a
+    # refusal, which is the property under test.
+    assert agreed is not False, (agreed, adapter, worker)
+    assert adapter.commit == worker.commit, (adapter, worker)
 
 
 def _await_comm(kc: Any, comm_id: str, timeout: float = 30) -> dict[str, Any]:

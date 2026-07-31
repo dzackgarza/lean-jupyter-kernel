@@ -25,9 +25,13 @@ default:
 cache:
     @cd dsls/nbdsl && lake exe cache get
 
-# Build the core worker package and the reference DSL plugin
+# Build the core worker package and the reference DSL plugin.
+# The worker re-embeds its build identity here, so the adapter's half is
+# refreshed in the same breath: rebuilding one alone is what makes a kernel
+# refuse the pair (editable installs read _build_info.json from the tree).
 build:
     @cd worker && lake build nbdsl_worker
+    @python3 scripts/sync_build_info.py
     @cd dsls/nbdsl && lake build NbDsl
 
 # Run the full repository QC gate

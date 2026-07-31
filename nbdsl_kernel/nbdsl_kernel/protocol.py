@@ -80,9 +80,16 @@ def compare(adapter: BuildInfo, worker: BuildInfo) -> tuple[list[str], object]:
     Returns (disagreeing fields, `agreed`). The commit identifies the sources
     only when BOTH trees are clean; a dirty tree's commit proves neither
     agreement nor disagreement, so it is reported verbatim rather than
-    enforced — otherwise any unrelated commit made between installing the
-    adapter and rebuilding the worker would brick a dev session. Release
-    qualification rejects dirty separately, so nothing shippable weakens.
+    enforced. Two CLEAN artifacts built from different commits ARE refused:
+    `wire` is not bumped for every frame change, so on one release lineage
+    the commit is the only thing separating same-shape semantic skew — the
+    exact hazard of the two-pin delivery model, where the adapter comes from
+    PyPI/git and the worker from a Lake pin that can name a different commit.
+
+    A pair one rebuild apart is a workflow problem, not a reason to weaken
+    this: `just build` refreshes both halves together (see
+    scripts/sync_build_info.py), so a refusal means they really did come from
+    different sources.
     """
     disagree = [f for f in STATIC if getattr(adapter, f) != getattr(worker, f)]
     unverifiable = adapter.dirty or worker.dirty

@@ -258,6 +258,16 @@ class WorkerClient:
             "worker_binary_sha256": digest,
             "agreed": agreed,
         }
+        if agreed is not True:
+            # An unverified pair still runs, but it says so: silence would let
+            # a session assume a guarantee it does not have. The provenance
+            # comm carries the same fact, and nothing in the stock frontend
+            # opens it.
+            self.on_stream(
+                "stderr",
+                f"nbdsl: adapter {adapter.commit[:8]} and worker "
+                f"{worker.commit[:8]} are not a verified pair ({agreed}); "
+                "`just build` rebuilds both halves together.\n")
         if disagree:
             self.kill()
             raise ProvenanceError(
