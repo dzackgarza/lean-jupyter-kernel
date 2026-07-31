@@ -62,9 +62,14 @@ jobs:
             --title '${{ github.ref_name }}' \
             --notes "Governed release ${{ github.ref_name }}. Compatibility contract: release.toml at this tag. Release identity — commit, tag, package versions, worker binary hash: release-provenance.json, checksummed in SHA256SUMS. Install from GitHub at this tag's commit."
 
-      - name: release readback — the tag resolves to this exact commit
+      - name: release readback — GitHub resolves the tag to the qualified commit
         run: |
-          gh release view '${{ github.ref_name }}' --json tagName,targetCommitish
-          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          # Fails if the release does not exist.
+          gh release view '${{ github.ref_name }}' --json tagName --jq .tagName
+          # /commits/{ref} resolves a tag to its commit, dereferencing annotated
+          # tag objects, so this compares commits and never a tag-object SHA.
+          tagged=$(gh api "repos/${{ github.repository }}/commits/${{ github.ref_name }}" --jq .sha)
+          test "$tagged" = "${{ github.sha }}" || {
+            echo "${{ github.ref_name }} resolves to $tagged, not the qualified ${{ github.sha }}"; exit 1; }
         env:
           GH_TOKEN: ${{ github.token }}
