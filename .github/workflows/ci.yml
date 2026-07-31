@@ -138,10 +138,22 @@ jobs:
           pytest nbdsl_kernel/tests/test_clean_install.py
 
       # -- the real Sage backend for the external consumer's boundary
+      #
+      # The 10.7 pin is provisioning, not a workaround: the consumer spawns
+      # its adapter as `sage -python backends/sage_adapter.py` (roundtrip.py
+      # and CasDsl/Backends/Sage.lean both hardcode it), and `-python` is a
+      # flag of the SageMath *distribution* launcher. conda-forge shipped that
+      # launcher through sagelib 10.7; from 10.8 on, `bin/sage` is the
+      # `sage.cli.__main__:main` console script, whose argparse rejects
+      # `-python` outright. 10.7 is therefore the newest conda-forge Sage that
+      # satisfies the frozen consumer baseline's documented launcher contract.
+      # The portability defect is the consumer's and is filed as
+      # dzackgarza/lean-cas-dsl#34 — it is not this repository's to fix, and
+      # the qualification stop rule forbids adapting the consumer here.
       - uses: mamba-org/setup-micromamba@v2
         with:
           environment-name: sage
-          create-args: sage python=3.12
+          create-args: sage=10.7 python=3.12
           cache-environment: true
           generate-run-shell: true
 
