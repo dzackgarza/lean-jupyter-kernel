@@ -51,6 +51,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes bubblewrap
+          # Ubuntu 24.04 restricts unprivileged user namespaces through
+          # AppArmor by default. The hosted runner is ephemeral; permit the
+          # namespace creation that the production Bubblewrap path requires.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       # Keyed on the dependency set, not the commit, so warm runs hit: the
       # ~5GB of mathlib oleans is re-saved only when deps or toolchain move.
@@ -107,10 +111,9 @@ jobs:
       - name: semantic conformance — NbDsl profile
         run: python3 conformance/runner.py conformance/nbdsl.toml
 
-      # NOT run here: nbdsl_kernel/tests/sandbox_check.py. bubblewrap needs
-      # user-namespace privileges that GitHub's ubuntu runners don't reliably
-      # grant, so the sandbox proof runs locally via scripts/check.sh only.
-      # CI green therefore does NOT cover the sandbox claim.
+      # The focused identity suite above runs the production Bubblewrap path
+      # against the worker. sandbox_check.py remains a local diagnostic rather
+      # than a second CI proof of the same boundary.
 
   compat:
     name: compatibility + external consumer
