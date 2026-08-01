@@ -19,6 +19,7 @@ on:
 permissions:
   contents: write   # create the GitHub release
 
+  checks: read
 jobs:
   publish:
     name: build, attest, release ${{ github.ref_name }}
@@ -53,6 +54,10 @@ jobs:
             --out dist/release-provenance.json
           cd dist && sha256sum release-provenance.json > SHA256SUMS
 
+      - name: require exact tag-target qualification
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/require_release_qualification.sh '${{ github.repository }}' '${{ github.sha }}'
       - name: publish the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

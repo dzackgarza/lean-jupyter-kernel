@@ -16,14 +16,30 @@ import signal
 import subprocess
 import threading
 import time
+from collections.abc import Callable
+from contextlib import ExitStack
 from pathlib import Path
-from typing import IO, Callable
+from typing import IO
 
-from .protocol import (COMPLETE_REPLY, INSPECT_REPLY, IS_COMPLETE_REPLY,
-                       LOAD_SESSION_REPLY, SAVE_SESSION_REPLY, BuildInfo,
-                       CompleteOk, ExecuteReply, InspectOk, IsCompleteOk,
-                       LoadSessionOk, ReadyFrame, SaveSessionOk, WorkerError,
-                       compare)
+import psutil
+
+from .protocol import (
+    COMPLETE_REPLY,
+    INSPECT_REPLY,
+    IS_COMPLETE_REPLY,
+    LOAD_SESSION_REPLY,
+    SAVE_SESSION_REPLY,
+    BuildInfo,
+    CompleteOk,
+    ExecuteReply,
+    InspectOk,
+    IsCompleteOk,
+    LoadSessionOk,
+    ReadyFrame,
+    SaveSessionOk,
+    WorkerError,
+    compare,
+)
 
 RawFrame = dict[str, object]
 
@@ -49,16 +65,17 @@ LIVENESS_SLICE = 5.0  # reply-wait slice between worker liveness probes
 
 
 def _process_running(pid: int) -> bool:
-    """True while `pid` names a live, non-zombie process. A SIGKILLed worker
-    whose `lake env` wrapper has not (yet) reaped it is a zombie —
-    `os.kill(pid, 0)` still succeeds on those, so read the state field."""
+    """Use psutil's required cross-platform process status authority.
+
+    PID existence alone is insufficient because zombies still exist. Missing
+    and zombie processes are dead; access or observation failures propagate
+    because liveness cannot be inferred honestly without this capability.
+    """
     try:
-        with open(f"/proc/{pid}/stat", "rb") as f:
-            stat = f.read()
-    except OSError:
+        status = psutil.Process(pid).status()
+    except (psutil.NoSuchProcess, psutil.ZombieProcess):
         return False
-    state = stat.rsplit(b")", 1)[1].split()[0]
-    return state not in (b"Z", b"X")
+    return status not in {psutil.STATUS_DEAD, psutil.STATUS_ZOMBIE}
 
 
 class ProvenanceError(RuntimeError):
@@ -109,25 +126,38 @@ def find_worker_exe(project_root: str | Path) -> Path | None:
 
 
 class _FrameReader:
+    """One incremental decoder state for a length-prefixed reply stream."""
+
     def __init__(self, fd: int) -> None:
         self.fd = fd
         self.buf = b""
+        self.frame_length: int | None = None
 
-    def read_frame(self, timeout: float) -> RawFrame:
-        while b"\n" not in self.buf:
-            self._fill(timeout)
-        line, self.buf = self.buf.split(b"\n", 1)
-        n = int(line)
-        while len(self.buf) < n:
-            self._fill(timeout)
-        payload, self.buf = self.buf[:n], self.buf[n:]
-        frame: RawFrame = json.loads(payload)
-        return frame
+    def read_frame(self, timeout: float, process_pid: int) -> RawFrame:
+        deadline = time.monotonic() + timeout
+        while True:
+            if self.frame_length is None and b"\n" in self.buf:
+                line, self.buf = self.buf.split(b"\n", 1)
+                self.frame_length = int(line)
+            if (self.frame_length is not None
+                    and len(self.buf) >= self.frame_length):
+                length = self.frame_length
+                payload, self.buf = self.buf[:length], self.buf[length:]
+                self.frame_length = None
+                frame: RawFrame = json.loads(payload)
+                return frame
+            self._fill(deadline, process_pid)
 
-    def _fill(self, timeout: float) -> None:
-        ready, _, _ = select.select([self.fd], [], [], timeout)
-        if not ready:
+    def _fill(self, deadline: float, process_pid: int) -> None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             raise TimeoutError("timed out waiting for worker reply")
+        ready, _, _ = select.select(
+            [self.fd], [], [], min(LIVENESS_SLICE, remaining))
+        if not ready:
+            if not _process_running(process_pid):
+                raise WorkerDied(f"worker process {process_pid} is gone")
+            return
         chunk = os.read(self.fd, 65536)
         if not chunk:
             raise WorkerDied("worker closed the reply channel")
@@ -147,6 +177,9 @@ class WorkerClient:
         self.proc: subprocess.Popen[bytes] | None = None
         self.req_fd: int | None = None
         self.replies: _FrameReader | None = None
+        self._request_pipe: IO[bytes] | None = None
+        self._reply_pipe: IO[bytes] | None = None
+        self._pump_threads: list[threading.Thread] = []
         #: The worker process itself, from its ready frame — `self.proc` is
         #: the `lake env` wrapper, whose liveness proves nothing about the
         #: worker's.
@@ -206,117 +239,157 @@ class WorkerClient:
                 "`lake build nbdsl_worker` there")
         return exe
 
+    @staticmethod
+    def _kill_pid(pid: int) -> None:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    @staticmethod
+    def _terminate_process_group(
+            proc: subprocess.Popen[bytes],
+            pump_threads: list[threading.Thread]) -> None:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait()
+        for thread in pump_threads:
+            thread.join()
+
     def start(self) -> ReadyFrame:
-        req_r, req_w = os.pipe()
-        rep_r, rep_w = os.pipe()
+        assert (self.proc is None and self.req_fd is None
+                and self.replies is None and self._request_pipe is None
+                and self._reply_pipe is None)
         worker_exe = self._worker_exe()
-        self.proc = subprocess.Popen(
-            self._maybe_sandbox(
-                ["lake", "env", str(worker_exe),
-                 "--req-fd", str(req_r), "--rep-fd", str(rep_w),
-                 "--prelude-module", self.prelude], worker_exe),
-            cwd=self.project_root,
-            pass_fds=(req_r, rep_w),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            # Own session: Jupyter's interrupt SIGINTs the kernel's process
-            # group; the worker must survive it so cancellation can be
-            # cooperative (a `cancel` frame) with kill only as escalation.
-            start_new_session=True,
-        )
-        os.close(req_r)
-        os.close(rep_w)
-        self.req_fd = req_w
-        self.replies = _FrameReader(rep_r)
-        assert self.proc.stdout is not None and self.proc.stderr is not None
-        for pipe, name in ((self.proc.stdout, "stdout"),
-                           (self.proc.stderr, "stderr")):
-            threading.Thread(target=self._pump, args=(pipe, name),
-                             daemon=True).start()
-        ready = ReadyFrame.model_validate(self.replies.read_frame(READY_TIMEOUT))
-        self._check_identity(ready, worker_exe)
-        self.snapshot = ready.snapshot
-        self.worker_pid = ready.pid
+        with ExitStack() as cleanup:
+            req_r_fd, req_w_fd = os.pipe()
+            rep_r_fd, rep_w_fd = os.pipe()
+            req_r = cleanup.enter_context(os.fdopen(req_r_fd, "rb", buffering=0))
+            req_w = cleanup.enter_context(os.fdopen(req_w_fd, "wb", buffering=0))
+            rep_r = cleanup.enter_context(os.fdopen(rep_r_fd, "rb", buffering=0))
+            rep_w = cleanup.enter_context(os.fdopen(rep_w_fd, "wb", buffering=0))
+            proc = subprocess.Popen(
+                self._maybe_sandbox(
+                    ["lake", "env", str(worker_exe),
+                     "--req-fd", str(req_r.fileno()),
+                     "--rep-fd", str(rep_w.fileno()),
+                     "--prelude-module", self.prelude], worker_exe),
+                cwd=self.project_root,
+                pass_fds=(req_r.fileno(), rep_w.fileno()),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                # Own session: Jupyter's interrupt SIGINTs the kernel's process
+                # group; the worker survives so cancellation is cooperative.
+                start_new_session=True,
+            )
+            pump_threads: list[threading.Thread] = []
+            cleanup.callback(
+                self._terminate_process_group, proc, pump_threads)
+            req_r.close()
+            rep_w.close()
+            assert proc.stdout is not None and proc.stderr is not None
+            for pipe, name in ((proc.stdout, "stdout"),
+                               (proc.stderr, "stderr")):
+                thread = threading.Thread(
+                    target=self._pump, args=(pipe, name), daemon=True)
+                pump_threads.append(thread)
+                thread.start()
+
+            replies = _FrameReader(rep_r.fileno())
+            ready = ReadyFrame.model_validate(
+                replies.read_frame(READY_TIMEOUT, proc.pid))
+            cleanup.callback(self._kill_pid, ready.pid)
+            provenance = self._check_identity(ready, worker_exe)
+
+            self.proc = proc
+            self._request_pipe = req_w
+            self._reply_pipe = rep_r
+            self.req_fd = req_w.fileno()
+            self.replies = replies
+            self.worker_pid = ready.pid
+            self._pump_threads = pump_threads
+            self.provenance = provenance
+            self.snapshot = ready.snapshot
+            cleanup.pop_all()
         return ready
 
-    def _check_identity(self, ready: ReadyFrame, worker_exe: Path) -> None:
-        """Bind this session to one pair of built artifacts.
-
-        Every restart path goes through start(), so this runs against the
-        binary that will actually elaborate cells — including one rebuilt
-        under a running kernel. `compare` owns which disagreements are fatal.
-        """
+    def _check_identity(
+            self, ready: ReadyFrame, worker_exe: Path) -> dict[str, object]:
+        """Validate a launch before its process tree or channels are owned."""
         adapter = adapter_identity()
         worker = BuildInfo.model_validate(ready.model_dump())
         disagree, agreed = compare(adapter, worker)
         with worker_exe.open("rb") as f:
             digest = hashlib.file_digest(f, "sha256").hexdigest()
-        self.provenance = {
+        provenance: dict[str, object] = {
             "adapter": adapter.model_dump(),
             "worker": worker.model_dump(),
             "worker_binary_sha256": digest,
             "agreed": agreed,
         }
-        if agreed is not True:
-            # An unverified pair still runs, but it says so: silence would let
-            # a session assume a guarantee it does not have. The provenance
-            # comm carries the same fact, and nothing in the stock frontend
-            # opens it.
-            self.on_stream(
-                "stderr",
-                f"nbdsl: adapter {adapter.commit[:8]} and worker "
-                f"{worker.commit[:8]} are not a verified pair ({agreed}); "
-                "`just build` rebuilds both halves together.\n")
         if disagree:
-            self.kill()
             raise ProvenanceError(
                 f"adapter and worker disagree on {', '.join(disagree)}; "
                 "refusing to execute cells. "
                 f"adapter={adapter.model_dump_json()} "
                 f"worker={worker.model_dump_json()} "
                 f"worker_binary={worker_exe}")
+        if agreed is not True:
+            self.on_stream(
+                "stderr",
+                f"nbdsl: adapter {adapter.commit[:8]} and worker "
+                f"{worker.commit[:8]} are not a verified pair ({agreed}); "
+                "`just build` rebuilds both halves together.\n")
+        return provenance
 
     def _pump(self, pipe: IO[bytes], name: str) -> None:
         for line in iter(pipe.readline, b""):
             self.on_stream(name, line.decode(errors="replace"))
         pipe.close()
 
+    def _close_channels(self) -> None:
+        if self._request_pipe is not None:
+            self._request_pipe.close()
+        if self._reply_pipe is not None:
+            self._reply_pipe.close()
+        self._request_pipe = None
+        self._reply_pipe = None
+        self.req_fd = None
+        self.replies = None
+
     def kill(self) -> None:
         if self.worker_pid is not None:
-            # Worker and wrapper die independently (both directions observed:
-            # a worker outliving a dead wrapper spins as an orphan; a wrapper
-            # outliving a dead worker hides the death from poll()). Target
-            # the worker directly first, then the wrapper's group.
-            try:
-                os.kill(self.worker_pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                pass
-            self.worker_pid = None
-        if self.proc and self.proc.poll() is None:
-            # `lake env` FORKS the worker rather than exec'ing it, so killing
-            # proc.pid alone kills only the wrapper and a busy worker (e.g. an
-            # interpreted infinite loop, immune to EOF) survives as a spinning
-            # orphan — observed. The worker is its own session/process-group
-            # leader (start_new_session), so kill the whole group.
-            try:
-                os.killpg(self.proc.pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                self.proc.kill()
-            self.proc.wait()
+            self._kill_pid(self.worker_pid)
+        if self.proc is not None:
+            self._terminate_process_group(self.proc, self._pump_threads)
+        self.worker_pid = None
+        self.proc = None
+        self._pump_threads = []
+        self._close_channels()
 
     def shutdown(self, timeout: float = 10) -> None:
-        if self.req_fd is not None:
-            try:
-                os.close(self.req_fd)  # EOF → clean worker exit
-            except OSError:
-                pass
+        if self._request_pipe is not None:
+            self._request_pipe.close()
+            self._request_pipe = None
             self.req_fd = None
-        if self.proc:
+        if self.proc is not None:
             try:
                 self.proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
                 self.kill()
+                return
+            for thread in self._pump_threads:
+                thread.join()
+        self.proc = None
+        self.worker_pid = None
+        self._pump_threads = []
+        if self._reply_pipe is not None:
+            self._reply_pipe.close()
+            self._reply_pipe = None
+        self.replies = None
 
     def restart_and_replay(self) -> int:
         """Fresh worker, then the session cache if it matches the ledger,
@@ -436,22 +509,8 @@ class WorkerClient:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError("timed out waiting for worker reply")
-            if not self.replies.buf:
-                # Nothing in flight: wait in short slices, probing the WORKER
-                # pid between them. A worker dead under a live wrapper sends
-                # no EOF (the wrapper holds duplicates of both pipe ends) and
-                # `proc.poll()` watches only the wrapper, so this probe is the
-                # one honest liveness signal. Frame reads themselves stay
-                # unsliced so a partial frame is never re-parsed.
-                r, _, _ = select.select(
-                    [self.replies.fd], [], [], min(LIVENESS_SLICE, remaining))
-                if not r:
-                    if (self.worker_pid is not None
-                            and not _process_running(self.worker_pid)):
-                        raise WorkerDied(
-                            f"worker process {self.worker_pid} is gone")
-                    continue
-            rep = self.replies.read_frame(remaining)
+            assert self.worker_pid is not None
+            rep = self.replies.read_frame(remaining, self.worker_pid)
             if rep.get("request_id") == rid:
                 return rep
             # out-of-order reply: stash it

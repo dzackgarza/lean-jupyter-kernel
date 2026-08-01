@@ -69,7 +69,7 @@ jobs:
       - name: mypy (strict, mirrors ai-review-ci's global config)
         run: |
           curl -fsSL https://raw.githubusercontent.com/dzackgarza/ai-review-ci/main/tool-configs/mypy-global.ini -o /tmp/mypy-global.ini
-          pip install mypy pydantic ipykernel jupyter_client pytest
+          pip install mypy pydantic ipykernel jupyter_client pytest psutil types-psutil
           MYPYPATH=nbdsl_kernel/tests:nbdsl_kernel mypy --config-file /tmp/mypy-global.ini \
             nbdsl_kernel/nbdsl_kernel nbdsl_kernel/tests conformance
 
@@ -231,7 +231,10 @@ jobs:
         working-directory: jupyterlab_nbdsl
         run: |
           pip install build
+          marker="--jupyterlab-nbdsl-wheel-source: ${GITHUB_SHA};"
+          printf '\n:root { %s }\n' "$marker" >> style/index.css
           python -m build --wheel
+          unzip -p dist/jupyterlab_nbdsl-*.whl '*/static/*' | grep -F -- "$marker"
           python -m venv /tmp/labclean
           /tmp/labclean/bin/pip install jupyterlab dist/jupyterlab_nbdsl-*.whl
           /tmp/labclean/bin/jupyter labextension list 2>&1 | tee /tmp/labext.txt

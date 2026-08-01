@@ -31,14 +31,16 @@ import os
 import re
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
+import psutil
 import pytest
+import tomllib
 from jupyter_client.manager import start_new_kernel
-
+from jupyter_client.provisioning import LocalProvisioner
 from nbdsl_kernel.protocol import BuildInfo, compare
+from nbdsl_kernel.worker import ProvenanceError
 
 # roundtrip.py's frame codec is the repo's independent oracle for the wire
 # protocol — deliberately not nbdsl_kernel.worker's. Reuse it here for the
@@ -177,18 +179,29 @@ def test_commit_mismatch_on_a_dirty_tree_still_runs(tmp_path: Path) -> None:
         km.shutdown_kernel(now=True)
 
 
-def test_missing_build_info_is_typed_not_a_dead_kernel(tmp_path: Path) -> None:
-    """The kernel must START and answer, then refuse every cell with a typed
-    error. Dying before kernel_info only produces "Kernel died before replying
-    to kernel_info", which names neither the cause nor the fix."""
+def test_missing_build_info_is_typed_and_startup_is_transactional(
+        tmp_path: Path) -> None:
+    """Every refused start leaves the live kernel with exactly its original
+    process tree and descriptor ownership, so the typed refusal is retry-safe.
+    """
     missing = tmp_path / "absent" / "_build_info.json"
     km, kc = _kernel_with_build_info(missing)
     try:
-        assert kc.is_alive()
-        reply, _ = run_cell(kc, "#eval 1 + 1")
-        assert reply["status"] == "error", reply
-        assert reply["ename"] == "ProvenanceError", reply
-        assert str(missing) in reply["evalue"], reply
+        provisioner = km.provisioner
+        assert isinstance(provisioner, LocalProvisioner)
+        assert provisioner.process is not None
+        kernel = psutil.Process(provisioner.process.pid)
+        children_before = {child.pid for child in kernel.children(recursive=True)}
+        descriptors_before = kernel.num_fds()
+
+        for _ in range(3):
+            reply, _ = run_cell(kc, "#eval 1 + 1")
+            assert reply["status"] == "error", reply
+            assert reply["ename"] == ProvenanceError.__name__, reply
+            assert kc.is_alive()
+            assert {child.pid for child in kernel.children(recursive=True)} == \
+                children_before
+            assert kernel.num_fds() == descriptors_before
     finally:
         kc.stop_channels()
         km.shutdown_kernel(now=True)

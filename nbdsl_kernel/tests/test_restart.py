@@ -16,20 +16,22 @@ worker down in a finally.
 Run: .venv/bin/pytest nbdsl_kernel/tests/test_restart.py
 """
 
+import concurrent.futures
 import os
 import signal
 import tempfile
+import time
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
+import psutil
 import pytest
 from jupyter_client.kernelspec import KernelSpecManager
 from jupyter_client.manager import KernelManager
 from jupyter_client.provisioning import LocalProvisioner
-
+from nbdsl_kernel.worker import LIVENESS_SLICE, WorkerClient, WorkerDied
 from test_e2e import run_cell, texts
-
-from nbdsl_kernel.worker import WorkerClient, WorkerDied
 
 REPO = Path(__file__).resolve().parents[2]
 # The middle cell fails when — and only when — the respawned worker inherits
@@ -62,6 +64,17 @@ def commit_cells(w: WorkerClient) -> None:
         assert w.execute(code, cell_id=f"c{i}").status == "ok", code
         if w.cache_dir:
             w.save_session()
+
+
+def test_healthy_worker_stays_live_across_liveness_slices(
+        client: WorkerClient) -> None:
+    """A genuinely quiet live worker must survive repeated status probes."""
+    wait_ms = int((LIVENESS_SLICE + 1) * 1000)
+    rep = client.execute(
+        f"#eval (do IO.sleep {wait_ms}; IO.println (6 * 7) : IO Unit)",
+        cell_id="quiet-live-worker")
+    assert rep.status == "ok", rep
+    assert any("42" in diagnostic.message for diagnostic in rep.diagnostics), rep
 
 
 def test_replay_failure_keeps_the_committed_ledger(
@@ -171,7 +184,11 @@ def test_a_worker_death_under_a_live_wrapper_recovers_transparently(
         assert isinstance(prov, LocalProvisioner) and prov.process is not None
         worker, wrapper = _worker_and_wrapper(prov.process.pid)
         os.kill(wrapper, signal.SIGSTOP)   # the wrapper can neither exit nor reap
-        os.kill(worker, signal.SIGKILL)    # the worker is simply gone
+        os.kill(worker, signal.SIGKILL)    # the worker becomes its zombie child
+        zombie_deadline = time.monotonic() + LIVENESS_SLICE
+        while psutil.Process(worker).status() != psutil.STATUS_ZOMBIE:
+            assert time.monotonic() < zombie_deadline
+            time.sleep(0.01)
         reply, outputs = run_cell(kc, "#eval x + 1", timeout=120)
         assert reply["status"] == "ok", reply
         text = texts(outputs)
@@ -185,6 +202,46 @@ def test_a_worker_death_under_a_live_wrapper_recovers_transparently(
                 pass
         kc.stop_channels()
         km.shutdown_kernel(now=True)
+
+
+def test_partial_reply_then_worker_death_is_bounded_and_recoverable(
+        client: WorkerClient) -> None:
+    """A real oversized worker reply is killed only after the production
+    decoder has consumed a strict prefix; the stopped wrapper keeps its pipe
+    ends open, so only the worker liveness probe can end the wait.
+    """
+    reply_bytes = 32 * 1024 * 1024
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        future = executor.submit(
+            client.execute,
+            f"#eval String.ofList (List.replicate {reply_bytes} 'x')",
+            "partial-frame")
+        partial_deadline = time.monotonic() + 120
+        while True:
+            assert client.replies is not None
+            buffered = len(client.replies.buf)
+            if 0 < buffered < reply_bytes:
+                break
+            assert time.monotonic() < partial_deadline
+            time.sleep(0.001)
+
+        assert client.proc is not None
+        assert client.worker_pid is not None
+        os.kill(client.proc.pid, signal.SIGSTOP)
+        os.kill(client.worker_pid, signal.SIGKILL)
+        with pytest.raises(WorkerDied):
+            future.result(timeout=LIVENESS_SLICE + 2)
+
+        client.kill()
+        client.start()
+        rep = client.execute("#eval 6 * 7", cell_id="after-partial-death")
+        assert rep.status == "ok", rep
+        assert any("42" in diagnostic.message
+                   for diagnostic in rep.diagnostics), rep
+    finally:
+        client.kill()
+        executor.shutdown(wait=True)
 
 
 def test_second_recovery_of_a_restored_session(client: WorkerClient) -> None:

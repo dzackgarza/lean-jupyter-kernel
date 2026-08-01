@@ -38,13 +38,12 @@ artifacts = ["jupyterlab_nbdsl/labextension"]
 path = "jupyterlab_nbdsl/_version.py"
 
 [tool.hatch.build.hooks.jupyter-builder]
-dependencies = ["hatch-jupyter-builder>=0.5"]
+dependencies = ["hatch-jupyter-builder>=0.5", "jupyterlab>=4.0.0,<5"]
 build-function = "hatch_jupyter_builder.npm_builder"
 ensured-targets = [
     "jupyterlab_nbdsl/labextension/static/style.js",
     "jupyterlab_nbdsl/labextension/package.json",
 ]
-skip-if-exists = ["jupyterlab_nbdsl/labextension/static/style.js"]
 
 [tool.hatch.build.hooks.jupyter-builder.build-kwargs]
 build_cmd = "build:prod"
