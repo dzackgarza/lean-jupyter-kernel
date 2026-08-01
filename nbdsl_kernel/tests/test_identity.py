@@ -28,9 +28,11 @@ Run: .venv/bin/pytest nbdsl_kernel/tests/test_identity.py   (after install.py)
 import hashlib
 import json
 import os
+import queue
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -39,8 +41,9 @@ import pytest
 import tomllib
 from jupyter_client.manager import start_new_kernel
 from jupyter_client.provisioning import LocalProvisioner
-from nbdsl_kernel.protocol import BuildInfo, compare
+from nbdsl_kernel.protocol import BuildInfo, ReadyFrame, compare
 from nbdsl_kernel.worker import ProvenanceError
+from pydantic import ValidationError
 
 # roundtrip.py's frame codec is the repo's independent oracle for the wire
 # protocol — deliberately not nbdsl_kernel.worker's. Reuse it here for the
@@ -94,6 +97,34 @@ def test_worker_reports_authored_contract_and_commit(
     assert ready["commit"] == describe["commit"], (ready, describe)
 
 
+@pytest.mark.parametrize("invalid_pid", [0, -1])
+def test_ready_frame_requires_a_positive_worker_pid(invalid_pid: int) -> None:
+    """The PID crosses from untyped worker JSON into the adapter here.
+
+    A non-positive value cannot identify a host process and must be rejected
+    before it can reach liveness or kill ownership.
+    """
+    w = BareWorker(prelude="Init")
+    try:
+        raw = w.replies.read_frame()
+    finally:
+        w.shutdown()
+
+    ready = ReadyFrame.model_validate(raw)
+    assert ready.pid > 0
+    with pytest.raises(ValidationError):
+        ReadyFrame.model_validate({**raw, "pid": invalid_pid})
+
+
+def test_equal_clean_build_identities_require_commit_shaped_values() -> None:
+    """Textual equality cannot turn malformed provenance into a clean pair."""
+    raw = json.loads(BUILD_INFO.read_text())
+    malformed = {**raw, "commit": "not-a-commit", "dirty": False}
+    identical_pair = [dict(malformed), dict(malformed)]
+    with pytest.raises(ValidationError):
+        [BuildInfo.model_validate(identity) for identity in identical_pair]
+
+
 def test_provenance_comm_publishes_the_executed_pair() -> None:
     """The installed kernelspec answers `nbdsl_provenance` with the compared
     identities and the hash of the worker binary it actually ran."""
@@ -129,6 +160,26 @@ def test_provenance_comm_publishes_the_executed_pair() -> None:
 def _kernel_with_build_info(path: Path) -> tuple[Any, Any]:
     return start_new_kernel(kernel_name="nbdsl", startup_timeout=60,
                             env={**os.environ, "NBDSL_BUILD_INFO": str(path)})
+
+
+def _bounded_execute_reply(
+        kc: Any, code: str, timeout: float = 5) -> dict[str, Any] | None:
+    """Return the matching shell reply, or None when the real kernel emits
+    none. This keeps a boundary failure from hanging the proof itself.
+    """
+    msg_id = kc.execute(code)
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        try:
+            reply = kc.get_shell_msg(timeout=remaining)
+        except queue.Empty:
+            return None
+        if reply["parent_header"].get("msg_id") == msg_id:
+            content: dict[str, Any] = reply["content"]
+            return content
 
 
 def test_static_contract_mismatch_refuses_cells(tmp_path: Path) -> None:
@@ -202,6 +253,53 @@ def test_missing_build_info_is_typed_and_startup_is_transactional(
             assert {child.pid for child in kernel.children(recursive=True)} == \
                 children_before
             assert kernel.num_fds() == descriptors_before
+    finally:
+        kc.stop_channels()
+        km.shutdown_kernel(now=True)
+
+
+@pytest.mark.parametrize(
+    "identity_text",
+    [
+        "{",
+        json.dumps({
+            **json.loads(BUILD_INFO.read_text()),
+            "plugin_api": {"not": "an integer"},
+        }),
+    ],
+    ids=["malformed-json", "malformed-schema"],
+)
+def test_malformed_build_info_is_typed_and_startup_is_transactional(
+        tmp_path: Path, identity_text: str) -> None:
+    """Pydantic decode failures use the same retry-safe refusal boundary as
+    missing identity; they never escape as dependency exceptions.
+    """
+    scratch = tmp_path / "_build_info.json"
+    scratch.write_text(identity_text)
+    km, kc = _kernel_with_build_info(scratch)
+    try:
+        provisioner = km.provisioner
+        assert isinstance(provisioner, LocalProvisioner)
+        assert provisioner.process is not None
+        kernel = psutil.Process(provisioner.process.pid)
+        children_before = {child.pid for child in kernel.children(recursive=True)}
+        descriptors_before = kernel.num_fds()
+        replies: list[dict[str, Any] | None] = []
+
+        for _ in range(2):
+            reply = _bounded_execute_reply(kc, "#eval 1 + 1")
+            replies.append(reply)
+            assert kc.is_alive()
+            assert {child.pid for child in kernel.children(recursive=True)} == \
+                children_before
+            assert kernel.num_fds() == descriptors_before
+
+        assert all(reply is not None for reply in replies), replies
+        typed_replies = [reply for reply in replies if reply is not None]
+        assert all(reply["status"] == "error"
+                   for reply in typed_replies), typed_replies
+        assert all(reply["ename"] == ProvenanceError.__name__
+                   for reply in typed_replies), typed_replies
     finally:
         kc.stop_channels()
         km.shutdown_kernel(now=True)

@@ -17,8 +17,11 @@ Run: .venv/bin/pytest nbdsl_kernel/tests/test_restart.py
 """
 
 import concurrent.futures
+import json
 import os
 import signal
+import subprocess
+import sys
 import tempfile
 import time
 from collections.abc import Iterator
@@ -151,6 +154,47 @@ def _worker_and_wrapper(kernel_pid: int) -> tuple[int, int]:
     raise AssertionError(f"no live nbdsl_worker under {kernel_pid}")
 
 
+def _await_execute(
+        kc: Any, msg_id: str, timeout: float = 120) -> tuple[dict[str, Any],
+                                                             list[Any]]:
+    outputs = []
+    while True:
+        msg = kc.get_iopub_msg(timeout=timeout)
+        if msg["parent_header"].get("msg_id") != msg_id:
+            continue
+        if (msg["msg_type"] == "status"
+                and msg["content"]["execution_state"] == "idle"):
+            break
+        outputs.append(msg)
+    while True:
+        reply = kc.get_shell_msg(timeout=timeout)
+        if reply["parent_header"].get("msg_id") == msg_id:
+            return reply["content"], outputs
+
+
+def test_sandbox_ready_pid_is_the_host_observable_worker() -> None:
+    """Host-side liveness owns a host PID even under Bubblewrap's PID
+    namespace; a namespace-local ready PID cannot satisfy that contract.
+    """
+    prior = os.environ.get("NBDSL_SANDBOX")
+    os.environ["NBDSL_SANDBOX"] = "1"
+    w = WorkerClient(REPO / "worker", prelude="Init")
+    try:
+        ready = w.start()
+        assert w.proc is not None
+        host_worker, _ = _worker_and_wrapper(w.proc.pid)
+        assert ready.pid == host_worker, {
+            "ready_pid": ready.pid,
+            "host_worker_pid": host_worker,
+        }
+    finally:
+        w.shutdown()
+        if prior is None:
+            del os.environ["NBDSL_SANDBOX"]
+        else:
+            os.environ["NBDSL_SANDBOX"] = prior
+
+
 def test_a_worker_death_under_a_live_wrapper_recovers_transparently(
         tmp_path: Path) -> None:
     """The restart branch used to be gated ONLY on poll() of the `lake env`
@@ -162,8 +206,6 @@ def test_a_worker_death_under_a_live_wrapper_recovers_transparently(
     env = {k: v for k, v in os.environ.items()
            if k not in {"PYTHONPATH", "VIRTUAL_ENV", "JUPYTER_DATA_DIR",
                         "NBDSL_INIT"}}
-    import subprocess
-    import sys
     subprocess.run(
         [sys.executable, "-m", "nbdsl_kernel.install",
          "--project", str(REPO / "worker"), "--name", "restart-race",
@@ -194,6 +236,81 @@ def test_a_worker_death_under_a_live_wrapper_recovers_transparently(
         text = texts(outputs)
         assert "42" in text, text
         assert "Lean worker died; restarting" in text, text
+    finally:
+        if wrapper > 0:
+            try:
+                os.kill(wrapper, signal.SIGCONT)
+            except ProcessLookupError:
+                pass
+        kc.stop_channels()
+        km.shutdown_kernel(now=True)
+
+
+def test_worker_death_after_external_effect_does_not_rerun_the_cell(
+        tmp_path: Path) -> None:
+    """Once an external effect is visible, a missing reply is uncertain and
+    the kernel must not manufacture success by executing the cell again.
+    """
+    data = tmp_path / "jupyter"
+    effect = tmp_path / "effect.log"
+    env = {k: v for k, v in os.environ.items()
+           if k not in {"PYTHONPATH", "VIRTUAL_ENV", "JUPYTER_DATA_DIR",
+                        "NBDSL_INIT"}}
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nbdsl_kernel.install",
+            "--project",
+            str(REPO / "worker"),
+            "--name",
+            "effect-once",
+            "--prelude-module",
+            "Init",
+        ],
+        env={**env, "JUPYTER_DATA_DIR": str(data)},
+        check=True,
+        capture_output=True,
+    )
+    ksm = KernelSpecManager(kernel_dirs=[str(data / "kernels")])
+    km = KernelManager(kernel_name="effect-once", kernel_spec_manager=ksm)
+    km.start_kernel(env=env)
+    kc: Any = km.client()
+    kc.start_channels()
+    wrapper = -1
+    try:
+        kc.wait_for_ready(timeout=120)
+        path = json.dumps(str(effect))
+        code = (
+            "#eval (do\n"
+            f"  let h ← IO.FS.Handle.mk {path} .append\n"
+            '  h.putStrLn "effect"\n'
+            "  h.flush\n"
+            f"  let contents ← IO.FS.readFile {path}\n"
+            '  if contents == "effect\\n" then IO.sleep 30000 else pure ()\n'
+            "  : IO Unit)"
+        )
+        msg_id = kc.execute(code)
+        effect_deadline = time.monotonic() + 120
+        while not effect.exists() or effect.read_text() != "effect\n":
+            assert time.monotonic() < effect_deadline
+            time.sleep(0.01)
+
+        provisioner = km.provisioner
+        assert isinstance(provisioner, LocalProvisioner)
+        assert provisioner.process is not None
+        worker, wrapper = _worker_and_wrapper(provisioner.process.pid)
+        os.kill(wrapper, signal.SIGSTOP)
+        os.kill(worker, signal.SIGKILL)
+
+        reply, outputs = _await_execute(kc, msg_id)
+        effects = effect.read_text().splitlines()
+        assert effects == ["effect"], {
+            "effects": effects,
+            "reply": reply,
+            "outputs": outputs,
+        }
+        assert reply["status"] == "error", reply
     finally:
         if wrapper > 0:
             try:
@@ -261,3 +378,27 @@ def test_second_recovery_of_a_restored_session(client: WorkerClient) -> None:
     rep = w.execute("#eval delta", cell_id="check")
     assert rep.status == "ok", rep
     assert any("14" in d.message for d in rep.diagnostics), rep
+
+
+def test_restart_signals_a_shared_wrapper_worker_group_once(
+        client: WorkerClient) -> None:
+    assert client.proc is not None
+    assert client.worker_pid is not None
+    old_group = os.getpgid(client.proc.pid)
+    assert os.getpgid(client.worker_pid) == old_group
+
+    signals: list[tuple[str, int]] = []
+
+    def record_signal(event: str, args: tuple[object, ...]) -> None:
+        if event in {"os.kill", "os.killpg"} and args[1] == signal.SIGKILL:
+            signals.append((event, int(args[0])))
+
+    sys.addaudithook(record_signal)
+
+    assert client.restart_and_replay() == 0
+    assert signals == [("os.killpg", old_group)]
+
+    rep = client.execute("#eval 6 * 7", cell_id="after-single-group-kill")
+    assert rep.status == "ok", rep
+    assert any("42" in diagnostic.message
+               for diagnostic in rep.diagnostics), rep
