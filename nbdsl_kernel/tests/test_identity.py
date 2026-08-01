@@ -30,6 +30,7 @@ import json
 import os
 import queue
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -42,7 +43,10 @@ import tomllib
 from jupyter_client.manager import start_new_kernel
 from jupyter_client.provisioning import LocalProvisioner
 from nbdsl_kernel.protocol import BuildInfo, ReadyFrame, compare
-from nbdsl_kernel.worker import ProvenanceError
+from nbdsl_kernel.worker import (
+    ProvenanceError,
+    WorkerClient,
+)
 from pydantic import ValidationError
 
 # roundtrip.py's frame codec is the repo's independent oracle for the wire
@@ -55,6 +59,9 @@ from test_e2e import _send_comm, run_cell
 REPO = Path(__file__).resolve().parents[2]
 WORKER_EXE = REPO / "worker/.lake/build/bin/nbdsl_worker"
 BUILD_INFO = REPO / "nbdsl_kernel/nbdsl_kernel/_build_info.json"
+sys.path.insert(0, str(REPO / "nbdsl_kernel"))
+
+from _identity import identity_for_build  # noqa: E402
 
 COMMIT = re.compile(r"[0-9a-f]{40}")
 
@@ -114,6 +121,112 @@ def test_ready_frame_requires_a_positive_worker_pid(invalid_pid: int) -> None:
     assert ready.pid > 0
     with pytest.raises(ValidationError):
         ReadyFrame.model_validate({**raw, "pid": invalid_pid})
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (("lean", "0.0.0"), ("protocol", 999)),
+)
+def test_runtime_handshake_must_match_the_governed_identity(
+    field: str,
+    value: object,
+) -> None:
+    adapter = BuildInfo.model_validate_json(BUILD_INFO.read_text())
+    ready = ReadyFrame.model_validate({
+        **adapter.model_dump(),
+        "op": "ready",
+        "protocol": adapter.wire,
+        "lean": adapter.toolchain.removeprefix("leanprover/lean4:v"),
+        "pid": os.getpid(),
+        "snapshot": 0,
+        field: value,
+    })
+    client = WorkerClient(REPO / "worker", prelude="Init")
+
+    with pytest.raises(ProvenanceError, match=field):
+        client._check_identity(adapter, ready, WORKER_EXE)
+
+
+def test_provenance_hashes_the_live_executable_not_a_replaced_path(
+    tmp_path: Path,
+) -> None:
+    executable = tmp_path / "worker"
+    shutil.copy2("/bin/sleep", executable)
+    original_digest = hashlib.sha256(executable.read_bytes()).hexdigest()
+    proc = subprocess.Popen([str(executable), "60"])
+    try:
+        executed = tmp_path / "worker.executed"
+        executable.rename(executed)
+        shutil.copy2("/bin/true", executable)
+        adapter = BuildInfo.model_validate_json(BUILD_INFO.read_text())
+        ready = ReadyFrame.model_validate({
+            **adapter.model_dump(),
+            "op": "ready",
+            "protocol": adapter.wire,
+            "lean": adapter.toolchain.removeprefix("leanprover/lean4:v"),
+            "pid": proc.pid,
+            "snapshot": 0,
+        })
+        client = WorkerClient(REPO / "worker", prelude="Init")
+
+        provenance = client._check_identity(adapter, ready, executable)
+
+        assert provenance["worker_binary_sha256"] == original_digest
+    finally:
+        proc.terminate()
+        proc.wait()
+
+
+def test_git_checkout_identity_wins_over_incidental_pkg_info(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "checkout"
+    project = root / "nbdsl_kernel"
+    package = project / "nbdsl_kernel"
+    package.mkdir(parents=True)
+    shutil.copy2(REPO / "release.toml", root / "release.toml")
+    shutil.copy2(REPO / "nbdsl_kernel/pyproject.toml",
+                 project / "pyproject.toml")
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "config", "user.name", "Identity Test"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(root), "config", "user.email",
+         "identity@example.invalid"],
+        check=True,
+    )
+    empty_hooks = tmp_path / "empty-hooks"
+    empty_hooks.mkdir()
+    subprocess.run(
+        ["git", "-C", str(root), "config", "core.hooksPath",
+         str(empty_hooks)],
+        check=True,
+    )
+    subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "commit", "-q", "-m", "fixture"],
+        check=True,
+    )
+    head = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"],
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout.strip()
+    (project / "PKG-INFO").write_text(
+        "Name: nbdsl-kernel\nVersion: 1.1.0\n"
+    )
+    stale = json.loads(BUILD_INFO.read_text())
+    stale["commit"] = "0" * 40
+    (package / "_build_info.json").write_text(
+        json.dumps(stale, indent=2) + "\n"
+    )
+
+    identity = identity_for_build(project)
+
+    assert identity["commit"] == head
 
 
 def test_equal_clean_build_identities_require_commit_shaped_values() -> None:
@@ -276,23 +389,27 @@ def test_missing_build_info_is_typed_and_startup_is_transactional(
 
 
 @pytest.mark.parametrize(
-    "identity_text",
+    "identity_payload",
     [
         "{",
         json.dumps({
             **json.loads(BUILD_INFO.read_text()),
             "plugin_api": {"not": "an integer"},
         }),
+        b"\xff\xfe",
     ],
-    ids=["malformed-json", "malformed-schema"],
+    ids=["malformed-json", "malformed-schema", "invalid-utf8"],
 )
 def test_malformed_build_info_is_typed_and_startup_is_transactional(
-        tmp_path: Path, identity_text: str) -> None:
+        tmp_path: Path, identity_payload: str | bytes) -> None:
     """Pydantic decode failures use the same retry-safe refusal boundary as
     missing identity; they never escape as dependency exceptions.
     """
     scratch = tmp_path / "_build_info.json"
-    scratch.write_text(identity_text)
+    if isinstance(identity_payload, bytes):
+        scratch.write_bytes(identity_payload)
+    else:
+        scratch.write_text(identity_payload)
     km, kc = _kernel_with_build_info(scratch)
     try:
         provisioner = km.provisioner

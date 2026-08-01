@@ -40,6 +40,42 @@ def test_release_tag_is_data_never_shell_source() -> None:
             assert "${{ github.ref_name }}" not in command
 
 
+def test_release_verifies_tag_and_main_ancestry_before_publish() -> None:
+    workflow = yaml.safe_load(
+        (REPO / ".github/workflows/release.yml").read_text()
+    )
+    steps = workflow["jobs"]["publish"]["steps"]
+    publish_index = next(
+        index for index, step in enumerate(steps)
+        if step.get("name") == "publish the GitHub release"
+    )
+    before_publish = "\n".join(
+        step.get("run", "") for step in steps[:publish_index]
+    )
+    publish = steps[publish_index]["run"]
+
+    assert "commits/$RELEASE_TAG" in before_publish
+    assert "merge-base --is-ancestor" in before_publish
+    assert "origin/main" in before_publish
+    assert "--verify-tag" in publish
+
+
+def test_ci_executes_each_repository_owned_proof_surface() -> None:
+    workflow = yaml.safe_load((REPO / ".github/workflows/ci.yml").read_text())
+    commands = "\n".join(
+        step.get("run", "")
+        for job in workflow["jobs"].values()
+        for step in job.get("steps", [])
+    )
+
+    for proof in (
+        "conformance/test_runner_contracts.py",
+        "nbdsl_kernel/tests/test_inspect.py",
+        "nbdsl_kernel/tests/sandbox_check.py",
+    ):
+        assert proof in commands
+
+
 def test_ci_uses_one_immutable_qc_revision_and_records_it() -> None:
     workflow = yaml.safe_load((REPO / ".github/workflows/ci.yml").read_text())
     qc_revision = workflow["env"]["AI_REVIEW_CI_SHA"]
@@ -182,6 +218,96 @@ def test_projection_write_restores_the_lake_resolved_mathlib_lock(
         if package["name"] == "mathlib"
     )
     assert actual_mathlib == expected_mathlib
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    (
+        ("lean", 'lean = ""'),
+        ("plugin_api", "plugin_api = -1"),
+        ("wire_protocol", "wire_protocol = -1"),
+    ),
+)
+def test_projection_rejects_invalid_generated_values_before_writes(
+    tmp_path: Path,
+    field: str,
+    replacement: str,
+) -> None:
+    root = copy_release_projection(tmp_path)
+    release_path = root / "release.toml"
+    release_path.write_text(re.sub(
+        rf"(?m)^{field} = .+$",
+        replacement,
+        release_path.read_text(),
+        count=1,
+    ))
+    before = {
+        path: (root / path).read_bytes()
+        for path in PROJECTED_PATHS
+    }
+
+    completed = run_projection(root, "write")
+
+    assert completed.returncode != 0
+    assert {
+        path: (root / path).read_bytes()
+        for path in PROJECTED_PATHS
+    } == before
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("url", "https://example.invalid/not-mathlib.git"),
+        ("type", "path"),
+    ),
+)
+def test_projection_check_rejects_mathlib_source_identity_drift(
+    tmp_path: Path,
+    field: str,
+    value: str,
+) -> None:
+    root = copy_release_projection(tmp_path)
+    manifest_path = root / "dsls/nbdsl/lake-manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    mathlib = next(
+        package for package in manifest["packages"]
+        if package["name"] == "mathlib"
+    )
+    mathlib[field] = value
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+
+    assert run_projection(root, "check").returncode != 0
+
+
+def test_projection_write_is_atomic_when_manifest_is_invalid(
+    tmp_path: Path,
+) -> None:
+    root = copy_release_projection(tmp_path)
+    release_path = root / "release.toml"
+    release_path.write_text(
+        release_path.read_text().replace('version = "1.1.0"',
+                                         'version = "1.1.1"', 1)
+    )
+    manifest_path = root / "dsls/nbdsl/lake-manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["packages"] = [
+        package for package in manifest["packages"]
+        if package.get("name") != "mathlib"
+    ]
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+    before = {
+        path: (root / path).read_bytes()
+        for path in PROJECTED_PATHS
+    }
+
+    completed = run_projection(root, "write")
+
+    assert completed.returncode != 0
+    assert {
+        path: (root / path).read_bytes()
+        for path in PROJECTED_PATHS
+    } == before
 
 
 def initialise_provenance_repo(tmp_path: Path) -> Path:
@@ -370,6 +496,45 @@ def test_provenance_never_exempts_tracked_source_named_as_artifact(
     assert "dirty tree" in generated.stderr
 
 
+@pytest.mark.parametrize(
+    ("path", "replacement"),
+    (
+        (("schema",), True),
+        (("release", "plugin_api"), 1.0),
+        (("release", "wire_protocol"), True),
+    ),
+)
+def test_provenance_verification_rejects_noncanonical_integer_scalars(
+    tmp_path: Path,
+    path: tuple[str, ...],
+    replacement: object,
+) -> None:
+    root = initialise_provenance_repo(tmp_path)
+    worker = tmp_path / "artifacts" / "worker"
+    worker.parent.mkdir()
+    worker.write_bytes(b"worker")
+    generated = run_provenance(root, "generate", "--worker", str(worker))
+    assert generated.returncode == 0
+    provenance_path = root / "release-provenance.json"
+    recorded = json.loads(provenance_path.read_text())
+    target = recorded
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = replacement
+    provenance_path.write_text(json.dumps(recorded, indent=2) + "\n")
+
+    verified = run_provenance(
+        root,
+        "verify",
+        "--worker",
+        str(worker),
+        "--provenance",
+        str(provenance_path),
+    )
+
+    assert verified.returncode != 0
+
+
 def qualification_response(provider: str, commit: str) -> str:
     names = (
         "worker (mathlib-free gate)",
@@ -428,6 +593,111 @@ def test_release_qualification_requires_the_github_actions_provider(
         },
     )
     assert (completed.returncode == 0) is qualified, completed.stderr
+
+
+def test_release_qualification_requires_the_governed_ci_workflow(
+    tmp_path: Path,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_gh = fake_bin / "gh"
+    fake_gh.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "case \"$*\" in\n"
+        "  *actions/workflows/ci.yml/runs*) "
+        "printf '%s\\n' '{\"workflow_runs\":[]}' ;;\n"
+        "  *) printf '%s\\n' \"${CHECK_RUNS_JSON:?}\" ;;\n"
+        "esac\n"
+    )
+    fake_gh.chmod(0o755)
+    commit = "a" * 40
+
+    completed = subprocess.run(
+        [
+            "bash",
+            str(REPO / "scripts/require_release_qualification.sh"),
+            "owner/repo",
+            commit,
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "CHECK_RUNS_JSON": qualification_response(
+                "github-actions",
+                commit,
+            ),
+        },
+    )
+
+    assert completed.returncode != 0
+
+
+def test_qualification_rejects_malformed_candidate_before_clone(
+    tmp_path: Path,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    invoked = tmp_path / "git-invoked"
+    fake_git = fake_bin / "git"
+    fake_git.write_text(
+        "#!/usr/bin/env bash\n"
+        f"touch {invoked}\n"
+        "exit 99\n"
+    )
+    fake_git.chmod(0o755)
+
+    completed = subprocess.run(
+        [
+            "bash",
+            str(REPO / "scripts/qualify_consumer.sh"),
+            "not-a-commit",
+            str(tmp_path / "qualification"),
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+        env={
+            **os.environ,
+            "AI_REVIEW_CI_SHA": "a" * 40,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        },
+    )
+
+    assert completed.returncode != 0
+    assert not invoked.exists()
+
+
+def test_pr_body_toc_matches_top_level_headings() -> None:
+    lines = (REPO / ".pr/PR_BODY.md").read_text().splitlines()
+    contents_start = lines.index("## Contents") + 1
+    contents_end = next(
+        index for index in range(contents_start, len(lines))
+        if lines[index].startswith("## ")
+    )
+    listed = [
+        line.removeprefix("- ")
+        for line in lines[contents_start:contents_end]
+        if line.startswith("- ")
+    ]
+    headings = [
+        line.removeprefix("## ")
+        for line in lines[contents_end:]
+        if line.startswith("## ")
+    ]
+
+    assert listed == headings
+
+
+def test_frontend_python_floor_can_resolve_its_build_requirements() -> None:
+    frontend = tomllib.loads(
+        (REPO / "jupyterlab_nbdsl/pyproject.toml").read_text()
+    )
+
+    assert frontend["project"]["requires-python"] == ">=3.10"
 
 
 def test_frontend_clean_preserves_importable_projected_version(

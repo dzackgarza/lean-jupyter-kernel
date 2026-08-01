@@ -550,6 +550,34 @@ def test_second_recovery_of_a_restored_session(client: WorkerClient) -> None:
     assert any("14" in d.message for d in rep.diagnostics), rep
 
 
+def test_cache_key_rejects_a_valid_but_stale_head(
+        client: WorkerClient) -> None:
+    w = client
+    w.cache_dir = tempfile.mkdtemp(prefix="nbdsl-test-cache-")
+    assert w.execute("def cachedAlpha : Nat := 20",
+                     cell_id="alpha").status == "ok"
+    w.save_session()
+    head_path = Path(w.cache_dir) / "module.txt"
+    stale_head = head_path.read_text()
+
+    w.kill()
+    assert w.restart_and_replay() == -1
+    assert w.execute(
+        "def cachedBeta : Nat := cachedAlpha + 2",
+        cell_id="beta",
+    ).status == "ok"
+    w.save_session()
+    assert head_path.read_text() != stale_head
+    head_path.write_text(stale_head)
+
+    w.kill()
+    assert w.restart_and_replay() == 2
+    rep = w.execute("#eval cachedBeta", cell_id="check-stale-head")
+    assert rep.status == "ok", rep
+    assert any("22" in diagnostic.message
+               for diagnostic in rep.diagnostics), rep
+
+
 def test_restart_signals_a_shared_wrapper_worker_group_once(
         client: WorkerClient) -> None:
     assert client.proc is not None

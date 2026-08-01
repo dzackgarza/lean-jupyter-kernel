@@ -56,6 +56,108 @@ def test_cli_classifies_malformed_toml_as_setup_error(tmp_path: Path) -> None:
     assert completed.returncode == 2
 
 
+@pytest.mark.parametrize("case", ("missing", "directory", "non-table"))
+def test_cli_classifies_invalid_profile_inputs_as_setup_errors(
+    tmp_path: Path,
+    case: str,
+) -> None:
+    profile_path = tmp_path / "profile.toml"
+    if case == "directory":
+        profile_path.mkdir()
+    elif case == "non-table":
+        profile_path.write_text(
+            REFERENCE_PROFILE.read_text().replace(
+                '[profile]\nname = "nbdsl"',
+                'profile = "name"',
+                1,
+            )
+        )
+
+    completed = subprocess.run(
+        [sys.executable, str(RUNNER), str(profile_path)],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert completed.returncode == 2
+    assert "conformance setup error" in completed.stderr
+    assert "Traceback" not in completed.stderr
+
+
+def test_in_repository_profile_rejects_foreign_source_override(
+    tmp_path: Path,
+) -> None:
+    foreign = tmp_path / "foreign-checkout"
+    foreign.mkdir()
+    profile = runner.load_profile(REFERENCE_PROFILE)
+
+    with pytest.raises(runner.ProfileError, match="IN-REPOSITORY"):
+        runner.resolve_checkout(profile, foreign)
+
+
+def test_runner_kills_each_owned_process_group_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = object.__new__(runner.Session)
+    monkeypatch.setattr(
+        runner,
+        "worker_processes",
+        lambda _pid: [(101, "lake env nbdsl_worker"),
+                      (102, "nbdsl_worker")],
+    )
+    monkeypatch.setattr(runner.os, "getpgid", lambda _pid: 77)
+    killed: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        runner.os,
+        "killpg",
+        lambda pgid, sig: killed.append((pgid, sig)),
+    )
+    monkeypatch.setattr(runner, "_alive", lambda _pid: False)
+    session.pid = 1
+
+    result = session.kill_worker()
+
+    assert killed == [(77, runner.signal.SIGKILL)]
+    assert len(result["killed"]) == 1
+
+
+def test_session_close_waits_until_owned_worker_is_dead(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Channels:
+        def stop_channels(self) -> None:
+            pass
+
+    class Manager:
+        def shutdown_kernel(self, now: bool) -> None:
+            assert now is True
+
+    session = object.__new__(runner.Session)
+    session.kc = Channels()
+    session.km = Manager()
+    session.pid = 1
+    monkeypatch.setattr(
+        runner,
+        "worker_processes",
+        lambda _pid: [(101, "nbdsl_worker")],
+    )
+    monkeypatch.setattr(runner.os, "getpgid", lambda _pid: 77)
+    monkeypatch.setattr(runner.os, "killpg", lambda _pgid, _sig: None)
+    observations = 0
+
+    def alive(_pid: int) -> bool:
+        nonlocal observations
+        observations += 1
+        return observations < 3
+
+    monkeypatch.setattr(runner, "_alive", alive)
+
+    session.close()
+
+    assert observations >= 3
+
+
 def test_independent_frame_oracle_uses_external_project_worker(
         tmp_path: Path) -> None:
     isolated_root = tmp_path / "isolated-kernel"
