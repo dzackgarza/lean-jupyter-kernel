@@ -28,7 +28,9 @@ Run: .venv/bin/pytest nbdsl_kernel/tests/test_clean_install.py
 from __future__ import annotations
 
 import hashlib
+import json
 import os
+import re
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -43,13 +45,11 @@ from jupyter_client.manager import KernelManager
 from test_e2e import run_cell, texts
 
 REPO = Path(__file__).resolve().parents[2]
-WORKER_SRC = REPO / "worker"
 BUILD_TIMEOUT = 1800  # a cold worker build plus a git fetch, on a busy machine
 
-# The prelude constant every layout's own prelude module defines: reading it
-# back proves the session imported the prelude this project's dependency graph
-# provides, not some other module that happens to be on LEAN_PATH.
-PRELUDE_ANSWER = "def cleanAnswer : Nat := 41\n"
+WORKER_SRC = REPO / "worker"
+NBDSL_CACHE = REPO / "dsls" / "nbdsl" / ".lake" / "packages"
+NBDSL_MATHLIB = NBDSL_CACHE / "mathlib"
 
 
 def _env() -> dict[str, str]:
@@ -61,13 +61,15 @@ def _env() -> dict[str, str]:
 
 
 def _run(cmd: list[str], cwd: Path | None = None,
-         env: dict[str, str] | None = None) -> str:
-    proc = subprocess.run(cmd, cwd=cwd, env=env or _env(), text=True,
+         env: dict[str, str] | None = None,
+         include_stderr: bool = False) -> str:
+    proc = subprocess.run(cmd, cwd=cwd,
+                          env=_env() if env is None else env, text=True,
                           capture_output=True, timeout=BUILD_TIMEOUT)
     if proc.returncode:
         raise RuntimeError(f"{cmd} failed ({proc.returncode}) in {cwd}\n"
                            f"{proc.stdout}\n{proc.stderr}")
-    return proc.stdout
+    return proc.stdout + proc.stderr if include_stderr else proc.stdout
 
 
 def _sha256(path: Path) -> str:
@@ -81,7 +83,8 @@ def _sha256(path: Path) -> str:
 class CleanEnv:
     venv: Path
     python: Path
-    wheel: Path
+    adapter_wheel: Path
+    lab_wheel: Path
 
 
 @pytest.fixture(scope="session")
@@ -95,10 +98,17 @@ def clean_env(tmp_path_factory: pytest.TempPathFactory) -> CleanEnv:
     python = venv / "bin" / "python"
     _run([str(python), "-m", "pip", "wheel", "--no-deps",
           "-w", str(wheelhouse), str(REPO / "nbdsl_kernel")])
-    wheels = list(wheelhouse.glob("nbdsl_kernel-*.whl"))
-    assert len(wheels) == 1, wheels
-    _run([str(python), "-m", "pip", "install", str(wheels[0])])
-    return CleanEnv(venv=venv, python=python, wheel=wheels[0])
+    _run([sys.executable, "-m", "build", "--wheel",
+          "--outdir", str(wheelhouse), str(REPO / "jupyterlab_nbdsl")])
+    adapter_wheels = list(wheelhouse.glob("nbdsl_kernel-*.whl"))
+    lab_wheels = list(wheelhouse.glob("jupyterlab_nbdsl-*.whl"))
+    assert len(adapter_wheels) == 1, adapter_wheels
+    assert len(lab_wheels) == 1, lab_wheels
+    _run([str(python), "-m", "pip", "install",
+          str(adapter_wheels[0]), str(lab_wheels[0])])
+    return CleanEnv(venv=venv, python=python,
+                    adapter_wheel=adapter_wheels[0],
+                    lab_wheel=lab_wheels[0])
 
 
 # -- the two dependency layouts -------------------------------------------
@@ -120,8 +130,30 @@ def _write_project(proj: Path, lakefile: str) -> None:
     (proj / "lakefile.lean").write_text(lakefile)
 
 
+def _configure_fixture_plugin(package: Path, worker_require: str) -> None:
+    """Use the cached Mathlib package while rewriting one worker edge."""
+    lakefile = package / "lakefile.lean"
+    source = lakefile.read_text()
+    if NBDSL_MATHLIB.is_dir():
+        mathlib = re.compile(
+            r'require mathlib from git\n\s+'
+            r'"https://github\.com/leanprover-community/mathlib4\.git" '
+            r'@ "[^"]+"')
+        source, count = mathlib.subn(
+            f'require mathlib from "{NBDSL_MATHLIB}"', source)
+        assert count == 1, lakefile
+    source, count = re.subn(
+        r'require «nbdsl-worker» from .*?(?=\n\n)',
+        worker_require, source, count=1, flags=re.DOTALL)
+    assert count == 1, lakefile
+    lakefile.write_text(source)
+    manifest = package / "lake-manifest.json"
+    if manifest.exists():
+        manifest.unlink()
+
+
 def _local_path_layout(root: Path) -> Layout:
-    """A clean project requiring the worker package from a local directory.
+    """A clean project requiring the real NbDsl package from a local directory.
 
     The worker build embeds its git identity and hard-fails without one, and
     the adapter guard requires clean-tree identities to MATCH — so the local
@@ -129,15 +161,16 @@ def _local_path_layout(root: Path) -> Layout:
     freshly initialized one. A file:// clone at HEAD is exactly that."""
     kernel_src = root / "kernel-src"
     _run(["git", "clone", "-q", f"file://{REPO}", str(kernel_src)])
+    plugin_pkg = kernel_src / "dsls" / "nbdsl"
     worker_pkg = kernel_src / "worker"
     proj = root / "project"
     _write_project(proj, "import Lake\nopen Lake DSL\n\n"
                          "package cleanpath\n\n"
-                         f'require «nbdsl-worker» from "{worker_pkg}"\n\n'
-                         "@[default_target]\nlean_lib CleanPrelude\n")
-    (proj / "CleanPrelude.lean").write_text("import Worker.Output\n\n" + PRELUDE_ANSWER)
-    _run(["lake", "build", "nbdsl_worker", "CleanPrelude"], cwd=proj)
-    return Layout("path", proj, "CleanPrelude",
+                         f'require nbdsl from "{plugin_pkg}"\n')
+    _configure_fixture_plugin(
+        plugin_pkg, 'require «nbdsl-worker» from ".." / ".." / "worker"')
+    _run(["lake", "build", "nbdsl_worker", "NbDsl"], cwd=proj)
+    return Layout("path", proj, "NbDsl.Notebook",
                   worker_pkg / ".lake/build/bin/nbdsl_worker")
 
 
@@ -154,32 +187,38 @@ def _git_commit(repo: Path, root: Path, message: str) -> str:
 
 
 def _nested_git_layout(root: Path) -> Layout:
-    """A clean project requiring a plugin from git, where the plugin requires
-    the worker from this repository's `worker` subdirectory — the shape that
-    puts the exe one level below `.lake/packages/*`."""
+    """A clean project requiring real NbDsl from git, where NbDsl requires
+    the worker from this repository's ``worker`` subdirectory."""
     kernel_rev = _run(["git", "rev-parse", "HEAD"], cwd=REPO).strip()
-    plugin = root / "plugin-src"
-    (plugin / "DemoPlugin").mkdir(parents=True)
-    (plugin / "lean-toolchain").write_text((WORKER_SRC / "lean-toolchain").read_text())
-    (plugin / "lakefile.lean").write_text(
-        "import Lake\nopen Lake DSL\n\n"
-        "package «demo-plugin»\n\n"
-        f'require «nbdsl-worker» from git "file://{REPO}" @ "{kernel_rev}" / "worker"\n\n'
-        "@[default_target]\nlean_lib DemoPlugin\n")
-    (plugin / "DemoPlugin.lean").write_text("import DemoPlugin.Notebook\n")
-    (plugin / "DemoPlugin" / "Notebook.lean").write_text(
-        "import Worker.Output\n\n" + PRELUDE_ANSWER)
+    plugin = root / "nbdsl-plugin-src"
+    _run(["git", "clone", "-q", f"file://{REPO}", str(plugin)])
+    git_require = (
+        f'require «nbdsl-worker» from git "file://{REPO}" '
+        f'@ "{kernel_rev}" / "worker"')
+    _configure_fixture_plugin(plugin / "dsls" / "nbdsl", git_require)
     plugin_rev = _git_commit(plugin, root, "minimal nested plugin package")
-    bare = root / "plugin.git"
+    bare = root / "nbdsl-plugin.git"
     _run(["git", "clone", "-q", "--bare", str(plugin), str(bare)])
 
     proj = root / "project"
     _write_project(proj, "import Lake\nopen Lake DSL\n\n"
                          "package cleangit\n\n"
-                         f'require «demo-plugin» from git "file://{bare}" @ "{plugin_rev}"\n')
-    _run(["lake", "build", "nbdsl_worker", "DemoPlugin"], cwd=proj)
-    return Layout("git", proj, "DemoPlugin.Notebook",
-                  proj / ".lake/packages/nbdsl-worker/worker/.lake/build/bin/nbdsl_worker")
+                         f'require nbdsl from git "file://{bare}" '
+                         f'@ "{plugin_rev}" / "dsls/nbdsl"\n')
+    _run(["lake", "update"], cwd=proj)
+    _run(["lake", "build", "nbdsl_worker", "NbDsl"], cwd=proj)
+    manifest = json.loads((proj / "lake-manifest.json").read_text())
+    worker = next(
+        package for package in manifest["packages"]
+        if package["name"].strip("«»") == "nbdsl-worker")
+    assert worker["type"] == "git", worker
+    assert worker["url"] == f"file://{REPO}", worker
+    assert worker["rev"] == kernel_rev, worker
+    worker_dir = (proj / ".lake" / "packages" / "nbdsl-worker"
+                  / worker["subDir"])
+    return Layout(
+        "git", proj, "NbDsl.Notebook",
+        worker_dir / ".lake/build/bin/nbdsl_worker")
 
 
 @pytest.fixture(scope="session", params=["path", "git"])
@@ -265,20 +304,54 @@ def test_adapter_runs_from_the_built_wheel(clean_env: CleanEnv) -> None:
     assert not located.is_relative_to(REPO), located
 
 
+def test_labextension_runs_from_the_built_wheel(
+        clean_env: CleanEnv,
+        tmp_path_factory: pytest.TempPathFactory) -> None:
+    """The production labextension is installed from the wheel, not linked
+    from the checkout or activated through a development build."""
+    data = tmp_path_factory.mktemp("jupyter-lab")
+    output = _run(
+        [str(clean_env.python), "-m", "jupyter", "labextension", "list"],
+        env={**_env(), "JUPYTER_DATA_DIR": str(data)},
+        include_stderr=True)
+    assert "jupyterlab_nbdsl" in output, output
+    assert "enabled" in output and "OK" in output, output
+
+    extension = (clean_env.venv / "share" / "jupyter" / "labextensions"
+                 / "jupyterlab_nbdsl")
+    assert extension.is_dir() and not extension.is_symlink(), extension
+    assert not extension.resolve().is_relative_to(REPO), extension
+    assert (extension / "package.json").exists(), extension
+
+
 def test_clean_install_executes_the_projects_own_worker(
         clean_env: CleanEnv, layout: Layout,
         kernelspec: tuple[Path, str]) -> None:
     kernels, name = kernelspec
+    spec = json.loads((kernels / name / "kernel.json").read_text())
+    assert spec["argv"][0] == str(clean_env.python)
+    assert spec["env"]["NBDSL_PRELUDE"] == "NbDsl.Notebook"
+    assert spec["metadata"]["nbdsl"]["project_root"] == str(layout.project)
     with _kernel(kernels, name) as (km, kc):
-        # Reading the prelude constant proves the worker imported the prelude
-        # module this layout supplies.
-        reply, _ = run_cell(kc, "def x : Nat := cleanAnswer")
+        reply, _ = run_cell(kc, "def x : Nat := 41")
         assert reply["status"] == "ok", reply
         pid, exe = _live_worker(km.provisioner.process.pid)
         running = _sha256(Path(f"/proc/{pid}/exe"))
         reply, outputs = run_cell(kc, "#eval x + 1")
         assert reply["status"] == "ok", reply
         assert "42" in texts(outputs), texts(outputs)
+        reply, _ = run_cell(
+            kc, "open NbDsl NbDsl.Std\n"
+                "prefer groupsToSets\n"
+                "let G := GrpCat.of PUnit ∈ Groups")
+        assert reply["status"] == "ok", reply
+        reply, outputs = run_cell(kc, "#via G ∈ Sets")
+        assert reply["status"] == "ok", reply
+        bundles = [
+            m["content"]["data"] for m in outputs
+            if m["msg_type"] in ("execute_result", "display_data")]
+        assert any("application/vnd.nbdsl.path+json" in bundle
+                   for bundle in bundles), bundles
     assert exe == layout.worker_exe.resolve(), exe
     assert running == _sha256(layout.worker_exe)
     # The checkout has its own built worker; resolution must not have found it.
@@ -294,7 +367,7 @@ def test_missing_worker_fails_loudly(clean_env: CleanEnv, layout: Layout,
     layout.worker_exe.rename(absent)
     try:
         with _kernel(kernels, name) as (_, kc):
-            reply, _ = run_cell(kc, "def x : Nat := cleanAnswer")
+            reply, _ = run_cell(kc, "def x : Nat := 41")
     finally:
         absent.rename(layout.worker_exe)
     assert reply["status"] == "error", reply

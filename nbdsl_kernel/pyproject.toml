@@ -6,12 +6,14 @@ requires-python = ">=3.11"
 dependencies = ["ipykernel>=6.9", "psutil>=7", "pydantic>=2"]
 
 [project.optional-dependencies]
-test = ["build", "jupyter_client>=8", "pytest", "types-psutil"]
+test = ["build", "jupyter_client>=8", "jupyterlab>=4.0,<5", "pytest",
+        "types-psutil"]
 
 # Mirrors the test extra: ai-review-ci's mypy/pytest gate resolves PEP 735
 # dependency groups, while pip-based installs use the extra above.
 [dependency-groups]
-dev = ["build", "jupyter_client>=8", "pytest", "types-psutil"]
+dev = ["build", "jupyter_client>=8", "jupyterlab>=4.0,<5", "pytest",
+       "types-psutil"]
 
 [build-system]
 requires = ["hatchling"]

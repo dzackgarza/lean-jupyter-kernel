@@ -37,7 +37,7 @@ jobs:
           ! grep -rn '^import NbDsl' worker/ --include='*.lean'
 
   dsl:
-    name: NbDsl + kernel round-trip + e2e
+    name: NbDsl + installed notebook journeys
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -46,6 +46,10 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
 
       - name: install Bubblewrap sandbox runtime
         run: |
@@ -95,8 +99,15 @@ jobs:
           pip install -e './nbdsl_kernel[test]' build
           python -m nbdsl_kernel.install --project "$PWD/dsls/nbdsl"
 
+      - name: install JupyterLab extension dependencies
+        working-directory: jupyterlab_nbdsl
+        run: jlpm install
+
       - name: end-to-end through the Jupyter protocol
         run: pytest nbdsl_kernel/tests/test_e2e.py
+
+      - name: Journey 1 — clean installed NbDsl notebook
+        run: pytest nbdsl_kernel/tests/test_clean_install.py
 
       # The identity/provenance laws that drive the INSTALLED kernelspec run
       # here, where that spec exists; the compat job proves the wheel-and-
@@ -141,15 +152,6 @@ jobs:
           build-args: nbdsl_worker
           use-mathlib-cache: false
           use-github-cache: false
-
-      # -- adapter artifact + runtime identity: wheel build runs the
-      #    hatch_build hook; the identity/provenance and clean-install suites
-      #    prove the runtime comparison and both dependency layouts.
-      - name: adapter wheel and clean installation (both worker layouts)
-        run: |
-          pip install 'jupyter_client>=8' pytest pydantic ipykernel
-          pip install ./nbdsl_kernel
-          pytest nbdsl_kernel/tests/test_clean_install.py
 
       # -- the real Sage backend for the external consumer's boundary
       #
