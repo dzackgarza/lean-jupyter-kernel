@@ -391,7 +391,9 @@ def test_restart_signals_a_shared_wrapper_worker_group_once(
 
     def record_signal(event: str, args: tuple[object, ...]) -> None:
         if event in {"os.kill", "os.killpg"} and args[1] == signal.SIGKILL:
-            signals.append((event, int(args[0])))
+            target = args[0]
+            assert isinstance(target, int)
+            signals.append((event, target))
 
     sys.addaudithook(record_signal)
 
