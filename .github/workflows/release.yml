@@ -25,6 +25,8 @@ jobs:
     name: build, attest, release ${{ github.ref_name }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v7
 
@@ -36,8 +38,8 @@ jobs:
         run: |
           python3 scripts/release_projection.py check
           VERSION=$(python3 -c "import tomllib; print(tomllib.load(open('release.toml','rb'))['release']['version'])")
-          test "v$VERSION" = "${{ github.ref_name }}" || {
-            echo "tag ${{ github.ref_name }} does not match governed version $VERSION"; exit 1; }
+          test "v$VERSION" = "$RELEASE_TAG" || {
+            echo "tag $RELEASE_TAG does not match governed version $VERSION"; exit 1; }
 
       - uses: leanprover/lean-action@v1
         with:
@@ -62,19 +64,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create '${{ github.ref_name }}' \
+          gh release create "$RELEASE_TAG" \
             dist/release-provenance.json dist/SHA256SUMS \
-            --title '${{ github.ref_name }}' \
-            --notes "Governed release ${{ github.ref_name }}. Compatibility contract: release.toml at this tag. Release identity — commit, tag, package versions, worker binary hash: release-provenance.json, checksummed in SHA256SUMS. Install from GitHub at this tag's commit."
+            --title "$RELEASE_TAG" \
+            --notes "Governed release $RELEASE_TAG. Compatibility contract: release.toml at this tag. Release identity — commit, tag, package versions, worker binary hash: release-provenance.json, checksummed in SHA256SUMS. Install from GitHub at this tag's commit."
 
       - name: release readback — GitHub resolves the tag to the qualified commit
         run: |
           # Fails if the release does not exist.
-          gh release view '${{ github.ref_name }}' --json tagName --jq .tagName
+          gh release view "$RELEASE_TAG" --json tagName --jq .tagName
           # /commits/{ref} resolves a tag to its commit, dereferencing annotated
           # tag objects, so this compares commits and never a tag-object SHA.
-          tagged=$(gh api "repos/${{ github.repository }}/commits/${{ github.ref_name }}" --jq .sha)
+          tagged=$(gh api "repos/${{ github.repository }}/commits/$RELEASE_TAG" --jq .sha)
           test "$tagged" = "${{ github.sha }}" || {
-            echo "${{ github.ref_name }} resolves to $tagged, not the qualified ${{ github.sha }}"; exit 1; }
+            echo "$RELEASE_TAG resolves to $tagged, not the qualified ${{ github.sha }}"; exit 1; }
         env:
           GH_TOKEN: ${{ github.token }}

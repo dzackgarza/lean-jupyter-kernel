@@ -89,8 +89,9 @@ commits nothing and leaks no outputs.
 ### `save_session {path}` / `load_session {path}`
 
 `save_session` → `{status:"ok", saved, reason?}` — writes the current
-snapshot as `NbdslSessionCache.olean` (constants + persistent env-extension
-entries, i.e. DSL registries survive) plus `scope.json`. Refuses
+snapshot as generation-numbered `NbdslSessionCache<Nat>.olean` (constants +
+persistent env-extension entries, i.e. DSL registries survive), plus
+`module.txt` naming the active generation and `scope.json`. Refuses
 (`saved:false` + reason) on open scopes, `variable` declarations, or
 syntax-valued options.
 

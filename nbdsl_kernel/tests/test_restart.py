@@ -41,9 +41,9 @@ REPO = Path(__file__).resolve().parents[2]
 # FAIL_VAR: it commits normally the first time and breaks partway through
 # replay. Deterministic, no timing race, nothing mocked. A worker that *dies*
 # mid-replay truncated the ledger through this same handler (the raise below
-# and a WorkerDied from the transport share one try block), and a real death
-# is not usable here: an exiting worker leaves `lake env` holding the reply
-# pipe, so the client waits out its full reply timeout instead of failing.
+# and a WorkerDied from the transport share one try block). The deterministic
+# injected failure keeps this test focused on ledger preservation; separate
+# real-death tests below exercise transport loss and recovery.
 FAIL_VAR = "NBDSL_TEST_FAIL_ON_REPLAY"
 DIVERGE = ('#eval (do if (← IO.getEnv "' + FAIL_VAR
            + '") == some "1" then throw (IO.userError "replay divergence") '

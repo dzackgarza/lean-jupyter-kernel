@@ -22,7 +22,7 @@
     "build:lib": "tsc --sourceMap",
     "build:labextension": "jupyter labextension build .",
     "build:labextension:dev": "jupyter labextension build --development True .",
-    "clean": "rm -rf lib tsconfig.tsbuildinfo .test-build jupyterlab_nbdsl/labextension jupyterlab_nbdsl/_version.py",
+    "clean": "rm -rf lib tsconfig.tsbuildinfo .test-build jupyterlab_nbdsl/labextension",
     "watch": "run-p watch:src watch:labextension",
     "watch:src": "tsc -w --sourceMap",
     "watch:labextension": "jupyter labextension watch .",

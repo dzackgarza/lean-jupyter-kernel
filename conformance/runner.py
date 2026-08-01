@@ -389,7 +389,9 @@ def _dig(payload: Any, dotted: str) -> Any:
     node = payload
     for part in dotted.split("."):
         if not isinstance(node, dict) or part not in node:
-            return None
+            raise ProfileError(
+                f"observation projection path {dotted!r} is missing at "
+                f"{part!r}")
         node = node[part]
     return node
 
@@ -615,7 +617,11 @@ def run_candidate(session: Session, profile: dict[str, Any],
         "with the session cache invalidated the worker recovered by replaying "
         "the committed sources and reconstructed the same observation")
     for code in profile["replay"]["restore"]:
-        session.run(code)
+        reply, outputs = session.run(code)
+        if reply["status"] != "ok":
+            raise ProfileError(
+                f"replay restore cell failed: {code!r} -> {reply}\n"
+                f"{texts(outputs)[:800]}")
 
     return {"committed": committed, "queries": candidate_queries,
             "jupyter_output_half": jupyter_half}
@@ -860,7 +866,7 @@ def read_provenance(session: Session) -> dict[str, Any]:
 # --------------------------------------------------------------------------
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("profile", type=Path)
     parser.add_argument("--source-dir", type=Path, default=None,
                         help="clean checkout of the plugin source; overrides "

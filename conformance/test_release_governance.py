@@ -345,6 +345,31 @@ def test_provenance_rejects_other_dirt_beside_selected_record(
     assert verified.returncode != 0
 
 
+def test_provenance_never_exempts_tracked_source_named_as_artifact(
+    tmp_path: Path,
+) -> None:
+    root = initialise_provenance_repo(tmp_path)
+    worker = tmp_path / "artifacts" / "worker"
+    worker.parent.mkdir()
+    worker.write_bytes(b"worker")
+    tracked_source = root / "release.toml"
+    tracked_source.write_text(tracked_source.read_text() + "\n")
+
+    generated = run_provenance(
+        root,
+        "generate",
+        "--worker",
+        str(worker),
+        "--dist",
+        str(tracked_source),
+        "--out",
+        str(tmp_path / "release-provenance.json"),
+    )
+
+    assert generated.returncode != 0
+    assert "dirty tree" in generated.stderr
+
+
 def qualification_response(provider: str, commit: str) -> str:
     names = (
         "worker (mathlib-free gate)",

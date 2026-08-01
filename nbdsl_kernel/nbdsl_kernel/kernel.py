@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+from importlib.metadata import version
 from typing import Any
 
 from ipykernel.kernelbase import Kernel
@@ -30,7 +31,7 @@ JupyterReply = dict[str, object]
 
 class NbDslKernel(Kernel):
     implementation = "nbdsl"
-    implementation_version = "1.0"
+    implementation_version = version("nbdsl-kernel")
     banner = "NbDsl — a Lean 4 elaborated DSL"
     language_info = {
         "name": "lean4",
@@ -86,7 +87,10 @@ class NbDslKernel(Kernel):
                 self._ensure_worker()
                 prov = self.worker.provenance
                 assert prov is not None  # invariant: set by every start()
-            except (ProvenanceError, WorkerDied) as e:
+            except WorkerDied as e:
+                self.worker.kill()
+                prov = {"agreed": False, "error": str(e)}
+            except ProvenanceError as e:
                 prov = {"agreed": False, "error": str(e)}
             assert self.session is not None
             self.session.send(self.iopub_socket, "comm_msg",
@@ -168,8 +172,8 @@ class NbDslKernel(Kernel):
             self._stream("stdout",
                          f"Starting Lean worker ({self.worker.project_root})…\n")
             self.worker.start()
-            self._started = True
             self._run_init_cell()
+            self._started = True
         elif not self.worker.running():
             # The worker died — normally from an interrupt escalation.
             if self.doc_sources:

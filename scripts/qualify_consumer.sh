@@ -109,7 +109,7 @@ WORKER_SHA256=$(sha256sum "$WORKER_BIN" | cut -d' ' -f1)
 # The checkout's venv owns jupyter_client AND the casdsl kernelspec the
 # runner drives — the system python owns neither.
 "$CO/.venv/bin/python" "$KERNEL_REPO/conformance/runner.py" "$PROFILE" \
-  --source-dir "$CO" --out "$WORKDIR/conformance-result.json"
+  --source-dir "$CO" --output "$WORKDIR/conformance-result.json"
 
 # --- the pair this candidate actually ran must agree, strictly ---
 # Runtime already refuses a clean commit mismatch (see protocol.compare); this

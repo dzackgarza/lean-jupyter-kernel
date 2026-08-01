@@ -28,7 +28,10 @@ unsatisfied="$(
     ] as $required
     | [.[].check_runs[]] as $runs
     | $required[] as $context
-    | ($runs | map(select(.name == $context)) | sort_by(.id) | last) as $run
+    | ($runs
+       | map(select(.name == $context and .app.slug == "github-actions"))
+       | sort_by(.id)
+       | last) as $run
     | if $run == null then
         "\($context): missing"
       elif $run.head_sha != $commit_sha then
