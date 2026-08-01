@@ -103,3 +103,73 @@ def test_independent_frame_oracle_uses_external_project_worker(
     assert result["following_request_id"] == "after-forge"
     assert result["worker_stdout"] == ""
     assert result["exit_code"] == 0
+
+
+def test_malformed_observation_projection_fails_loudly() -> None:
+    mime = "application/vnd.nbdsl.path+json"
+    config = {
+        "mimes": [mime, "text/plain"],
+        "projection": ["object", "source", "target", "steps"],
+    }
+    reply = {"status": "ok"}
+    valid = {
+        "msg_type": "display_data",
+        "content": {
+            "data": {
+                mime: {
+                    "object": "G",
+                    "source": "Groups",
+                    "target": "Sets",
+                    "steps": ["forget"],
+                },
+                "text/plain": "G via forget",
+            },
+        },
+    }
+    assert runner._read(reply, [valid], config)["present"] is True
+
+    malformed = {
+        **valid,
+        "content": {
+            "data": {
+                mime: {
+                    "object": "G",
+                    "source": "Groups",
+                    "target": "Sets",
+                },
+                "text/plain": "G via forget",
+            },
+        },
+    }
+    with pytest.raises(runner.ProfileError, match="steps"):
+        runner._read(reply, [malformed], config)
+
+
+def test_failed_replay_restore_fails_the_real_conformance_run(
+    tmp_path: Path,
+) -> None:
+    profile = tmp_path / "nbdsl-invalid-restore.toml"
+    profile.write_text(
+        REFERENCE_PROFILE.read_text().replace(
+            'restore = ["end"]',
+            'restore = ["#check nbdslDefinitelyMissing"]',
+            1,
+        )
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(RUNNER),
+            str(profile),
+            "--source-dir",
+            str(REPO),
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=600,
+    )
+
+    assert completed.returncode != 0
+    assert "restore" in completed.stderr.lower()

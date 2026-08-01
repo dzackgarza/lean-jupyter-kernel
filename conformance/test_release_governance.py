@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -26,6 +27,17 @@ PROJECTED_PATHS = (
     Path("worker/Worker/ReleaseInfo.lean"),
     Path("dsls/nbdsl/lake-manifest.json"),
 )
+
+
+def test_release_tag_is_data_never_shell_source() -> None:
+    workflow = yaml.safe_load(
+        (REPO / ".github/workflows/release.yml").read_text()
+    )
+    publish = workflow["jobs"]["publish"]
+    assert publish["env"]["RELEASE_TAG"] == "${{ github.ref_name }}"
+    for step in publish["steps"]:
+        if command := step.get("run"):
+            assert "${{ github.ref_name }}" not in command
 
 
 def test_ci_uses_one_immutable_qc_revision_and_records_it() -> None:
@@ -273,6 +285,43 @@ def test_default_generated_provenance_is_the_only_cleanliness_exception(
     assert verified.returncode == 0
 
 
+def test_supplied_untracked_release_artifacts_are_not_source_dirt(
+    tmp_path: Path,
+) -> None:
+    root = initialise_provenance_repo(tmp_path)
+    artifacts = root / "artifacts"
+    worker = artifacts / "nbdsl_worker"
+    distribution = artifacts / "nbdsl_kernel.whl"
+    provenance = artifacts / "release-provenance.json"
+    artifacts.mkdir()
+    worker.write_bytes(b"worker")
+    distribution.write_bytes(b"wheel")
+
+    generated = run_provenance(
+        root,
+        "generate",
+        "--worker",
+        str(worker),
+        "--dist",
+        str(distribution),
+        "--out",
+        str(provenance),
+    )
+
+    assert generated.returncode == 0, generated.stderr
+    verified = run_provenance(
+        root,
+        "verify",
+        "--worker",
+        str(worker),
+        "--dist",
+        str(distribution),
+        "--provenance",
+        str(provenance),
+    )
+    assert verified.returncode == 0, verified.stderr
+
+
 def test_provenance_rejects_other_dirt_beside_selected_record(
     tmp_path: Path,
 ) -> None:
@@ -294,3 +343,103 @@ def test_provenance_rejects_other_dirt_beside_selected_record(
     )
 
     assert verified.returncode != 0
+
+
+def qualification_response(provider: str, commit: str) -> str:
+    names = (
+        "worker (mathlib-free gate)",
+        "NbDsl + kernel round-trip + e2e",
+        "jupyterlab extension",
+        "compatibility + external consumer",
+    )
+    return json.dumps([{
+        "check_runs": [
+            {
+                "id": index,
+                "name": name,
+                "head_sha": commit,
+                "status": "completed",
+                "conclusion": "success",
+                "app": {"slug": provider},
+            }
+            for index, name in enumerate(names, start=1)
+        ],
+    }])
+
+
+@pytest.mark.parametrize(
+    ("provider", "qualified"),
+    (("github-actions", True), ("same-name-impostor", False)),
+)
+def test_release_qualification_requires_the_github_actions_provider(
+    tmp_path: Path,
+    provider: str,
+    qualified: bool,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_gh = fake_bin / "gh"
+    fake_gh.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "printf '%s\\n' \"${CHECK_RUNS_JSON:?}\"\n"
+    )
+    fake_gh.chmod(0o755)
+    commit = "a" * 40
+    completed = subprocess.run(
+        [
+            "bash",
+            str(REPO / "scripts/require_release_qualification.sh"),
+            "owner/repo",
+            commit,
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "CHECK_RUNS_JSON": qualification_response(provider, commit),
+        },
+    )
+    assert (completed.returncode == 0) is qualified, completed.stderr
+
+
+def test_frontend_clean_preserves_importable_projected_version(
+    tmp_path: Path,
+) -> None:
+    frontend = tmp_path / "frontend"
+    package = frontend / "jupyterlab_nbdsl"
+    package.mkdir(parents=True)
+    shutil.copy2(REPO / "jupyterlab_nbdsl/package.json", frontend)
+    shutil.copy2(
+        REPO / "jupyterlab_nbdsl/jupyterlab_nbdsl/__init__.py",
+        package,
+    )
+    (package / "_version.py").write_text('__version__ = "1.1.0"\n')
+    clean_command = json.loads(
+        (frontend / "package.json").read_text()
+    )["scripts"]["clean"]
+
+    cleaned = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", clean_command],
+        cwd=frontend,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert cleaned.returncode == 0, cleaned.stdout + cleaned.stderr
+    imported = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import jupyterlab_nbdsl; print(jupyterlab_nbdsl.__version__)",
+        ],
+        cwd=frontend,
+        capture_output=True,
+        check=False,
+        text=True,
+        env={**os.environ, "PYTHONPATH": str(frontend)},
+    )
+    assert imported.returncode == 0, imported.stderr
+    assert imported.stdout.strip() == "1.1.0"

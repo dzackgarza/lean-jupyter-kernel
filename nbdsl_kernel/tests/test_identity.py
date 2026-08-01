@@ -157,6 +157,23 @@ def test_provenance_comm_publishes_the_executed_pair() -> None:
             hashlib.file_digest(f, "sha256").hexdigest(), prov
 
 
+def test_kernel_info_reports_the_governed_release_version(
+        release: dict[str, Any]) -> None:
+    km, kc = start_new_kernel(kernel_name="nbdsl", startup_timeout=60)
+    try:
+        msg_id = kc.kernel_info()
+        while True:
+            reply = kc.get_shell_msg(timeout=30)
+            if reply["parent_header"].get("msg_id") == msg_id:
+                break
+    finally:
+        kc.stop_channels()
+        km.shutdown_kernel(now=True)
+
+    assert reply["content"]["implementation_version"] == \
+        release["release"]["version"]
+
+
 def _kernel_with_build_info(path: Path) -> tuple[Any, Any]:
     return start_new_kernel(kernel_name="nbdsl", startup_timeout=60,
                             env={**os.environ, "NBDSL_BUILD_INFO": str(path)})

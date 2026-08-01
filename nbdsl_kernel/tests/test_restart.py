@@ -34,7 +34,7 @@ from jupyter_client.kernelspec import KernelSpecManager
 from jupyter_client.manager import KernelManager
 from jupyter_client.provisioning import LocalProvisioner
 from nbdsl_kernel.worker import LIVENESS_SLICE, WorkerClient, WorkerDied
-from test_e2e import run_cell, texts
+from test_e2e import _send_comm, run_cell, texts
 
 REPO = Path(__file__).resolve().parents[2]
 # The middle cell fails when — and only when — the respawned worker inherits
@@ -170,6 +170,176 @@ def _await_execute(
         reply = kc.get_shell_msg(timeout=timeout)
         if reply["parent_header"].get("msg_id") == msg_id:
             return reply["content"], outputs
+
+
+def _await_comm(kc: Any, comm_id: str,
+                timeout: float = 120) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        assert remaining > 0, f"no comm_msg for {comm_id}"
+        msg = kc.get_iopub_msg(timeout=remaining)
+        if (msg["msg_type"] == "comm_msg"
+                and msg["content"].get("comm_id") == comm_id):
+            data: dict[str, Any] = msg["content"]["data"]
+            return data
+
+
+def _start_test_kernel(
+    tmp_path: Path,
+    name: str,
+    *,
+    init_cell: str = "",
+) -> tuple[KernelManager, Any]:
+    data = tmp_path / "jupyter"
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {
+            "PYTHONPATH",
+            "VIRTUAL_ENV",
+            "JUPYTER_DATA_DIR",
+            "NBDSL_INIT",
+        }
+    }
+    command = [
+        sys.executable,
+        "-m",
+        "nbdsl_kernel.install",
+        "--project",
+        str(REPO / "worker"),
+        "--name",
+        name,
+        "--prelude-module",
+        "Init",
+    ]
+    if init_cell:
+        command.extend(["--init-cell", init_cell])
+    subprocess.run(
+        command,
+        env={**env, "JUPYTER_DATA_DIR": str(data)},
+        check=True,
+        capture_output=True,
+    )
+    manager = KernelManager(
+        kernel_name=name,
+        kernel_spec_manager=KernelSpecManager(
+            kernel_dirs=[str(data / "kernels")]
+        ),
+    )
+    manager.start_kernel(env=env)
+    client: Any = manager.client()
+    client.start_channels()
+    client.wait_for_ready(timeout=120)
+    return manager, client
+
+
+def test_failed_provenance_replay_discards_the_partial_worker(
+        tmp_path: Path) -> None:
+    marker = tmp_path / "fail-on-replay"
+    marker_literal = json.dumps(str(marker))
+    diverging = (
+        "#eval (do\n"
+        f"  let shouldFail ← System.FilePath.pathExists {marker_literal}\n"
+        "  if shouldFail then throw (IO.userError \"replay divergence\")\n"
+        "  else pure ()\n"
+        "  : IO Unit)"
+    )
+    manager, client = _start_test_kernel(tmp_path, "provenance-replay")
+    try:
+        for code in (
+            "def replayAlpha : Nat := 41",
+            diverging,
+            "def replayGamma : Nat := replayAlpha + 1",
+            # An open scope is not serialisable into the session cache. Its
+            # ledger entry therefore forces the production source-replay path
+            # after the worker death below.
+            "section",
+        ):
+            reply, _ = run_cell(client, code, timeout=120)
+            assert reply["status"] == "ok", reply
+
+        provisioner = manager.provisioner
+        assert isinstance(provisioner, LocalProvisioner)
+        assert provisioner.process is not None
+        worker, _ = _worker_and_wrapper(provisioner.process.pid)
+        marker.write_text("fail\n")
+        os.kill(worker, signal.SIGKILL)
+        death_deadline = time.monotonic() + LIVENESS_SLICE
+        while True:
+            try:
+                status = psutil.Process(worker).status()
+            except (psutil.NoSuchProcess, psutil.ZombieProcess):
+                break
+            if status in {psutil.STATUS_DEAD, psutil.STATUS_ZOMBIE}:
+                break
+            assert time.monotonic() < death_deadline
+            time.sleep(0.01)
+
+        _send_comm(
+            client,
+            "comm_open",
+            {
+                "comm_id": "prov-replay-failure",
+                "target_name": "nbdsl_provenance",
+                "data": {},
+            },
+        )
+        provenance = _await_comm(client, "prov-replay-failure")
+        assert provenance["agreed"] is False, provenance
+
+        marker.unlink()
+        reply, outputs = run_cell(
+            client,
+            "#eval replayGamma",
+            timeout=120,
+        )
+        assert reply["status"] == "ok", reply
+        assert "42" in texts(outputs), outputs
+    finally:
+        client.stop_channels()
+        manager.shutdown_kernel(now=True)
+
+
+def test_worker_death_during_first_init_retries_the_init_cell(
+        tmp_path: Path) -> None:
+    marker = tmp_path / "init-started"
+    marker_literal = json.dumps(str(marker))
+    init_cell = (
+        "def initMagic : Nat := 41\n"
+        "#eval (do\n"
+        f"  let alreadyStarted ← System.FilePath.pathExists {marker_literal}\n"
+        "  if alreadyStarted then pure () else\n"
+        f"    IO.FS.writeFile {marker_literal} \"started\"\n"
+        "    IO.sleep 30000\n"
+        "  : IO Unit)"
+    )
+    manager, client = _start_test_kernel(
+        tmp_path,
+        "first-init-recovery",
+        init_cell=init_cell,
+    )
+    try:
+        msg_id = client.execute("#eval initMagic + 1")
+        deadline = time.monotonic() + 120
+        while not marker.exists():
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+
+        provisioner = manager.provisioner
+        assert isinstance(provisioner, LocalProvisioner)
+        assert provisioner.process is not None
+        worker, _ = _worker_and_wrapper(provisioner.process.pid)
+        os.kill(worker, signal.SIGKILL)
+        first_reply, _ = _await_execute(client, msg_id)
+        assert first_reply["ename"] == WorkerDied.__name__, first_reply
+
+        reply, outputs = run_cell(client, "#eval initMagic + 1", timeout=120)
+        assert reply["status"] == "ok", reply
+        assert "42" in texts(outputs), outputs
+    finally:
+        client.stop_channels()
+        manager.shutdown_kernel(now=True)
 
 
 def test_sandbox_ready_pid_is_the_host_observable_worker() -> None:
