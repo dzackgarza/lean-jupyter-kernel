@@ -7,9 +7,9 @@
 # exact clean git commit at build time — a tracked file cannot truthfully
 # contain its own commit, so that value never appears here.
 #
-# Keep this file trivially line-parseable: one `key = value` per line,
-# string values double-quoted, integer values bare. The Lake build-info
-# target reads it with a strict line parser.
+# Repository tools parse this as TOML. `mathlib` is the authored Lake input
+# revision; `mathlib_commit` is the immutable commit that the checked-in Lake
+# manifest must resolve for that input.
 
 schema = 1
 
@@ -19,6 +19,7 @@ version = "1.1.0"
 [toolchain]
 lean = "leanprover/lean4:v4.32.0"
 mathlib = "v4.32.0"
+mathlib_commit = "81a5d257c8e410db227a6665ed08f64fea08e997"
 
 [compat]
 plugin_api = 1

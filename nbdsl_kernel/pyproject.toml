@@ -6,12 +6,12 @@ requires-python = ">=3.11"
 dependencies = ["ipykernel>=6.9", "psutil>=7", "pydantic>=2"]
 
 [project.optional-dependencies]
-test = ["jupyter_client>=8", "pytest", "types-psutil"]
+test = ["build", "jupyter_client>=8", "pytest", "types-psutil"]
 
 # Mirrors the test extra: ai-review-ci's mypy/pytest gate resolves PEP 735
 # dependency groups, while pip-based installs use the extra above.
 [dependency-groups]
-dev = ["jupyter_client>=8", "pytest", "types-psutil"]
+dev = ["build", "jupyter_client>=8", "pytest", "types-psutil"]
 
 [build-system]
 requires = ["hatchling"]
@@ -20,6 +20,9 @@ build-backend = "hatchling.build"
 # Generates nbdsl_kernel/_build_info.json for every target (wheel and
 # editable). See hatch_build.py.
 [tool.hatch.build.hooks.custom]
+
+[tool.hatch.build.targets.sdist]
+artifacts = ["nbdsl_kernel/_build_info.json"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["nbdsl_kernel"]

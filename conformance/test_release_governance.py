@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -28,32 +30,34 @@ PROJECTED_PATHS = (
 
 def test_ci_uses_one_immutable_qc_revision_and_records_it() -> None:
     workflow = yaml.safe_load((REPO / ".github/workflows/ci.yml").read_text())
-    dsl_job = workflow["jobs"]["dsl"]
-    qc_revision = dsl_job.get("env", {}).get("AI_REVIEW_CI_SHA")
-    assert isinstance(qc_revision, str)
-    assert len(qc_revision) == 40
-    assert set(qc_revision) <= set("0123456789abcdef")
+    qc_revision = workflow["env"]["AI_REVIEW_CI_SHA"]
+    assert re.fullmatch(r"[0-9a-f]{40}", qc_revision)
 
-    steps = {
+    dsl_steps = {
         step.get("name"): step
-        for step in dsl_job["steps"]
+        for step in workflow["jobs"]["dsl"]["steps"]
         if "name" in step
     }
-    mypy_command = steps[
+    compat_steps = {
+        step.get("name"): step
+        for step in workflow["jobs"]["compat"]["steps"]
+        if "name" in step
+    }
+    mypy_command = dsl_steps[
         "mypy (strict, mirrors ai-review-ci's global config)"
     ]["run"]
-    consumer_qc_command = steps[
+    consumer_qc_command = compat_steps[
         "provision the global QC justfiles the consumer gate delegates to"
     ]["run"]
-    qualification = steps[
+    qualification_command = compat_steps[
         "qualify the exact kernel candidate against the frozen consumer"
-    ]
+    ]["run"]
 
-    assert "$AI_REVIEW_CI_SHA" in mypy_command
-    assert "$AI_REVIEW_CI_SHA" in consumer_qc_command
-    assert qualification.get("env", {}).get(
-        "AI_REVIEW_CI_SHA"
-    ) == qc_revision
+    assert "/ai-review-ci/${AI_REVIEW_CI_SHA}/tool-configs/" in mypy_command
+    assert 'origin "$AI_REVIEW_CI_SHA"' in consumer_qc_command
+    assert 'rev-parse HEAD)" = "$AI_REVIEW_CI_SHA"' in consumer_qc_command
+    assert "scripts/qualify_consumer.sh" in qualification_command
+    assert '.ai_review_ci_sha == $expected' in qualification_command
     assert '"ai_review_ci_sha": "$AI_REVIEW_CI_SHA"' in (
         REPO / "scripts/qualify_consumer.sh"
     ).read_text()
@@ -253,14 +257,9 @@ def test_default_generated_provenance_is_the_only_cleanliness_exception(
     assert generated.returncode == 0
     provenance_path = root / "release-provenance.json"
     recorded = json.loads(provenance_path.read_text())
-    assert recorded["worker_binary"]["sha256"]
-    status = subprocess.run(
-        ["git", "-C", str(root), "status", "--porcelain"],
-        capture_output=True,
-        check=True,
-        text=True,
-    )
-    assert status.stdout.splitlines() == ["?? release-provenance.json"]
+    assert recorded["worker_binary"]["sha256"] == hashlib.sha256(
+        b"worker"
+    ).hexdigest()
 
     verified = run_provenance(
         root,
@@ -272,3 +271,26 @@ def test_default_generated_provenance_is_the_only_cleanliness_exception(
     )
 
     assert verified.returncode == 0
+
+
+def test_provenance_rejects_other_dirt_beside_selected_record(
+    tmp_path: Path,
+) -> None:
+    root = initialise_provenance_repo(tmp_path)
+    worker = tmp_path / "artifacts" / "worker"
+    worker.parent.mkdir()
+    worker.write_bytes(b"worker")
+    generated = run_provenance(root, "generate", "--worker", str(worker))
+    assert generated.returncode == 0
+    (root / "unrelated.txt").write_text("not a release artifact\n")
+
+    verified = run_provenance(
+        root,
+        "verify",
+        "--worker",
+        str(worker),
+        "--provenance",
+        str(root / "release-provenance.json"),
+    )
+
+    assert verified.returncode != 0

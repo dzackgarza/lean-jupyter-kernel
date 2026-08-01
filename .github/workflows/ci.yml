@@ -12,6 +12,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  AI_REVIEW_CI_SHA: 07c8cf3fbc766e45ced22b058d1b00810166c614
+
 jobs:
   core:
     name: worker (mathlib-free gate)
@@ -68,8 +71,8 @@ jobs:
 
       - name: mypy (strict, mirrors ai-review-ci's global config)
         run: |
-          curl -fsSL https://raw.githubusercontent.com/dzackgarza/ai-review-ci/main/tool-configs/mypy-global.ini -o /tmp/mypy-global.ini
-          pip install mypy pydantic ipykernel jupyter_client pytest psutil types-psutil
+          curl -fsSL "https://raw.githubusercontent.com/dzackgarza/ai-review-ci/${AI_REVIEW_CI_SHA}/tool-configs/mypy-global.ini" -o /tmp/mypy-global.ini
+          pip install mypy pydantic ipykernel jupyter_client pytest pyyaml psutil types-psutil types-pyyaml
           MYPYPATH=nbdsl_kernel/tests:nbdsl_kernel mypy --config-file /tmp/mypy-global.ini \
             nbdsl_kernel/nbdsl_kernel nbdsl_kernel/tests conformance
 
@@ -118,6 +121,8 @@ jobs:
       # -- compatibility authority: one-way derivation, and the negative case
       - name: release projections agree with release.toml (and reject mutation)
         run: |
+          python3 -m pip install pytest pyyaml
+          pytest -q conformance/test_release_governance.py
           python3 scripts/release_projection.py check
           python3 scripts/release_projection.py selftest
 
@@ -169,7 +174,12 @@ jobs:
       # not. Qualification runs that gate verbatim — the stop rule is to
       # provision what the consumer needs, never to adapt the consumer.
       - name: provision the global QC justfiles the consumer gate delegates to
-        run: git clone --depth 1 https://github.com/dzackgarza/ai-review-ci ~/ai-review-ci
+        run: |
+          git init --quiet ~/ai-review-ci
+          git -C ~/ai-review-ci remote add origin https://github.com/dzackgarza/ai-review-ci
+          git -C ~/ai-review-ci fetch --quiet --depth 1 origin "$AI_REVIEW_CI_SHA"
+          git -C ~/ai-review-ci checkout --quiet --detach FETCH_HEAD
+          [ "$(git -C ~/ai-review-ci rev-parse HEAD)" = "$AI_REVIEW_CI_SHA" ]
 
       # Mathlib oleans for the consumer build, keyed on the profile that owns
       # the frozen baseline (rolls automatically when the baseline promotes).
@@ -187,7 +197,10 @@ jobs:
         env:
           KERNEL_GIT_URL: file://${{ github.workspace }}
         run: |
-          bash scripts/qualify_consumer.sh "$(git rev-parse HEAD)" "$RUNNER_TEMP/qualification"
+          scripts/qualify_consumer.sh "$(git rev-parse HEAD)" "$RUNNER_TEMP/qualification"
+          jq -e --arg expected "$AI_REVIEW_CI_SHA" \
+            '.ai_review_ci_sha == $expected' \
+            "$RUNNER_TEMP/qualification/qualification-evidence.json"
 
       - name: publish qualification evidence
         if: always()

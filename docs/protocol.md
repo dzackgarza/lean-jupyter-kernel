@@ -15,7 +15,7 @@ client's). Typed client model: `nbdsl_kernel/nbdsl_kernel/protocol.py`.
   a client-side timeout — clients must match on `request_id` (the shipped
   client stashes strays).
 - On startup the worker emits one unsolicited frame:
-  `{"op":"ready","protocol":1,"lean":"4.32.0","snapshot":0, …identity}`,
+  `{"op":"ready","protocol":1,"lean":"4.32.0","snapshot":0,"pid":N, …identity}`,
   where `…identity` is the build identity below.
 - EOF on the request fd is a clean shutdown: the worker drains its queue
   and exits 0.

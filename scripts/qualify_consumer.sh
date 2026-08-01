@@ -9,7 +9,8 @@
 # overrides and nothing else. Nothing is committed or pushed; the consumer's
 # semantics are never adapted.
 #
-#   scripts/qualify_consumer.sh <candidate-kernel-sha> [workdir]
+#   AI_REVIEW_CI_SHA=<reviewed-commit> \
+#     scripts/qualify_consumer.sh <candidate-kernel-sha> [workdir]
 #
 # The frozen baseline (repo + commit) is read from conformance/lean-cas-dsl.toml
 # — the single owner of that fact. Evidence lands in
@@ -22,6 +23,11 @@ KERNEL_REPO="$(cd "$(dirname "$0")/.." && pwd)"
 CANDIDATE="${1:?usage: qualify_consumer.sh <candidate-kernel-sha> [workdir]}"
 WORKDIR="${2:-$(mktemp -d /tmp/consumer-qualification-XXXXXX)}"
 PROFILE="$KERNEL_REPO/conformance/lean-cas-dsl.toml"
+AI_REVIEW_CI_SHA="${AI_REVIEW_CI_SHA:?qualification requires AI_REVIEW_CI_SHA}"
+[[ "$AI_REVIEW_CI_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+  echo "qualification: AI_REVIEW_CI_SHA must be a 40-hex commit"
+  exit 1
+}
 
 read -r CONSUMER_URL BASELINE < <(python3 - "$PROFILE" <<'EOF'
 import sys, tomllib
@@ -155,6 +161,7 @@ python3 - "$WORKDIR" <<EOF
 import json, sys
 json.dump({
   "schema": 1,
+  "ai_review_ci_sha": "$AI_REVIEW_CI_SHA",
   "consumer_commit": "$BASELINE",
   "candidate_kernel_sha": "$CANDIDATE",
   "lean_toolchain": "$TOOLCHAIN".strip(),

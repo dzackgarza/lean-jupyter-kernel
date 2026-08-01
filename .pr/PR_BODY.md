@@ -221,13 +221,13 @@ smaller mechanism later.
    requires. The transaction landed directly on consumer `main` as
    `1b6822aa80988d5ef06aafd4f430b22e7d41b7bb` and its clean-checkout proof passed
    (full build, no-sorry, real Sage roundtrip, 127 kernel E2E; evidence on #5). That
-   commit is the FROZEN QUALIFICATION BASELINE, recorded in
-   `conformance/lean-cas-dsl.toml`. *(Second dated update, later on 2026-07-31: the
+   commit was the initial completed baseline transaction. Later on 2026-07-31, the
    baseline was promoted to `4c6fedafccfe77af80ac632efa780e967d726c14` after the
-   owner-directed cas#32/cas#33 fixes — named refusals for held features, acceptance
-   notebook regenerated — landed on consumer `main` through its full commit and push
-   gates; the post-release repin ships from that lineage, and the candidate
-   qualification run re-proves the promoted baseline from a clean checkout.)*
+   owner-directed cas#32/cas#33 fixes — named refusals for held features and a regenerated
+   acceptance notebook — landed on consumer `main` through its full commit and push
+   gates. That promoted commit is the FROZEN QUALIFICATION BASELINE recorded in
+   `conformance/lean-cas-dsl.toml`; the post-release repin ships from that lineage, and
+   candidate qualification re-proves it from a clean checkout.
    Candidate overrides remain ephemeral. After publication, land the two
    exact-release pins directly on consumer `main` and repeat the proof.
 7. **Published identity.** `v1.1.0` is the Lean/Lake and GitHub source identity, and
@@ -245,10 +245,11 @@ smaller mechanism later.
 
 ### Intrinsic dependency chain
 
-1. Land the direct-to-main consumer baseline transaction (DONE: consumer
-   `1b6822aa80988d5ef06aafd4f430b22e7d41b7bb`, both channels at kernel commit
-   `92c0caefb9587f4fee0a0e67e79afd91c8cb4f49` per the dated plan update in fixed
-   decision 6, clean-checkout proof green, #5 closed).
+1. Land the direct-to-main consumer baseline transaction and promote the proved baseline
+   after cas#32/cas#33 (DONE: current frozen consumer
+   `4c6fedafccfe77af80ac632efa780e967d726c14`, recorded in
+   `conformance/lean-cas-dsl.toml`; transaction history and proof are in fixed decision 6,
+   #5 closed).
 2. Add `release.toml`, generated package projections, exact build provenance, and the
    runtime identity comparison.
 3. Implement the two fixed TOML semantic profiles and apply the shared laws first to
@@ -554,8 +555,10 @@ Implementation obligations:
   adapter Git URL moved to kernel `92c0caefb9587f4fee0a0e67e79afd91c8cb4f49`;
   the transaction landed directly on consumer `main` as
   `1b6822aa80988d5ef06aafd4f430b22e7d41b7bb`, its clean build and Sage/Jupyter
-  proof passed, and that commit is the frozen external profile and qualification
-  baseline.
+  proof passed. After the owner-directed cas#32/cas#33 fixes passed the same gates, the
+  frozen external profile and qualification baseline was promoted to
+  `4c6fedafccfe77af80ac632efa780e967d726c14`, the commit now recorded in
+  `conformance/lean-cas-dsl.toml`.
 - Store that resulting immutable consumer commit in the kernel's generated qualification
   inputs. Do not substitute a later consumer `main` without an explicit plan update and
   repeated baseline proof.
@@ -651,38 +654,46 @@ Evidence records must state the tested commit, immutable external commits, toolc
 artifact identities, and observed result. They support the implementation claim; they
 do not become a parallel source of product requirements or completion.
 
-## What the conformance laws found (delivered, 2026-07-31)
+## What the conformance laws found
 
 Recorded here because these are product behaviour changes a reviewer should see, not
 plan revisions: the plan's before/after table anticipated a proof exercise, and the
-proof exercise found real shipped defects. Every one was reproduced first, fixed
-against that reproduction, and is pinned by a test.
+proof exercise found real shipped defects. The anchors below identify the production
+boundary and regression proof for each claim.
 
 - **Committed session state could vanish silently.** The replay ledger — the canonical
   record of a session — was emptied *before* replay and refilled only by cells that
   replayed successfully, so a worker dying mid-replay truncated it permanently; the
   next restart then replayed the stump and reported success over a half-empty
-  environment. Found by the external profile's `restart-reconstructs` law.
+  environment. The production recovery path is pinned by
+  `nbdsl_kernel/tests/test_restart.py::test_replay_failure_keeps_the_committed_ledger`
+  and the external profile's `restart-reconstructs` law.
 - **A restart could abort the worker.** A session restored from cache and killed again
   died with "Stack overflow detected": saving a restored state wrote an olean that
-  imported itself. The cache chain is now generation-numbered.
+  imported itself. The generation-numbered cache chain is exercised by
+  `nbdsl_kernel/tests/test_restart.py::test_second_recovery_of_a_restored_session`.
 - **Worker death was detected on the wrong process.** Recovery was gated on `poll()` of
   the `lake env` wrapper, so a worker that died under a live wrapper (crash, OOM kill,
   an unreaped exit window) produced a spurious `WorkerDied` or a silent hang instead of
   transparent recovery. The worker now reports its own pid in `ready` and the client
-  probes that. Diagnosed from two conformance runs that failed *different* laws each
-  time — the alternation was the signal.
+  probes that. The frame contract and live-wrapper recovery are pinned by
+  `nbdsl_kernel/tests/test_identity.py::test_ready_frame_requires_a_positive_worker_pid`
+  and
+  `nbdsl_kernel/tests/test_restart.py::test_a_worker_death_under_a_live_wrapper_recovers_transparently`.
 - **Inspection did not discriminate.** For a plugin with a catch-all bare-term
   production, `do_inspect` returned the hover alone whenever a hover existed, so every
   query answered `found=true` with that production's syntax docstring — including
   garbage input, and including in an untouched session. Hover no longer shadows the
-  resolved environment answer.
+  resolved environment answer. The real WorkerClient boundary is pinned by all three
+  laws in `nbdsl_kernel/tests/test_inspect.py`.
 - **Plugin API v1 boundary, ruled and recorded** (evidence on #3): completion and
   inspection are constant-environment-faithful with honest negatives; a plugin whose
   registrations live only in env-extension tables — the shape `docs/plugins.md`
   mandates — cannot surface them there. That documentation contradiction is corrected,
   and surfacing extension state is recorded as a plugin API v2 demand rather than
-  silently absent.
+  silently absent. `conformance/runner.py` applies the same completion and inspection
+  laws to `conformance/nbdsl.toml` and the immutable
+  `conformance/lean-cas-dsl.toml` profile.
 
 Two identity-surface refinements ship with them, both strengthening the guard rather
 than relaxing it:
@@ -691,10 +702,14 @@ than relaxing it:
   only. Installers write into the trees they build from (`uv pip install git+…` leaves
   an untracked `.ok` sentinel), which had made every git-installed adapter read dirty
   and so kept the strict clean-pair commit check from ever running, including in CI.
+  `nbdsl_kernel/tests/test_identity.py::test_an_installers_own_droppings_do_not_make_the_source_dirty`
+  pins the installed boundary.
 - Because that check is now live, `just build` refreshes **both** halves through one
   shared identity generator. A refused pair therefore means the two artifacts really
   did come from different sources, not that one half was rebuilt a moment ago; and an
   unverified pair now says so on stderr instead of passing silently.
+  `nbdsl_kernel/tests/test_identity.py::test_building_refreshes_both_halves_into_a_matched_pair`
+  proves the paired build result.
 
 ## Non-goals
 

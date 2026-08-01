@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import IO
 
 import psutil
+from pydantic import ValidationError
 
 from .protocol import (
     COMPLETE_REPLY,
@@ -103,7 +104,12 @@ def adapter_identity() -> BuildInfo:
             f"adapter build identity missing at {path}; install nbdsl-kernel "
             "from a built wheel or an editable install so hatch_build.py "
             f"generates it ({e})") from e
-    return BuildInfo.model_validate_json(raw)
+    try:
+        payload = json.loads(raw)
+        return BuildInfo.model_validate(payload)
+    except (json.JSONDecodeError, ValidationError) as e:
+        raise ProvenanceError(
+            f"adapter build identity at {path} is invalid") from e
 
 
 def find_worker_exe(project_root: str | Path) -> Path | None:
@@ -240,13 +246,6 @@ class WorkerClient:
         return exe
 
     @staticmethod
-    def _kill_pid(pid: int) -> None:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-
-    @staticmethod
     def _terminate_process_group(
             proc: subprocess.Popen[bytes],
             pump_threads: list[threading.Thread]) -> None:
@@ -258,10 +257,37 @@ class WorkerClient:
         for thread in pump_threads:
             thread.join()
 
+    @staticmethod
+    def _host_worker_pid(proc: subprocess.Popen[bytes]) -> int:
+        """Resolve the one host-visible worker owned by ``proc``'s group.
+
+        A sandboxed worker reports its PID in Bubblewrap's PID namespace.
+        Host liveness and signalling must instead use the executable identity
+        observed in the host process tree rooted at the exact wrapper.
+        """
+        try:
+            root = psutil.Process(proc.pid)
+            processes = [root, *root.children(recursive=True)]
+            candidates = [
+                process.pid for process in processes
+                if os.getpgid(process.pid) == proc.pid
+                and Path(process.exe()).name == "nbdsl_worker"
+            ]
+        except (psutil.NoSuchProcess, ProcessLookupError) as e:
+            raise WorkerDied(
+                f"worker process tree under wrapper {proc.pid} exited "
+                "before host PID ownership could be established") from e
+        if len(candidates) != 1:
+            raise WorkerDied(
+                f"expected exactly one host nbdsl_worker in process group "
+                f"{proc.pid}, found {candidates}")
+        return candidates[0]
+
     def start(self) -> ReadyFrame:
         assert (self.proc is None and self.req_fd is None
                 and self.replies is None and self._request_pipe is None
                 and self._reply_pipe is None)
+        adapter = adapter_identity()
         worker_exe = self._worker_exe()
         with ExitStack() as cleanup:
             req_r_fd, req_w_fd = os.pipe()
@@ -301,8 +327,17 @@ class WorkerClient:
             replies = _FrameReader(rep_r.fileno())
             ready = ReadyFrame.model_validate(
                 replies.read_frame(READY_TIMEOUT, proc.pid))
-            cleanup.callback(self._kill_pid, ready.pid)
-            provenance = self._check_identity(ready, worker_exe)
+            host_worker_pid = self._host_worker_pid(proc)
+            if (os.environ.get("NBDSL_SANDBOX") != "1"
+                    and ready.pid != host_worker_pid):
+                raise WorkerDied(
+                    f"worker ready PID {ready.pid} does not identify its host "
+                    f"process {host_worker_pid}")
+            ready = ReadyFrame.model_validate({
+                **ready.model_dump(),
+                "pid": host_worker_pid,
+            })
+            provenance = self._check_identity(adapter, ready, worker_exe)
 
             self.proc = proc
             self._request_pipe = req_w
@@ -317,9 +352,9 @@ class WorkerClient:
         return ready
 
     def _check_identity(
-            self, ready: ReadyFrame, worker_exe: Path) -> dict[str, object]:
+            self, adapter: BuildInfo, ready: ReadyFrame,
+            worker_exe: Path) -> dict[str, object]:
         """Validate a launch before its process tree or channels are owned."""
-        adapter = adapter_identity()
         worker = BuildInfo.model_validate(ready.model_dump())
         disagree, agreed = compare(adapter, worker)
         with worker_exe.open("rb") as f:
@@ -361,8 +396,6 @@ class WorkerClient:
         self.replies = None
 
     def kill(self) -> None:
-        if self.worker_pid is not None:
-            self._kill_pid(self.worker_pid)
         if self.proc is not None:
             self._terminate_process_group(self.proc, self._pump_threads)
         self.worker_pid = None
@@ -390,6 +423,15 @@ class WorkerClient:
             self._reply_pipe.close()
             self._reply_pipe = None
         self.replies = None
+
+    def running(self) -> bool:
+        """Whether both the owned wrapper and actual host worker are live."""
+        return (
+            self.proc is not None
+            and self.worker_pid is not None
+            and self.proc.poll() is None
+            and _process_running(self.worker_pid)
+        )
 
     def restart_and_replay(self) -> int:
         """Fresh worker, then the session cache if it matches the ledger,

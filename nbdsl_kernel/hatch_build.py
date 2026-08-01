@@ -1,9 +1,11 @@
 """Hatchling build hook: the adapter's exact build identity.
 
-Generates `nbdsl_kernel/_build_info.json` on every wheel and editable-wheel
-build. The computation itself lives in `_identity.py`, which `just build` also
-calls through `scripts/sync_build_info.py` — one implementation, so a wheel
-and a refreshed source tree can never disagree about what identity means.
+Generates `nbdsl_kernel/_build_info.json` on every distribution build. A
+source checkout derives it from Git and release.toml; a generated sdist
+authenticates and propagates its embedded copy. The computation itself lives
+in `_identity.py`, which `just build` also calls through
+`scripts/sync_build_info.py` — one implementation, so a wheel and a refreshed
+source tree can never disagree about what identity means.
 
 The worker generates the same identity through its lakefile's `buildCommit`
 target; the adapter refuses to run cells against a worker that disagrees.

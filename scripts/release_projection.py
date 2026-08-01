@@ -24,6 +24,7 @@ Projected files:
 from __future__ import annotations
 
 import difflib
+import json
 import re
 import shutil
 import subprocess
@@ -37,21 +38,58 @@ REPO = Path(__file__).resolve().parent.parent
 
 def load_release(root: Path) -> dict[str, str | int]:
     raw = tomllib.loads((root / "release.toml").read_text())
-    if raw.get("schema") != 1:
+    if type(raw.get("schema")) is not int or raw["schema"] != 1:
         sys.exit(f"release.toml: unknown schema {raw.get('schema')!r}")
     flat = {
         "version": raw["release"]["version"],
         "lean": raw["toolchain"]["lean"],
         "mathlib": raw["toolchain"]["mathlib"],
+        "mathlib_commit": raw["toolchain"]["mathlib_commit"],
         "plugin_api": raw["compat"]["plugin_api"],
         "wire_protocol": raw["compat"]["wire_protocol"],
     }
     if not re.fullmatch(r"\d+\.\d+\.\d+", str(flat["version"])):
         sys.exit(f"release.toml: malformed release.version {flat['version']!r}")
     for key in ("plugin_api", "wire_protocol"):
-        if not isinstance(flat[key], int):
+        if type(flat[key]) is not int:
             sys.exit(f"release.toml: compat.{key} must be an integer")
+    if type(flat["mathlib"]) is not str or not flat["mathlib"]:
+        sys.exit("release.toml: toolchain.mathlib must be a nonempty string")
+    if type(flat["mathlib_commit"]) is not str or not re.fullmatch(
+            r"[0-9a-f]{40}", flat["mathlib_commit"]):
+        sys.exit("release.toml: toolchain.mathlib_commit must be a 40-hex commit")
     return flat
+
+
+def mathlib_lock(root: Path) -> tuple[Path, dict[str, object], dict[str, object]]:
+    path = Path("dsls/nbdsl/lake-manifest.json")
+    manifest = json.loads((root / path).read_text())
+    packages = manifest.get("packages")
+    if not isinstance(packages, list):
+        sys.exit(f"{path}: packages must be a list")
+    matches = [
+        package for package in packages
+        if isinstance(package, dict) and package.get("name") == "mathlib"
+    ]
+    if len(matches) != 1:
+        sys.exit(f"{path}: expected exactly one mathlib package, found {len(matches)}")
+    return path, manifest, matches[0]
+
+
+def mathlib_lock_agrees(root: Path, rel: dict[str, str | int]) -> bool:
+    _, _, package = mathlib_lock(root)
+    return (
+        package.get("inputRev") == rel["mathlib"]
+        and package.get("rev") == rel["mathlib_commit"]
+    )
+
+
+def write_mathlib_lock(root: Path, rel: dict[str, str | int]) -> None:
+    path, manifest, package = mathlib_lock(root)
+    package["inputRev"] = rel["mathlib"]
+    package["rev"] = rel["mathlib_commit"]
+    (root / path).write_text(json.dumps(manifest, indent=2) + "\n")
+    print(f"projected {path}")
 
 
 def sub_once(pattern: str, repl: str, text: str, where: str) -> str:
@@ -115,15 +153,18 @@ def project(root: Path, rel: dict[str, str | int]) -> dict[Path, str]:
 
 
 def write(root: Path) -> None:
-    for path, content in project(root, load_release(root)).items():
+    rel = load_release(root)
+    for path, content in project(root, rel).items():
         (root / path).write_text(content)
         print(f"projected {path}")
+    write_mathlib_lock(root, rel)
 
 
 def check(root: Path) -> int:
     failures = 0
+    rel = load_release(root)
     with tempfile.TemporaryDirectory(prefix="release-projection-") as tmp:
-        for path, content in project(root, load_release(root)).items():
+        for path, content in project(root, rel).items():
             staged = Path(tmp) / path  # the temporary tree
             staged.parent.mkdir(parents=True, exist_ok=True)
             staged.write_text(content)
@@ -135,6 +176,15 @@ def check(root: Path) -> int:
                     fromfile=f"{path} (working tree)",
                     tofile=f"{path} (projection of release.toml)", lineterm="")
                 print("\n".join(diff))
+    if not mathlib_lock_agrees(root, rel):
+        failures += 1
+        _, _, package = mathlib_lock(root)
+        print(
+            "PROJECTION DRIFT: dsls/nbdsl/lake-manifest.json mathlib lock "
+            f"has inputRev={package.get('inputRev')!r}, rev={package.get('rev')!r}; "
+            f"release.toml requires inputRev={rel['mathlib']!r}, "
+            f"rev={rel['mathlib_commit']!r}"
+        )
     if failures:
         print(f"PROJECTION DRIFT: {failures} file(s) disagree with release.toml")
         return 1
@@ -145,7 +195,11 @@ def check(root: Path) -> int:
 def selftest(root: Path) -> int:
     with tempfile.TemporaryDirectory(prefix="release-selftest-") as tmp:
         copy = Path(tmp) / "repo"
-        for path in [Path("release.toml"), *project(root, load_release(root))]:
+        for path in [
+                Path("release.toml"),
+                Path("dsls/nbdsl/lake-manifest.json"),
+                *project(root, load_release(root)),
+        ]:
             (copy / path).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(root / path, copy / path)
         if check(copy) != 0:

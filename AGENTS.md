@@ -51,7 +51,7 @@ agent-memory maintain move <key> --to global/advice
 <!-- agent-memory:end -->
 
 
-> Source: `PR_GUIDANCE.md` in `ai`.
+> Source: [Review Guidelines](https://github.com/dzackgarza/ai/wiki/Review-Guidelines).
 
 # Review Guidelines
 

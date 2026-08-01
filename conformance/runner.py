@@ -64,6 +64,7 @@ from roundtrip import FrameReader, write_frame  # noqa: E402
 
 from jupyter_client.kernelspec import KernelSpecManager  # noqa: E402
 from jupyter_client.manager import start_new_kernel  # noqa: E402
+from nbdsl_kernel.worker import find_worker_exe  # noqa: E402
 
 # The first execute of a session waits for the worker's prelude import (all of
 # mathlib, from oleans); later replies get the same budget because elaboration
@@ -140,9 +141,18 @@ def _reject_forbidden(node: Any, path: str = "") -> None:
             _reject_forbidden(item, path)
 
 
+def _is_pinned_commit(value: object) -> bool:
+    return (isinstance(value, str)
+            and len(value) == 40
+            and all(c in "0123456789abcdef" for c in value))
+
+
 def load_profile(path: Path) -> dict[str, Any]:
-    with path.open("rb") as fh:
-        profile = tomllib.load(fh)
+    try:
+        with path.open("rb") as fh:
+            profile = tomllib.load(fh)
+    except tomllib.TOMLDecodeError as exc:
+        raise ProfileError(f"profile TOML is malformed: {exc}") from exc
     _reject_forbidden(profile)
     for section, keys in REQUIRED.items():
         if section not in profile:
@@ -154,6 +164,11 @@ def load_profile(path: Path) -> dict[str, Any]:
     if shape not in SHAPES:
         raise ProfileError(
             f"registration.shape must be one of {SHAPES}, not {shape!r}")
+    declared = profile["plugin"]["commit"]
+    if declared != "IN-REPOSITORY" and not _is_pinned_commit(declared):
+        raise ProfileError(
+            "plugin.commit must be IN-REPOSITORY or a lowercase 40-hex "
+            f"immutable commit, not {declared!r}")
     return profile
 
 
@@ -685,7 +700,10 @@ def independent_frame_check(project: Path, prelude: str,
     not echo.
     """
     await_memory()
-    exe = REPO / "worker/.lake/build/bin/nbdsl_worker"
+    exe = find_worker_exe(project)
+    if exe is None:
+        raise ProfileError(
+            f"no built nbdsl_worker found for external project {project}")
     req_r, req_w = os.pipe()
     rep_r, rep_w = os.pipe()
     proc = subprocess.Popen(
@@ -859,8 +877,7 @@ def main() -> int:
     kernel_name = args.kernel_name or profile["plugin"]["kernel_name"]
 
     declared = profile["plugin"]["commit"]
-    pinned = (len(declared) == 40
-              and all(c in "0123456789abcdef" for c in declared))
+    pinned = _is_pinned_commit(declared)
     if pinned and source["commit"] != declared:
         raise ProfileError(
             f"profile pins plugin commit {declared} but {source['checkout']} "

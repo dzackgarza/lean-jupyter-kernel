@@ -16,6 +16,9 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
+Commit = Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
+PositivePid = Annotated[int, Field(gt=0)]
+
 
 class _Frame(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
@@ -61,7 +64,7 @@ class BuildInfo(BaseModel):
     """
 
     release: str
-    commit: str
+    commit: Commit
     dirty: bool
     plugin_api: int
     wire: int
@@ -107,7 +110,7 @@ class ReadyFrame(_Frame, BuildInfo):
     #: The worker process itself — NOT the `lake env` wrapper the client
     #: spawned. Liveness probes must target this pid; the wrapper can outlive
     #: (or lag) the worker and its poll() proves nothing about the worker.
-    pid: int
+    pid: PositivePid
     snapshot: int
 
 

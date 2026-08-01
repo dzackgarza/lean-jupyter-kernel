@@ -170,7 +170,7 @@ class NbDslKernel(Kernel):
             self.worker.start()
             self._started = True
             self._run_init_cell()
-        elif self.worker.proc is None or self.worker.proc.poll() is not None:
+        elif not self.worker.running():
             # The worker died — normally from an interrupt escalation.
             if self.doc_sources:
                 # Document mode: snapshots are gone, so drop the cell states;
@@ -258,19 +258,7 @@ class NbDslKernel(Kernel):
                          cell_id: str | None = None) -> JupyterReply:
         self._silent = silent
         try:
-            try:
-                return self._execute_once(code, silent, cell_id)
-            except WorkerInterrupted:
-                raise
-            except WorkerDied:
-                # An UNREQUESTED worker death observed mid-request (crash,
-                # OOM kill, external kill) — _ensure_worker's poll() gate
-                # watches only the `lake env` wrapper and can miss it. Reap
-                # whatever is left so the gate turns truthful, then run the
-                # cell once more through the standard restart-and-replay
-                # path. A second death is a real, reported failure.
-                self.worker.kill()
-                return self._execute_once(code, silent, cell_id)
+            return self._execute_once(code, silent, cell_id)
         except KeyboardInterrupt:
             # Jupyter interrupts SIGINT the whole process group; the worker is
             # (being) killed. Kill it outright so no stale elaboration lingers;
@@ -290,6 +278,11 @@ class NbDslKernel(Kernel):
                 "Interrupted", "execution interrupted; worker killed after "
                 "the cooperative-cancel window", silent)
         except WorkerDied as e:
+            # A request was sent but no reply arrived. The worker may have
+            # committed external effects before dying, so this cell is never
+            # retry-safe. Reap it now; a later user request restarts and
+            # replays only the previously acknowledged ledger.
+            self.worker.kill()
             return self._error_reply("WorkerDied", str(e), silent)
         finally:
             self._silent = False

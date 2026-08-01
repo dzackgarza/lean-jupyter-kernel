@@ -14,8 +14,10 @@ dependencies do not exist yet.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import tomllib
+from email.parser import Parser
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +25,16 @@ from typing import Any
 #: pyproject.toml). Gitignored — a tracked file cannot truthfully contain its
 #: own commit.
 BUILD_INFO = "nbdsl_kernel/_build_info.json"
+IDENTITY_FIELDS = {
+    "release",
+    "commit",
+    "dirty",
+    "plugin_api",
+    "wire",
+    "toolchain",
+    "mathlib",
+}
+COMMIT = re.compile(r"[0-9a-f]{40}")
 
 
 def _git(root: Path, *args: str) -> str:
@@ -33,6 +45,29 @@ def _git(root: Path, *args: str) -> str:
             f"nbdsl-kernel: `git {' '.join(args)}` failed in {root} "
             f"(exit {proc.returncode}): {proc.stderr.strip()}")
     return proc.stdout.strip()
+
+
+def _validate_identity(identity: dict[str, Any]) -> dict[str, Any]:
+    if set(identity) != IDENTITY_FIELDS:
+        raise RuntimeError(
+            f"nbdsl-kernel: invalid build identity fields {sorted(identity)}")
+    if not isinstance(identity["release"], str):
+        raise RuntimeError("nbdsl-kernel: build release must be text")
+    if not isinstance(identity["commit"], str) or not COMMIT.fullmatch(
+            identity["commit"]):
+        raise RuntimeError(
+            "nbdsl-kernel: build commit must be a lowercase full SHA")
+    if type(identity["dirty"]) is not bool:
+        raise RuntimeError("nbdsl-kernel: build dirty flag must be boolean")
+    for field in ("plugin_api", "wire"):
+        if type(identity[field]) is not int:
+            raise RuntimeError(
+                f"nbdsl-kernel: build {field} must be an integer")
+    for field in ("toolchain", "mathlib"):
+        if not isinstance(identity[field], str):
+            raise RuntimeError(
+                f"nbdsl-kernel: build {field} must be text")
+    return identity
 
 
 def build_identity(project: Path) -> dict[str, Any]:
@@ -46,7 +81,7 @@ def build_identity(project: Path) -> dict[str, Any]:
     that cannot say what it was built from must not exist.
     """
     release = tomllib.loads((project.parent / "release.toml").read_text())
-    return {
+    return _validate_identity({
         "release": release["release"]["version"],
         "commit": _git(project, "rev-parse", "HEAD"),
         # Tracked modifications only — `dirty` must mean "the SOURCE differs
@@ -67,10 +102,39 @@ def build_identity(project: Path) -> dict[str, Any]:
         "wire": release["compat"]["wire_protocol"],
         "toolchain": release["toolchain"]["lean"],
         "mathlib": release["toolchain"]["mathlib"],
-    }
+    })
+
+
+def sdist_identity(project: Path) -> dict[str, Any]:
+    """Read the Git-derived identity carried by a generated sdist.
+
+    ``PKG-INFO`` is the source-distribution marker. Its authenticated package
+    metadata and the embedded identity must agree before the identity can be
+    propagated into a wheel.
+    """
+    metadata = Parser().parsestr((project / "PKG-INFO").read_text())
+    package = tomllib.loads((project / "pyproject.toml").read_text())["project"]
+    if metadata["Name"] != package["name"]:
+        raise RuntimeError("nbdsl-kernel: sdist package name is inconsistent")
+    if metadata["Version"] != package["version"]:
+        raise RuntimeError("nbdsl-kernel: sdist package version is inconsistent")
+    identity: dict[str, Any] = json.loads(
+        (project / BUILD_INFO).read_text())
+    identity = _validate_identity(identity)
+    if identity["release"] != metadata["Version"]:
+        raise RuntimeError(
+            "nbdsl-kernel: sdist identity release is inconsistent")
+    return identity
+
+
+def identity_for_build(project: Path) -> dict[str, Any]:
+    """Choose one explicit provenance carrier for this source-tree kind."""
+    if (project / "PKG-INFO").is_file():
+        return sdist_identity(project)
+    return build_identity(project)
 
 
 def write_build_info(project: Path) -> Path:
     path = project / BUILD_INFO
-    path.write_text(json.dumps(build_identity(project), indent=2) + "\n")
+    path.write_text(json.dumps(identity_for_build(project), indent=2) + "\n")
     return path
