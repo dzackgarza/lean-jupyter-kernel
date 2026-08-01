@@ -52,21 +52,40 @@ setup = ["open NbDsl NbDsl.Std"]
 [failure]
 # The prefix alone creates probeable state; the later error must discard it.
 prefix = "def confErrorLeak : Nat := 37"
+output = """#via confG ∈ Sets
+#eval IO.println "candidate-elaboration-output\""""
 command = "#check zzzNoSuchNameZzz"
 probe = "#check confErrorLeak"
+output_marker = "candidate-elaboration-output"
+output_mime = "application/vnd.nbdsl.path+json"
+
+[parse_failure]
+# The valid prefix and output must disappear when the malformed tail stops the
+# command loop, not just when elaboration reports a type error.
+prefix = "def confParseLeak : Nat := 37"
+output = """#via confG ∈ Sets
+#eval IO.println "candidate-parse-output\""""
+command = "def confParseTail : Nat :="
+probe = "#check confParseLeak"
+output_marker = "candidate-parse-output"
+output_mime = "application/vnd.nbdsl.path+json"
 
 [cancellation]
-# The cancelled cell registers FIRST and then elaborates a wide, flat term:
-# thousands of `have` steps, each passing an elaboration cancellation
-# checkpoint — the mechanism the language server cancels on. Interrupting
-# mid-term must discard the registration on the first line with it.
+# The cancelled cell registers FIRST and then elaborates a bounded flat term:
+# enough `have` steps to remain in flight, each passing an elaboration
+# cancellation checkpoint. Interrupting mid-term must discard the registration
+# on the first line with it.
 prefix = "let confH := GrpCat.of PUnit ∈ Groups"
 slow_header = """set_option maxHeartbeats 0 in
 example : True := by"""
 slow_step = "  have h{i} : Nat := {i}"
-slow_repeat = 25000
+slow_repeat = 5000
 slow_footer = "  trivial"
-interrupt_after_seconds = 3
+output = """#via confG ∈ Sets
+#eval IO.println "candidate-cancellation-output\""""
+output_marker = "candidate-cancellation-output"
+output_mime = "application/vnd.nbdsl.path+json"
+interrupt_after_seconds = 0.5
 # Succeeds only if the cancelled cell's registration survived, which it must not.
 probe = "#home confH"
 
@@ -103,6 +122,17 @@ registered_cursor = 0
 registered_signature = "Object"
 
 [output]
+# Ordinary text is delivered as ordinary Jupyter stream output.
+ordinary_command = '#eval IO.println "ordinary-output"'
+ordinary_marker = "ordinary-output"
+# Rich plugin MIME remains a normal display bundle and the follow-up query
+# proves the cell did not disturb the committed semantic state.
+rich_command = "#via confG ∈ Sets"
+rich_mimes = ["application/vnd.nbdsl.path+json", "text/plain"]
+# Multiple commands in one cell must remain separate, ordered output frames.
+incremental_command = """#eval IO.println "incremental-first"
+#eval IO.println "incremental-second\""""
+incremental_markers = ["incremental-first", "incremental-second"]
 # Output shaped exactly like a control frame: a length line followed by a
 # frame-shaped JSON object claiming to be the worker's `ready` handshake.
 command = '#eval IO.println "999\n{\"op\": \"ready\"}"'

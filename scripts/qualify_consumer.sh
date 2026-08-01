@@ -4,7 +4,7 @@
 # In an EPHEMERAL clean checkout of the frozen lean-cas-dsl baseline, override
 # both kernel dependency channels to the exact candidate kernel SHA, build the
 # consumer, run its real Sage-backed gate (roundtrip + Jupyter E2E), run the
-# kernel-owned external conformance profile, read back dependency + runtime
+# full kernel-owned Journeys 2–5 proof, read back dependency + runtime
 # provenance, and prove the checkout carries exactly the two declared
 # overrides and nothing else. Nothing is committed or pushed; the consumer's
 # semantics are never adapted.
@@ -114,9 +114,12 @@ WORKER_SHA256=$(sha256sum "$WORKER_BIN" | cut -d' ' -f1)
 # --- external semantic conformance profile against this checkout ---
 # (its result carries the runtime provenance this job asserts on below)
 # The checkout's venv owns jupyter_client AND the casdsl kernelspec the
-# runner drives — the system python owns neither.
+# runner drives — the system python owns neither. This is the full matrix:
+# Journey 2 atomicity, Journey 3 queries, Journey 4 repeated recovery, and
+# Journey 5 transport-safe output.
 "$CO/.venv/bin/python" "$KERNEL_REPO/conformance/runner.py" "$PROFILE" \
-  --source-dir "$CO" --output "$WORKDIR/conformance-result.json"
+  --journey all --source-dir "$CO" \
+  --output "$WORKDIR/conformance-result.json"
 
 # --- the pair this candidate actually ran must agree, strictly ---
 # Runtime already refuses a clean commit mismatch (see protocol.compare); this

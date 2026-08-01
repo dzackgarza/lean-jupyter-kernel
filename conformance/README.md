@@ -3,12 +3,13 @@
 One kernel-owned law set, run unchanged against every plugin profile.
 
 ```bash
-just conformance             # in-repository NbDsl reference
-just conformance-external    # external plugin; CONFORMANCE_CAS_DSL selects the checkout
+just conformance             # in-repository NbDsl reference, full matrix
+just conformance-external    # external plugin, full matrix
 
-python3 conformance/runner.py conformance/nbdsl.toml
+python3 conformance/runner.py conformance/nbdsl.toml --journey all
 python3 conformance/runner.py conformance/lean-cas-dsl.toml \
-    [--source-dir DIR] [--kernel-name NAME] [--output result.json]
+    --journey all [--source-dir DIR] [--kernel-name NAME] \
+    [--output result.json]
 ```
 
 The result JSON goes to stdout unless `--output` names a file; a per-law
@@ -17,10 +18,19 @@ law passes, `1` on a law failure, and `2` when the profile or the environment it
 names is unusable — a missing kernelspec, a kernelspec pointing at a different
 checkout, or a profile pinning a commit the checkout is not at.
 
-Everything runs through the ordinary Jupyter protocol against an installed
+`--journey all` is the six-journey closure proof: atomic cells, plugin-owned
+queries, repeated recovery, and transport-safe output are all exercised through
+the installed kernelspec. `--journey atomicity` is the targeted Journey 2
+proof for iteration; it runs only the success, elaboration-failure,
+parse-failure, and cooperative-cancellation laws, including candidate-state
+and notebook-output rollback.
+
+The full matrix runs through the ordinary Jupyter protocol against an installed
 kernelspec: `execute_request`, `complete_request`, `inspect_request`, a real
-`interrupt_request`, and a real `SIGKILL` of the worker process group. No mocks,
-no source-shape checks, no way to skip a law.
+`interrupt_request`, and a real `SIGKILL` of the worker process group. The
+focused atomicity run uses only `execute_request` and `interrupt_request`;
+completion, inspection, recovery, and transport are separate journeys. No
+mocks, source-shape checks, or law skips are used.
 
 **Resource contract:** at most one mathlib-loaded worker is alive at a time. The
 candidate session is shut down before the independent control session starts —
@@ -34,10 +44,11 @@ starting one rather than swapping the machine.
 | --- | --- |
 | `registration-isolated` | a second independent session, running the same cells minus the registration, cannot make the candidate's observation |
 | `success-commits` | the discriminating command commits exactly its observation change: unobservable before, the canonical projection after, unchanged when observed again |
-| `error-rolls-back` | a failing command leaves the pre/post structured observation equal |
-| `cancellation-rolls-back` | cooperative cancellation at a real elaboration checkpoint discards the cancelled cell's registration and leaves the committed observation equal |
-| `replay-reconstructs` | with the session cache invalidated, worker death recovers by replaying committed sources and reconstructs the same observation |
-| `restart-reconstructs` | real worker process death plus the production restart path reconstructs the committed observation |
+| `error-rolls-back` | a failing command leaves the pre/post structured observation equal and does not publish candidate output |
+| `parse-error-rolls-back` | a malformed tail discards the valid prefix and buffered output while preserving the committed observation |
+| `cancellation-rolls-back` | cooperative cancellation at a real elaboration checkpoint discards the cancelled cell's registration and buffered output, leaving the committed observation equal |
+| `replay-reconstructs` | with the session cache invalidated, worker death recovers by replaying committed sources and reconstructs the same observation and query answers |
+| `restart-reconstructs` | real worker process death plus the production restart path reconstructs the committed observation and query answers |
 | `completion-sees-environment` | completion discriminates, and answers about the environment that registered the object |
 | `inspection-sees-environment` | inspection discriminates, and answers about that environment |
 | `output-control-separated` | frame-shaped output stays ordinary output at the Jupyter boundary, and an independent decoder confirms it never became a control frame |
@@ -60,28 +71,25 @@ Three laws are deliberately hard to satisfy by accident:
   `nbdsl_kernel/tests/roundtrip.py`. That codec deliberately duplicates
   production's, so a codec bug cannot pass both sides.
 
-### Completion and inspection under plugin API v1
+### Completion and inspection for plugin-owned objects
 
 Both query laws assert three things, in the candidate **and** the control
 session: a name that exists nowhere is not found; a prelude constant answers
 with **its own signature**, not merely `found: true`; and the profile's
-registered name answers according to how the plugin registers it.
+registered name answers in the session that registered it and is absent from
+the independent control session.
 
-`registration.shape` says whether the plugin's registration creates a Lean
-constant or lives only in a persistent env extension. Under plugin API v1
-`complete`/`inspect` are constant-faithful, so:
+`registration.shape` records whether the plugin's registration creates a Lean
+constant or lives only in a persistent env extension:
 
-- `shape = "constant"` — the strong form: visible in the registering
-  environment, invisible in an untouched one.
-- `shape = "extension"` — the honest negative: invisible in both. Visibility of
-  extension state through these queries is outside the v1 law set and is
-  recorded per profile in the result as
-  `"extension_state_visibility": "deferred: plugin API v2 demand"`, never
-  silently omitted.
+- `shape = "constant"` — the worker scans environment declarations.
+- `shape = "extension"` — the worker elaborates the exact requested expression
+  through the plugin's real command surface, captures its `text/plain` output,
+  and discards the candidate state.
 
-The declaration is falsified in both directions, so it cannot be used to dodge:
-a `constant` the registering session cannot see fails, and an `extension` the
-boundary *can* see fails too.
+The declaration is falsified in both directions: a registered object the
+candidate session cannot see fails, and a control session that can see it fails
+the isolation half of the law.
 
 ## What a profile may contain
 
@@ -94,8 +102,9 @@ A profile may **not** supply law code, expected success booleans, or result
 overrides. `load_profile` rejects any key named `expect`, `status`, `verdict`,
 `skip`, `xfail`, `override`, `allow_failure` and their relatives anywhere in the
 file, and requires every section the laws consume: `[profile]`, `[plugin]`,
-`[registration]`, `[observation]`, `[control]`, `[failure]`, `[cancellation]`,
-`[replay]`, `[completion]`, `[inspection]`, `[output]`.
+`[registration]`, `[observation]`, `[control]`, `[failure]`,
+`[parse_failure]`, `[cancellation]`, `[replay]`, `[completion]`,
+`[inspection]`, `[output]`.
 
 ## The result
 

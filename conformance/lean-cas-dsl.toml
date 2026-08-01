@@ -34,16 +34,15 @@ kernel_name = "casdsl"
 
 [registration]
 # CasDsl binds into a persistent env extension (`bindingExt`), never a Lean
-# constant — the state shape docs/plugins.md requires of a plugin. Under plugin
-# API v1 complete/inspect are constant-faithful, so the query laws apply in
-# their honest-negative form here, and the result records extension-state
-# visibility as a deferred plugin API v2 demand. The runner falsifies this
-# claim too: if the boundary CAN see this name, the declaration was wrong.
+# constant. The worker's standard query surface handles this shape by probing
+# the exact expression through CasDsl's real elaborator without committing the
+# candidate state; the independent control kernel must still fail to see it.
 shape = "extension"
 # CasDsl's commands are top-level; no opens are needed to make them resolve.
 setup = []
 # The discriminating command: one entry in the binding registry, with a checked
-# membership judgment against the ambient domain.
+# membership judgment against the ambient domain. The standard query surface
+# probes the registered expression through CasDsl's real elaborator.
 command = "let confN := 360 in ℤ"
 
 [observation]
@@ -62,19 +61,37 @@ setup = []
 
 [failure]
 prefix = "let confErrorLeak := 37 in ℤ"
+output = """confN.factor()
+#eval IO.println "candidate-elaboration-output\""""
 command = "assert 2 + 3 = 6"
 probe = "assert confErrorLeak = 37"
+output_marker = "candidate-elaboration-output"
+output_mime = "application/vnd.casdsl.value+json"
+
+[parse_failure]
+prefix = "let confParseLeak := 37 in ℤ"
+output = """confN.factor()
+#eval IO.println "candidate-parse-output\""""
+command = "def confParseTail : Nat :="
+probe = "assert confParseLeak = 37"
+output_marker = "candidate-parse-output"
+output_mime = "application/vnd.casdsl.value+json"
 
 [cancellation]
-# The cancelled cell binds FIRST and then elaborates a wide, flat term whose
-# thousands of `have` steps each pass an elaboration cancellation checkpoint.
+# The cancelled cell binds FIRST and then elaborates a bounded flat term whose
+# `have` steps pass elaboration cancellation checkpoints without turning the
+# conformance run into a memory stress test.
 prefix = "let confCancel := 7 in ℤ"
 slow_header = """set_option maxHeartbeats 0 in
 example : True := by"""
 slow_step = "  have h{i} : Nat := {i}"
-slow_repeat = 25000
+slow_repeat = 5000
 slow_footer = "  trivial"
-interrupt_after_seconds = 3
+output = """confN.factor()
+#eval IO.println "candidate-cancellation-output\""""
+output_marker = "candidate-cancellation-output"
+output_mime = "application/vnd.casdsl.value+json"
+interrupt_after_seconds = 0.5
 # Succeeds only if the cancelled cell's binding survived, which it must not.
 probe = "assert confCancel = 7"
 
@@ -90,7 +107,8 @@ garbage = "zzzNoSuchNameZzz"
 constant_code = "CasDsl.Std.poly"
 constant_cursor = 15
 constant_match = "CasDsl.Std.polyZ"
-# The name THIS session bound, in the plugin's own registry.
+# The name THIS session bound, in the plugin's own registry. Completion probes
+# the exact expression without committing its candidate state.
 registered_code = "confN"
 registered_cursor = 5
 registered_match = "confN"
@@ -106,6 +124,15 @@ registered_cursor = 0
 registered_signature = "360"
 
 [output]
+# Ordinary text, rich plugin output, and incremental output all cross the same
+# Jupyter boundary before the control-looking frame probe.
+ordinary_command = '#eval IO.println "ordinary-output"'
+ordinary_marker = "ordinary-output"
+rich_command = "confN.factor()"
+rich_mimes = ["application/vnd.casdsl.value+json", "text/plain"]
+incremental_command = """#eval IO.println "incremental-first"
+#eval IO.println "incremental-second\""""
+incremental_markers = ["incremental-first", "incremental-second"]
 # Genuine Lean commands still parse in a CasDsl cell, so the frame-forging
 # probe is the same one NbDsl gets.
 command = '#eval IO.println "999\n{\"op\": \"ready\"}"'

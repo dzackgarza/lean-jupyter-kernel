@@ -116,18 +116,23 @@ def find_worker_exe(project_root: str | Path) -> Path | None:
     """The built worker binary for a Lean project — in its own build tree, or
     in a dependency's (git deps live under .lake/packages, one level deeper
     when the require names a subDir package; path deps build in place at the
-    directory the Lake manifest records). None if not built."""
+    directory the Lake manifest records). Manifested path dependencies take
+    precedence over stale package-cache candidates, so an exact local
+    qualification cannot launch an older cached worker. None if not built."""
     root = Path(project_root)
-    candidates = [root / ".lake/build/bin/nbdsl_worker",
-                  *root.glob(".lake/packages/*/.lake/build/bin/nbdsl_worker"),
-                  *root.glob(".lake/packages/*/*/.lake/build/bin/nbdsl_worker")]
+    candidates: list[Path] = []
     manifest = root / "lake-manifest.json"
     if manifest.exists():
         for pkg in json.loads(manifest.read_text()).get("packages", []):
-            if pkg.get("type") == "path":
+            if pkg.get("type") == "path" and pkg.get("dir"):
                 candidates.append(
                     (root / pkg.get("dir", ".")).resolve()
                     / ".lake/build/bin/nbdsl_worker")
+    candidates += [
+        root / ".lake/build/bin/nbdsl_worker",
+        *root.glob(".lake/packages/*/.lake/build/bin/nbdsl_worker"),
+        *root.glob(".lake/packages/*/*/.lake/build/bin/nbdsl_worker"),
+    ]
     return next((c for c in candidates if c.exists()), None)
 
 

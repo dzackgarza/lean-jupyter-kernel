@@ -3,7 +3,19 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-just cache
+# Fail closed instead of running two full checks concurrently. The installed
+# notebook workers are intentionally large, and overlapping checks turn a
+# valid single-run memory budget into swap and disk thrashing.
+check_lock="${NBDSL_CHECK_LOCK:-${TMPDIR:-/tmp}/nbdsl-check-${UID}.lock}"
+exec 9>"$check_lock"
+if ! flock -n 9; then
+  echo "another nbdsl full check is already running: $check_lock" >&2
+  exit 2
+fi
+
+if [ ! -f dsls/nbdsl/.lake/packages/mathlib/.lake/build/lib/lean/Mathlib/Init.olean ]; then
+  just cache
+fi
 just test   # lake build + lean-no-sorry + worker protocol roundtrip
 
 if [ ! -x .venv/bin/pytest ]; then

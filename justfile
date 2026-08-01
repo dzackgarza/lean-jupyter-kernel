@@ -59,16 +59,18 @@ test: build
 # installs into the job python; locally: `just python=.venv/bin/python …`.
 python := "python3"
 
-# Semantic plugin conformance (#3): the same laws against the in-repo
-# reference plugin. Needs the kernel package installed (jupyter_client, a
-# kernelspec) — like the e2e suite, it runs in CI rather than the local gate.
+# Semantic plugin conformance (#3): the same six-journey laws against the
+# in-repo reference plugin. Use --journey atomicity directly for a targeted
+# Journey 2 iteration; this recipe is the closure proof.
+# Needs the kernel package installed (jupyter_client, a kernelspec).
 conformance:
-    @{{python}} conformance/runner.py conformance/nbdsl.toml
+    @{{python}} conformance/runner.py conformance/nbdsl.toml --journey all
 
 # …and against an EXTERNAL plugin. Point CONFORMANCE_CAS_DSL at a clean
-# checkout; the profile falls back to a sibling working tree.
+# checkout; the profile falls back to a sibling working tree. The qualification
+# script uses --source-dir for its ephemeral exact-candidate checkout.
 conformance-external:
-    @{{python}} conformance/runner.py conformance/lean-cas-dsl.toml
+    @{{python}} conformance/runner.py conformance/lean-cas-dsl.toml --journey all
 
 [private]
 test-commit: test

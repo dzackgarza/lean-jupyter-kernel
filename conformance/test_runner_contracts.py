@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tomllib
+import json
 from pathlib import Path
 from typing import Any, Callable, cast
 
@@ -17,6 +18,7 @@ RUNNER = REPO / "conformance/runner.py"
 sys.path.insert(0, str(RUNNER.parent))
 
 import runner  # noqa: E402
+from nbdsl_kernel.worker import find_worker_exe  # noqa: E402
 
 
 def test_profile_rejects_commit_outside_the_published_identity_forms(
@@ -30,6 +32,34 @@ def test_profile_rejects_commit_outside_the_published_identity_forms(
 
     with pytest.raises(runner.ProfileError):
         runner.load_profile(profile_path)
+
+
+def test_profile_rejects_unbounded_cancellation_workload(
+        tmp_path: Path) -> None:
+    profile_path = tmp_path / "unbounded-cancellation.toml"
+    profile_path.write_text(
+        REFERENCE_PROFILE.read_text().replace(
+            "slow_repeat = 5000", "slow_repeat = 5001", 1))
+
+    with pytest.raises(runner.ProfileError, match="bounded conformance"):
+        runner.load_profile(profile_path)
+
+
+def test_conformance_slot_refuses_a_concurrent_worker_launch(
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path) -> None:
+    lock_path = tmp_path / "conformance.lock"
+    monkeypatch.setattr(runner, "CONFORMANCE_LOCK", lock_path)
+    monkeypatch.setattr(runner, "CONFORMANCE_LOCK_TIMEOUT", 0.0)
+    held = lock_path.open("a+")
+    try:
+        runner.fcntl.flock(held.fileno(), runner.fcntl.LOCK_EX)
+        with pytest.raises(runner.ProfileError, match="resource slot"):
+            with runner.conformance_slot():
+                pass
+    finally:
+        runner.fcntl.flock(held.fileno(), runner.fcntl.LOCK_UN)
+        held.close()
 
 
 def test_malformed_toml_is_profile_error_with_parser_cause(
@@ -94,6 +124,25 @@ def test_in_repository_profile_rejects_foreign_source_override(
 
     with pytest.raises(runner.ProfileError, match="IN-REPOSITORY"):
         runner.resolve_checkout(profile, foreign)
+
+
+def test_worker_resolution_prefers_manifested_path_dependency(
+        tmp_path: Path) -> None:
+    project = tmp_path / "consumer"
+    active = tmp_path / "active-worker"
+    stale = project / ".lake/packages/nbdsl-worker/worker"
+    active_exe = active / ".lake/build/bin/nbdsl_worker"
+    stale_exe = stale / ".lake/build/bin/nbdsl_worker"
+    active_exe.parent.mkdir(parents=True)
+    stale_exe.parent.mkdir(parents=True)
+    active_exe.write_text("active")
+    stale_exe.write_text("stale")
+    (project / ".lake").mkdir(exist_ok=True)
+    (project / "lake-manifest.json").write_text(json.dumps({
+        "packages": [{"type": "path", "dir": "../active-worker"}],
+    }))
+
+    assert find_worker_exe(project) == active_exe
 
 
 def test_runner_kills_each_owned_process_group_once(

@@ -314,7 +314,7 @@ class NbDslKernel(Kernel):
             rep = self.worker.execute(code, cell_id=cell_id or "cell")
             if rep.status == "ok":
                 self.worker.save_session()
-        if not silent:
+        if not silent and rep.status == "ok":
             self._publish_reply(rep)
         if rep.status == "ok":
             return {"status": "ok", "execution_count": self.execution_count,
@@ -358,13 +358,17 @@ class NbDslKernel(Kernel):
         empty: JupyterReply = {"status": "ok", "matches": [],
                                "cursor_start": cursor_pos,
                                "cursor_end": cursor_pos, "metadata": {}}
-        if not self._started:
-            # The worker starts lazily on the first execute; completing
-            # before any execution is a normal state, not a failure.
-            return empty
         try:
+            # Query requests are a valid first interaction. Bootstrap the
+            # same prelude and init-cell state as execute_request.
+            self._ensure_worker()
+            if self._init_error:
+                return {**empty, "status": "error",
+                        "ename": "InitCellError",
+                        "evalue": self._init_error,
+                        "traceback": [self._init_error]}
             rep = self.worker.complete(code, cursor_pos)
-        except (WorkerDied, TimeoutError) as e:
+        except (ProvenanceError, WorkerDied, TimeoutError) as e:
             # Fail loudly: a dead worker must not masquerade as "no matches".
             return {**empty, "status": "error", "ename": type(e).__name__,
                     "evalue": str(e), "traceback": [str(e)]}
@@ -381,11 +385,15 @@ class NbDslKernel(Kernel):
                          omit_sections: tuple[object, ...] = ()) -> JupyterReply:
         missing: JupyterReply = {"status": "ok", "found": False,
                                  "data": {}, "metadata": {}}
-        if not self._started:
-            return missing  # lazy worker: nothing to inspect yet, by design
         try:
+            # Inspection, like completion, may bootstrap a fresh kernel.
+            self._ensure_worker()
+            if self._init_error:
+                return {"status": "error", "ename": "InitCellError",
+                        "evalue": self._init_error,
+                        "traceback": [self._init_error]}
             rep = self.worker.inspect(code, cursor_pos)
-        except (WorkerDied, TimeoutError) as e:
+        except (ProvenanceError, WorkerDied, TimeoutError) as e:
             # Fail loudly: a dead worker must not masquerade as "not found".
             return {**missing, "status": "error", "ename": type(e).__name__,
                     "evalue": str(e), "traceback": [str(e)]}

@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Kernel-owned semantic conformance: one law set, many plugin profiles.
 
-Every law is proven through the ordinary Jupyter protocol against an installed
-kernelspec — `execute`, `complete`, `inspect`, a real `interrupt_request`, and
-a real SIGKILL of the worker process group. Claims about Jupyter semantics are
-never made from direct kernel or helper calls. The one addition is
+Every law in the full matrix is proven through the ordinary Jupyter protocol
+against an installed kernelspec — `execute`, `complete`, `inspect`, a real
+`interrupt_request`, and a real SIGKILL of the worker process group. The
+focused `atomicity` journey uses only `execute` and a real
+`interrupt_request`, because completion, inspection, recovery, and transport
+are separate journeys. Claims about Jupyter semantics are never made from
+direct kernel or helper calls. The one addition is
 `output-control-separated`, which ALSO decodes the worker's frames with the
 INDEPENDENT oracle codec in nbdsl_kernel/tests/roundtrip.py: proving plugin
 output never becomes control traffic needs a decoder that is not production's,
@@ -16,9 +19,10 @@ registration). It cannot supply law code, expected success booleans, or result
 overrides; `load_profile` rejects any key that would.
 
 Usage:
-    python3 conformance/runner.py conformance/nbdsl.toml
+    python3 conformance/runner.py conformance/nbdsl.toml --journey all
     python3 conformance/runner.py conformance/lean-cas-dsl.toml \\
-        [--source-dir DIR] [--kernel-name NAME] [--output result.json]
+        --journey all [--source-dir DIR] [--kernel-name NAME] \\
+        [--output result.json]
 
 Exit status is 0 only when every law passes, 1 on a law failure, 2 when the
 profile or the environment it names is unusable.
@@ -31,6 +35,7 @@ starts; the laws compare observations, not simultaneity.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import queue
@@ -39,6 +44,8 @@ import subprocess
 import sys
 import time
 import tomllib
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -72,11 +79,18 @@ from nbdsl_kernel.worker import find_worker_exe  # noqa: E402
 STARTUP = 900.0
 QUERY_TIMEOUT = 120.0
 MIN_FREE_GB = 6  # a mathlib worker is 3-4 GB; never start one into swap
+CANCELLATION_STEP_LIMIT = 5000
+CONFORMANCE_LOCK = Path(
+    os.environ.get(
+        "NBDSL_CONFORMANCE_LOCK",
+        f"/tmp/nbdsl-conformance-{os.getuid()}.lock"))
+CONFORMANCE_LOCK_TIMEOUT = 15.0
 
 LAWS = [
     "registration-isolated",
     "success-commits",
     "error-rolls-back",
+    "parse-error-rolls-back",
     "cancellation-rolls-back",
     "replay-reconstructs",
     "restart-reconstructs",
@@ -84,6 +98,12 @@ LAWS = [
     "inspection-sees-environment",
     "output-control-separated",
 ]
+ATOMICITY_LAWS = (
+    "success-commits",
+    "error-rolls-back",
+    "parse-error-rolls-back",
+    "cancellation-rolls-back",
+)
 
 # Keys that would move law authority into the data file. Fixed decision 4:
 # profiles supply inputs and observations, never verdicts.
@@ -99,9 +119,13 @@ REQUIRED = {
     "registration": ["setup", "command", "shape"],
     "observation": ["command", "mimes", "projection"],
     "control": ["setup"],
-    "failure": ["prefix", "command", "probe"],
+    "failure": ["prefix", "output", "command", "probe", "output_marker",
+                "output_mime"],
+    "parse_failure": ["prefix", "output", "command", "probe",
+                      "output_marker", "output_mime"],
     "cancellation": ["prefix", "slow_header", "slow_step", "slow_repeat",
-                     "slow_footer", "probe", "interrupt_after_seconds"],
+                     "slow_footer", "output", "output_marker", "probe",
+                     "interrupt_after_seconds"],
     "replay": ["force", "restore"],
     "completion": ["garbage", "constant_code", "constant_cursor",
                    "constant_match", "registered_code", "registered_cursor",
@@ -109,14 +133,16 @@ REQUIRED = {
     "inspection": ["garbage", "constant_code", "constant_cursor",
                    "constant_signature", "registered_code",
                    "registered_cursor", "registered_signature"],
-    "output": ["command", "marker"],
+    "output": ["command", "marker", "ordinary_command", "ordinary_marker",
+               "rich_command", "rich_mimes", "incremental_command",
+               "incremental_markers"],
 }
 
 # A registration either creates a Lean constant or lives only in a persistent
-# env extension. Under plugin API v1 complete/inspect are constant-faithful, so
-# the shape decides which form of the query laws applies — and the runner
-# FALSIFIES the declaration both ways: a "constant" the registering session
-# cannot see fails, and an "extension" that is visible fails too.
+# env extension. Both shapes must be observable through standard queries: the
+# worker resolves constants from the environment and probes exact plugin-owned
+# expressions through the plugin's real elaborator without committing them.
+# The runner falsifies the declaration in both candidate and control sessions.
 SHAPES = ("constant", "extension")
 
 
@@ -171,16 +197,59 @@ def load_profile(path: Path) -> dict[str, Any]:
         raise ProfileError(
             "plugin.commit must be IN-REPOSITORY or a lowercase 40-hex "
             f"immutable commit, not {declared!r}")
+    try:
+        cancellation_steps = int(profile["cancellation"]["slow_repeat"])
+    except (TypeError, ValueError) as exc:
+        raise ProfileError(
+            "cancellation.slow_repeat must be an integer") from exc
+    if not 0 < cancellation_steps <= CANCELLATION_STEP_LIMIT:
+        raise ProfileError(
+            "cancellation.slow_repeat exceeds the bounded conformance "
+            f"limit of {CANCELLATION_STEP_LIMIT}")
     return profile
 
 
+@contextmanager
+def conformance_slot() -> Iterator[None]:
+    """Serialize installed conformance runs for this user.
+
+    A profile runner can be launched by CI, a qualification script, and a
+    developer at the same time. Each process's memory check is otherwise a
+    race: both can observe enough RAM and then start multi-GB workers
+    together, pushing the host into swap.
+    """
+    try:
+        lock = CONFORMANCE_LOCK.open("a+")
+    except OSError as exc:
+        raise ProfileError(
+            f"cannot open conformance resource lock {CONFORMANCE_LOCK}: {exc}"
+        ) from exc
+    with lock:
+        deadline = time.monotonic() + CONFORMANCE_LOCK_TIMEOUT
+        while True:
+            try:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise ProfileError(
+                        "another conformance run owns the resource slot; "
+                        f"refusing concurrent worker launch after "
+                        f"{CONFORMANCE_LOCK_TIMEOUT:.0f}s")
+                time.sleep(0.25)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
 def cancellation_cell(cfg: dict[str, Any]) -> str:
-    """The cancellation cell: register FIRST, then elaborate a wide, flat term
-    whose thousands of steps each pass an elaboration cancellation checkpoint —
-    the real mid-command checkpoint the law names. `{i}` is the step index."""
+    """The cancellation cell: register FIRST, then elaborate a bounded flat
+    term whose steps each pass a real elaboration cancellation checkpoint.
+    `{i}` is the step index."""
     steps = "\n".join(cfg["slow_step"].replace("{i}", str(i))
                       for i in range(int(cfg["slow_repeat"])))
-    return "\n".join([cfg["prefix"], cfg["slow_header"], steps,
+    return "\n".join([cfg["prefix"], cfg["output"], cfg["slow_header"], steps,
                       cfg["slow_footer"]])
 
 
@@ -361,7 +430,8 @@ class Session:
         return self._shell(self.kc.inspect(code, cursor), QUERY_TIMEOUT)
 
     def run_and_interrupt(self, code: str, after: float,
-                          timeout: float = STARTUP) -> dict[str, Any]:
+                          timeout: float = STARTUP
+                          ) -> tuple[dict[str, Any], list[Any]]:
         """Execute, let elaboration reach its checkpoints, then send a real
         interrupt_request through the kernel manager."""
         msg_id = self.kc.execute(code)
@@ -374,8 +444,8 @@ class Session:
             pass
         self.km.interrupt_kernel()
         reply = self._shell(msg_id, timeout)
-        self._collect(msg_id, timeout)
-        return reply
+        outputs = self._collect(msg_id, timeout)
+        return reply, outputs
 
     def kill_worker(self) -> dict[str, Any]:
         """SIGKILL the real worker process group and prove it is gone."""
@@ -404,6 +474,22 @@ def texts(outputs: list[Any]) -> str:
 def mime_bundles(outputs: list[Any]) -> list[dict[str, Any]]:
     return [m["content"]["data"] for m in outputs
             if m["msg_type"] in ("execute_result", "display_data")]
+
+
+def output_matches(outputs: list[Any], cfg: dict[str, Any]) -> bool:
+    visible = texts(outputs) + json.dumps(
+        mime_bundles(outputs), ensure_ascii=False)
+    return (cfg["output_marker"] in visible
+            and any(cfg["output_mime"] in bundle
+                    for bundle in mime_bundles(outputs)))
+
+
+def output_leaked(outputs: list[Any], cfg: dict[str, Any]) -> bool:
+    visible = texts(outputs) + json.dumps(
+        mime_bundles(outputs), ensure_ascii=False)
+    return (cfg["output_marker"] in visible
+            or any(cfg["output_mime"] in bundle
+                   for bundle in mime_bundles(outputs)))
 
 
 # --------------------------------------------------------------------------
@@ -494,22 +580,23 @@ def query_answers(session: Session, profile: dict[str, Any]) -> dict[str, Any]:
 # --------------------------------------------------------------------------
 
 class Report:
-    def __init__(self) -> None:
+    def __init__(self, expected_laws: tuple[str, ...] = tuple(LAWS)) -> None:
+        self.expected_laws = expected_laws
         self.laws: dict[str, dict[str, Any]] = {}
 
     def record(self, law: str, ok: bool, observation: dict[str, Any],
                detail: str) -> None:
-        if law not in LAWS:
+        if law not in self.expected_laws:
             raise AssertionError(f"unknown law {law!r}")
         self.laws[law] = {"law": law, "status": "pass" if ok else "fail",
                           "observation": observation, "detail": detail}
 
     def ordered(self) -> list[dict[str, Any]]:
-        for law in LAWS:
+        for law in self.expected_laws:
             self.laws.setdefault(law, {"law": law, "status": "fail",
                                        "observation": {},
                                        "detail": "law did not run"})
-        return [self.laws[law] for law in LAWS]
+        return [self.laws[law] for law in self.expected_laws]
 
     def verdict(self) -> str:
         return ("pass" if all(v["status"] == "pass" for v in self.ordered())
@@ -521,7 +608,8 @@ class Report:
 # --------------------------------------------------------------------------
 
 def run_candidate(session: Session, profile: dict[str, Any],
-                  report: Report) -> dict[str, Any]:
+                  report: Report, *, atomicity_only: bool = False
+                  ) -> dict[str, Any]:
     """Every law provable inside the registering environment, plus the
     observations the control session will be compared against."""
     obs_cfg = profile["observation"]
@@ -552,8 +640,12 @@ def run_candidate(session: Session, profile: dict[str, Any],
     # -- error-rolls-back --------------------------------------------------
     failure_cfg = profile["failure"]
     failing_cell = "\n".join(
-        [failure_cfg["prefix"], failure_cfg["command"]])
-    reply, _ = session.run(failing_cell)
+        [failure_cfg["prefix"], failure_cfg["output"],
+         failure_cfg["command"]])
+    output_reply, output_outputs = session.run(failure_cfg["output"])
+    output_ready = (output_reply["status"] == "ok"
+                    and output_matches(output_outputs, failure_cfg))
+    reply, failure_outputs = session.run(failing_cell)
     absent_reply, _ = session.run(failure_cfg["probe"])
     after_error = observe(session, obs_cfg)
     prefix_reply, _ = session.run(failure_cfg["prefix"])
@@ -564,36 +656,135 @@ def run_candidate(session: Session, profile: dict[str, Any],
         and absent_reply["status"] == "error"
         and prefix_reply["status"] == "ok"
         and present_reply["status"] == "ok"
+        and output_ready
+        and not output_leaked(failure_outputs, failure_cfg)
         and after_error == committed,
         {"failing_command": failing_cell,
          "failing_status": reply["status"],
          "failing_error": str(reply.get("evalue", ""))[:400],
+         "output_probe_status": output_reply["status"],
+         "output_probe_ready": output_ready,
+         "candidate_output_published": output_leaked(
+             failure_outputs, failure_cfg),
          "probe": failure_cfg["probe"],
          "probe_after_failure": absent_reply["status"],
          "prefix_alone": prefix_reply["status"],
          "probe_after_prefix": present_reply["status"],
          "pre": committed, "post": after_error},
         "a failing cell discards a candidate registration whose prefix and "
-        "probe independently demonstrate that registration is observable")
+        "probe independently demonstrate that registration is observable, "
+        "without publishing candidate output")
 
-    candidate_queries = query_answers(session, profile)
+    # -- parse-error-rolls-back ---------------------------------------------
+    parse_cfg = profile["parse_failure"]
+    output_reply, output_outputs = session.run(parse_cfg["output"])
+    output_ready = (output_reply["status"] == "ok"
+                    and output_matches(output_outputs, parse_cfg))
+    parse_cell = "\n".join(
+        [parse_cfg["prefix"], parse_cfg["output"], parse_cfg["command"]])
+    reply, parse_outputs = session.run(parse_cell)
+    absent_reply, _ = session.run(parse_cfg["probe"])
+    after_parse = observe(session, obs_cfg)
+    prefix_reply, _ = session.run(parse_cfg["prefix"])
+    present_reply, _ = session.run(parse_cfg["probe"])
+    report.record(
+        "parse-error-rolls-back",
+        reply["status"] == "error"
+        and absent_reply["status"] == "error"
+        and prefix_reply["status"] == "ok"
+        and present_reply["status"] == "ok"
+        and output_ready
+        and not output_leaked(parse_outputs, parse_cfg)
+        and after_parse == committed,
+        {"failing_command": parse_cell,
+         "failing_status": reply["status"],
+         "failing_error": str(reply.get("evalue", ""))[:400],
+         "output_probe_status": output_reply["status"],
+         "output_probe_ready": output_ready,
+         "candidate_output_published": output_leaked(
+             parse_outputs, parse_cfg),
+         "probe": parse_cfg["probe"],
+         "probe_after_failure": absent_reply["status"],
+         "prefix_alone": prefix_reply["status"],
+         "probe_after_prefix": present_reply["status"],
+         "pre": committed, "post": after_parse},
+        "a malformed tail discards a candidate registration and buffered "
+        "output while preserving the committed observation")
 
-    # -- output-control-separated, Jupyter half ----------------------------
-    out_cfg = profile["output"]
-    comms_before = len(session.comms)
-    reply, outputs = session.run(out_cfg["command"])
-    ordinary = texts(outputs) + json.dumps(mime_bundles(outputs),
-                                           ensure_ascii=False)
-    after_output = observe(session, obs_cfg)
-    jupyter_half = {
-        "command": out_cfg["command"], "status": reply["status"],
-        "marker_in_ordinary_output": out_cfg["marker"] in ordinary,
-        "new_comm_messages": len(session.comms) - comms_before,
-        "ordinary_output": ordinary[:400],
-        "observation_after": after_output,
-        "ok": (reply["status"] == "ok" and out_cfg["marker"] in ordinary
-               and len(session.comms) == comms_before
-               and after_output == committed)}
+    if not atomicity_only:
+        candidate_queries = query_answers(session, profile)
+
+        # -- output-control-separated, Jupyter half ------------------------
+        out_cfg = profile["output"]
+        comms_before = len(session.comms)
+
+        ordinary_reply, ordinary_outputs = session.run(
+            out_cfg["ordinary_command"])
+        ordinary_text = texts(ordinary_outputs)
+        ordinary_followup = observe(session, obs_cfg)
+
+        rich_reply, rich_outputs = session.run(out_cfg["rich_command"])
+        rich_bundles = mime_bundles(rich_outputs)
+        rich_bundle = next(
+            (bundle for bundle in rich_bundles
+             if all(mime in bundle for mime in out_cfg["rich_mimes"])),
+            None)
+        rich_followup = observe(session, obs_cfg)
+
+        control_reply, control_outputs = session.run(out_cfg["command"])
+        control_text = texts(control_outputs) + json.dumps(
+            mime_bundles(control_outputs), ensure_ascii=False)
+        control_followup = observe(session, obs_cfg)
+
+        incremental_reply, incremental_outputs = session.run(
+            out_cfg["incremental_command"])
+        incremental_text = texts(incremental_outputs)
+        incremental_followup = observe(session, obs_cfg)
+        marker_positions = [
+            incremental_text.find(marker)
+            for marker in out_cfg["incremental_markers"]
+        ]
+        jupyter_half = {
+            "ordinary": {
+                "status": ordinary_reply["status"],
+                "marker": out_cfg["ordinary_marker"],
+                "text": ordinary_text[:400],
+                "followup": ordinary_followup,
+            },
+            "rich": {
+                "status": rich_reply["status"],
+                "required_mimes": out_cfg["rich_mimes"],
+                "bundle_present": rich_bundle is not None,
+                "followup": rich_followup,
+            },
+            "control": {
+                "status": control_reply["status"],
+                "marker": out_cfg["marker"],
+                "text": control_text[:400],
+                "followup": control_followup,
+            },
+            "incremental": {
+                "status": incremental_reply["status"],
+                "markers": out_cfg["incremental_markers"],
+                "text": incremental_text[:400],
+                "marker_positions": marker_positions,
+                "followup": incremental_followup,
+            },
+            "new_comm_messages": len(session.comms) - comms_before,
+            "ok": (ordinary_reply["status"] == "ok"
+                   and out_cfg["ordinary_marker"] in ordinary_text
+                   and ordinary_followup == committed
+                   and rich_reply["status"] == "ok"
+                   and rich_bundle is not None
+                   and rich_followup == committed
+                   and control_reply["status"] == "ok"
+                   and out_cfg["marker"] in control_text
+                   and control_followup == committed
+                   and incremental_reply["status"] == "ok"
+                   and marker_positions == sorted(marker_positions)
+                   and all(pos >= 0 for pos in marker_positions)
+                   and incremental_followup == committed
+                   and len(session.comms) == comms_before)}
 
     # -- cancellation-rolls-back -------------------------------------------
     cancel_cfg = profile["cancellation"]
@@ -602,7 +793,10 @@ def run_candidate(session: Session, profile: dict[str, Any],
     # only after killing the worker. Same live pid before and after is the
     # structural difference between the two.
     pids_before = {pid for pid, _ in worker_processes(session.pid)}
-    reply = session.run_and_interrupt(
+    output_reply, output_outputs = session.run(cancel_cfg["output"])
+    output_ready = (output_reply["status"] == "ok"
+                    and output_matches(output_outputs, cancel_cfg))
+    reply, cancellation_outputs = session.run_and_interrupt(
         cancellation_cell(cancel_cfg),
         float(cancel_cfg["interrupt_after_seconds"]))
     pids_after = {pid for pid, _ in worker_processes(session.pid)}
@@ -617,10 +811,16 @@ def run_candidate(session: Session, profile: dict[str, Any],
         cooperative and probe_reply["status"] == "error"
         and prefix_reply["status"] == "ok"
         and present_reply["status"] == "ok"
+        and output_ready
+        and not output_leaked(cancellation_outputs, cancel_cfg)
         and after_cancel == committed,
         {"reply_ename": reply.get("ename"),
          "reply_evalue": str(reply.get("evalue", ""))[:300],
          "cooperative": cooperative,
+         "output_probe_status": output_reply["status"],
+         "output_probe_ready": output_ready,
+         "candidate_output_published": output_leaked(
+             cancellation_outputs, cancel_cfg),
          "worker_pids_before": sorted(pids_before),
          "worker_pids_after": sorted(pids_after),
          "cancelled_registration": cancel_cfg["prefix"],
@@ -633,17 +833,24 @@ def run_candidate(session: Session, profile: dict[str, Any],
         "prefix/probe pair independently proved it observable, and left the "
         "committed observation equal")
 
+    if atomicity_only:
+        return {"committed": committed}
+
     # -- restart-reconstructs ----------------------------------------------
     killed = session.kill_worker()
     reply, outputs = session.run(obs_cfg["command"])
     stream = texts(outputs)
     after_restart = _read(reply, outputs, obs_cfg)
+    queries_after_restart = query_answers(session, profile)
     report.record(
-        "restart-reconstructs", after_restart == committed,
+        "restart-reconstructs",
+        after_restart == committed and queries_after_restart == candidate_queries,
         {**killed, "recovery_route": _route(stream),
-         "recovery_stream": stream[:400], "observation_after": after_restart},
+         "recovery_stream": stream[:400], "observation_after": after_restart,
+         "queries_after_recovery": queries_after_restart},
         "the worker process was SIGKILLed from outside the kernel and the "
-        "production restart path reconstructed the committed observation")
+        "production restart path reconstructed the committed observation and "
+        "the same completion/inspection answers")
 
     # -- replay-reconstructs -----------------------------------------------
     for code in profile["replay"]["force"]:
@@ -654,14 +861,20 @@ def run_candidate(session: Session, profile: dict[str, Any],
     reply, outputs = session.run(obs_cfg["command"])
     stream = texts(outputs)
     after_replay = _read(reply, outputs, obs_cfg)
+    queries_after_replay = query_answers(session, profile)
     route = _route(stream)
     report.record(
-        "replay-reconstructs", route == "replay" and after_replay == committed,
+        "replay-reconstructs",
+        route == "replay"
+        and after_replay == committed
+        and queries_after_replay == candidate_queries,
         {**killed, "recovery_route": route, "recovery_stream": stream[:400],
          "cache_invalidated_by": profile["replay"]["force"],
-         "observation_after": after_replay},
+         "observation_after": after_replay,
+         "queries_after_recovery": queries_after_replay},
         "with the session cache invalidated the worker recovered by replaying "
-        "the committed sources and reconstructed the same observation")
+        "the committed sources and reconstructed the same observation and "
+        "completion/inspection answers")
     for code in profile["replay"]["restore"]:
         reply, outputs = session.run(code)
         if reply["status"] != "ok":
@@ -713,15 +926,11 @@ def run_control(session: Session, profile: dict[str, Any],
                        and control_queries[f"{prefix}_constant"]["found"])
         cand_sees = cand[f"{prefix}_registered"]["found"]
         control_sees = control_queries[f"{prefix}_registered"]["found"]
-        if shape == "constant":
-            # The strong form: visible where it was registered, nowhere else.
-            registered_ok = cand_sees and not control_sees
-        else:
-            # Extension-shaped state is outside the v1 law set, but the honest
-            # negative is not: it must be invisible in BOTH. A name the profile
-            # calls extension-shaped that the boundary CAN see means the
-            # profile mis-declared its own registration.
-            registered_ok = not cand_sees and not control_sees
+        # Both constant-shaped and extension-shaped registrations must be
+        # visible in the registering session and absent from the control
+        # session. The worker's query surface uses environment lookup for the
+        # former and a non-committing plugin expression probe for the latter.
+        registered_ok = cand_sees and not control_sees
         report.record(
             law, garbage_ok and constant_ok and registered_ok,
             {"registration_shape": shape,
@@ -917,6 +1126,12 @@ def read_provenance(session: Session) -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("profile", type=Path)
+    parser.add_argument(
+        "--journey",
+        choices=("all", "atomicity"),
+        default="all",
+        help="run the full six-journey matrix or focused Journey 2 atomicity laws",
+    )
     parser.add_argument("--source-dir", type=Path, default=None,
                         help="clean checkout of the plugin source; overrides "
                              "the profile's source_env")
@@ -953,42 +1168,52 @@ def main() -> int:
                    "package": profile["plugin"]["package"],
                    "prelude_module": profile["plugin"]["prelude_module"],
                    "registration_shape": shape},
-        # Plugin API v1 makes complete/inspect constant-faithful. Visibility of
-        # persistent-env-extension state through them is deliberately outside
-        # this law set — recorded here so it is never silently absent.
+        # Query visibility is part of the six-journey contract for both
+        # constant-shaped and extension-shaped plugin registrations.
         "extension_state_visibility": (
-            "deferred: plugin API v2 demand" if shape == "extension"
-            else "not applicable: this plugin registers Lean constants"),
+            "supported: standard query uses a non-committing plugin "
+            "expression probe" if shape == "extension"
+            else "supported: standard query uses environment declarations"),
         "toolchain": check_kernelspec(profile, kernel_name, project),
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
     }
 
-    report = Report()
+    report = Report(ATOMICITY_LAWS if args.journey == "atomicity"
+                    else tuple(LAWS))
     try:
-        # One mathlib worker at a time: the candidate session is fully shut
-        # down before the independent control session starts.
-        candidate = Session(kernel_name)
-        try:
-            outcome = run_candidate(candidate, profile, report)
-            result["provenance"] = read_provenance(candidate)
-        finally:
-            candidate.close()
+        with conformance_slot():
+            candidate = Session(kernel_name)
+            try:
+                outcome = run_candidate(
+                    candidate, profile, report,
+                    atomicity_only=args.journey == "atomicity")
+                # Identity readback is metadata for the installed proof, not a
+                # separate law and not a second worker session.
+                result["provenance"] = read_provenance(candidate)
+            finally:
+                candidate.close()
 
-        control = Session(kernel_name)
-        try:
-            run_control(control, profile, outcome, report)
-        finally:
-            control.close()
+            if args.journey == "all":
+                # The full matrix retains the independent environment, recovery,
+                # query, and frame-decoder laws for their separate journeys.
+                control = Session(kernel_name)
+                try:
+                    run_control(control, profile, outcome, report)
+                finally:
+                    control.close()
 
-        frames = independent_frame_check(
-            project, profile["plugin"]["prelude_module"], profile["output"])
-        jupyter = outcome["jupyter_output_half"]
-        report.record(
-            "output-control-separated", jupyter["ok"] and frames["ok"],
-            {"jupyter_boundary": jupyter, "independent_decoder": frames},
-            "frame-shaped output stayed ordinary output at the Jupyter "
-            "boundary, and an independent frame decoder confirms it never "
-            "became a control frame on the worker transport")
+                frames = independent_frame_check(
+                    project, profile["plugin"]["prelude_module"],
+                    profile["output"])
+                jupyter = outcome["jupyter_output_half"]
+                report.record(
+                    "output-control-separated",
+                    jupyter["ok"] and frames["ok"],
+                    {"jupyter_boundary": jupyter,
+                     "independent_decoder": frames},
+                    "frame-shaped output stayed ordinary output at the Jupyter "
+                    "boundary, and an independent frame decoder confirms it "
+                    "never became a control frame on the worker transport")
     except Exception as exc:
         # Laws already proven are real observations; a failure later in the run
         # must not throw them away. Unrun laws stay failed, and so does the

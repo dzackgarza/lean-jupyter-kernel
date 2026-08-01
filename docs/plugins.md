@@ -39,15 +39,15 @@ The invariants the core silently relies on:
 
 The payoff: obey the state law and the core provides cell atomicity,
 document-order semantics, sorry tracking, staleness marking, session
-caching, and crash recovery — with zero plugin code. Completion and hover
-are likewise free, but scoped: they are delivered for declarations the
-plugin elaborates into the environment (constants — the worker's
-completion folds over `env.constants`), not for names that exist only
-inside a plugin's own env-extension tables. A DSL whose registrations are
-extension-shaped (rather than lowering to real declarations) gets
-atomicity, replay, and recovery for that state, but its registered names
-are invisible to completion and inspection under plugin API v1 — surfacing
-extension state there is a recorded plugin API v2 demand (issue #3).
+caching, and crash recovery — with zero plugin code. Completion and inspection
+cover both registration shapes: declarations are resolved from the persistent
+environment, while an exact plugin-owned expression is elaborated through the
+real command surface as a non-committing query and its `text/plain` output is
+returned as the inspection result. The candidate state and request-local output
+from that probe are discarded. A DSL whose registrations are extension-shaped
+(rather than lowering to real declarations) therefore remains queryable without
+adding a plugin-specific metadata table or weakening the independent-session
+absence check.
 
 ## Reducibility
 

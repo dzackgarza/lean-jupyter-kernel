@@ -122,10 +122,12 @@ jobs:
 
       # Semantic plugin conformance (#3). The in-repository reference plugin
       # runs here, where the worker, the DSL and the kernel package are all
-      # already built. The external plugin's profile is driven by the consumer
-      # qualification job, which owns clean checkouts (#6).
-      - name: semantic conformance — NbDsl profile
-        run: python3 conformance/runner.py conformance/nbdsl.toml
+      # already built. This is the full installed six-journey matrix:
+      # Journey 2 atomicity, Journey 3 queries, Journey 4 recovery, and
+      # Journey 5 transport-safe output. The external profile is driven by
+      # the consumer qualification job, which owns the clean checkout (#6).
+      - name: Journeys 2-5 - full installed NbDsl matrix
+        run: python3 conformance/runner.py conformance/nbdsl.toml --journey all
 
   compat:
     name: compatibility + external consumer
@@ -201,8 +203,9 @@ jobs:
 
       # -- exact-candidate qualification (#6): frozen consumer baseline,
       #    both channels overridden to THIS commit via the runner's own
-      #    checkout, real build + Sage roundtrip + Jupyter E2E + external
-      #    semantic conformance, provenance readback, unchanged worktree.
+      #    checkout, real build + Sage roundtrip + Jupyter E2E + full
+      #    external Journeys 2-5 proof, provenance readback, unchanged
+      #    worktree.
       - name: qualify the exact kernel candidate against the frozen consumer
         shell: micromamba-shell {0}
         env:

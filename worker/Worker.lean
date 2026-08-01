@@ -176,8 +176,17 @@ def handleRequest (session : IO.Ref Session) (inflight : Inflight)
         match ← Query.dotCompletions parent.cmdState code cursor with
         | some (start, results) => pure (start, results)
         | none =>
-            let (_, start, results) := Query.completions parent.cmdState code cursor
-            pure (start, results)
+            let (pref, start, results) :=
+              Query.completions parent.cmdState code cursor
+            if results.isEmpty && !pref.isEmpty then
+              let (succeeded, plainText?) ←
+                Query.probeExpression parent.cmdState code
+              if succeeded && plainText?.isSome then
+                pure (start, #[pref])
+              else
+                pure (start, results)
+            else
+              pure (start, results)
       return reply req
         [("status", Json.str "ok"),
          ("matches", Json.arr (results.map Json.str)),
@@ -196,9 +205,9 @@ def handleRequest (session : IO.Ref Session) (inflight : Inflight)
       -- commit): the InfoTrees give server-grade hover — locals included —
       -- via `Info.fmtHover?`. Note: like the language server, analysis runs
       -- the cell's elaboration, so `#eval` side effects execute.
-      let hover? ← do
+      let (hover?, pluginText?) ← do
         let result ← Frontend.processCell parent.cmdState code "<inspect>"
-        discard drainOutputs   -- analysis must not leak outputs
+        let outputs ← drainOutputs
         let pos := Frontend.codepointPos code cursor
         let mut found : Option String := none
         for tree in result.cmdState.infoState.trees do
@@ -214,13 +223,20 @@ def handleRequest (session : IO.Ref Session) (inflight : Inflight)
               if let some f ← Lean.Elab.Info.fmtHover? iwc.ctx iwc.info then
                 found := some (toString f.fmt)
                 break
-        pure found
+        let pluginText? :=
+          if result.messages.any (·.severity matches .error) then
+            none
+          else
+            Query.plainTextOutput? outputs
+        pure (found, pluginText?)
       -- Environment fallback still supplies name/type/doc when it resolves.
       let global? ← Query.inspect parent.cmdState code cursor
-      if hover?.isNone && global?.isNone then
+      if hover?.isNone && global?.isNone && pluginText?.isNone then
         return reply req [("status", Json.str "ok"), ("found", toJson false)]
       let mut fields := [("status", Json.str "ok"), ("found", toJson true)]
-      if let some h := hover? then
+      if let some p := pluginText? then
+        fields := fields ++ [("hover", Json.str p)]
+      else if let some h := hover? then
         fields := fields ++ [("hover", Json.str h)]
       if let some r := global? then
         fields := fields ++

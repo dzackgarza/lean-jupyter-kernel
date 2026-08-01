@@ -291,21 +291,22 @@ def main() -> None:
     # --- cooperative cancel -------------------------------------------------
     w._rid += 1
     rid = f"r{w._rid}"
-    # Wide, flat elaboration (~10s): thousands of tactic steps, each passing
-    # cancellation checkpoints — the same mechanism the language server uses.
+    # Bounded flat elaboration: enough tactic steps to remain in flight while
+    # keeping the independent protocol check from becoming a memory stress
+    # test. Each step passes cancellation checkpoints.
     slow = ("set_option maxHeartbeats 0 in\nexample : True := by\n"
-            + "".join(f"  have h{i} : Nat := {i}\n" for i in range(25000))
+            + "".join(f"  have h{i} : Nat := {i}\n" for i in range(5000))
             + "  trivial")
     write_frame(w.req_fd, {
         "op": "execute", "request_id": rid, "cell_id": "slow", "code": slow})
-    time.sleep(1.0)  # let elaboration get going
+    time.sleep(0.5)  # let elaboration get going
     write_frame(w.req_fd, {"op": "cancel", "request_id": rid})
     t0 = time.monotonic()
     rep = w.replies.read_frame()
     took = time.monotonic() - t0
     assert rep["request_id"] == rid, rep
     assert rep["status"] == "cancelled", rep
-    assert took < 15, took
+    assert took < 5, took
     before = w.request("describe")["snapshot"]
     rep = w.execute("#eval x + 1")  # worker fully alive, state unchanged
     assert rep["status"] == "ok" and rep["snapshot"] == before + 1, rep
