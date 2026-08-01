@@ -47,6 +47,11 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: install Bubblewrap sandbox runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap
+
       # Keyed on the dependency set, not the commit, so warm runs hit: the
       # ~5GB of mathlib oleans is re-saved only when deps or toolchain move.
       - uses: actions/cache@v6
