@@ -1,8 +1,8 @@
 """Distribution artifacts preserve the adapter's validated build identity."""
 
+import shutil
 import subprocess
 import sys
-import tarfile
 import zipfile
 from pathlib import Path
 
@@ -31,8 +31,7 @@ def test_generated_sdist_builds_an_identity_bearing_wheel(
     assert len(sdists) == 1, sdists
 
     source_dir = tmp_path / "source"
-    with tarfile.open(sdists[0]) as archive:
-        archive.extractall(source_dir, filter="data")
+    shutil.unpack_archive(sdists[0], source_dir)
     roots = [path for path in source_dir.iterdir() if path.is_dir()]
     assert len(roots) == 1, roots
 
@@ -40,8 +39,7 @@ def test_generated_sdist_builds_an_identity_bearing_wheel(
     subprocess.run(
         [
             sys.executable,
-            "-m",
-            "build",
+            "-m", "build",
             "--wheel",
             "--outdir",
             str(wheel_dir),

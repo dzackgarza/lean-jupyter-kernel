@@ -29,13 +29,23 @@ jobs:
       RELEASE_TAG: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
       - name: the tag names the governed release and the tree is exact
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          tagged=$(gh api "repos/${{ github.repository }}/commits/$RELEASE_TAG" --jq .sha)
+          test "$tagged" = "$GITHUB_SHA" || {
+            echo "$RELEASE_TAG resolves to $tagged, not event commit $GITHUB_SHA"; exit 1; }
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+            echo "$GITHUB_SHA is not reachable from protected main"; exit 1; }
           python3 scripts/release_projection.py check
           VERSION=$(python3 -c "import tomllib; print(tomllib.load(open('release.toml','rb'))['release']['version'])")
           test "v$VERSION" = "$RELEASE_TAG" || {
@@ -66,6 +76,7 @@ jobs:
         run: |
           gh release create "$RELEASE_TAG" \
             dist/release-provenance.json dist/SHA256SUMS \
+            --verify-tag \
             --title "$RELEASE_TAG" \
             --notes "Governed release $RELEASE_TAG. Compatibility contract: release.toml at this tag. Release identity — commit, tag, package versions, worker binary hash: release-provenance.json, checksummed in SHA256SUMS. Install from GitHub at this tag's commit."
 

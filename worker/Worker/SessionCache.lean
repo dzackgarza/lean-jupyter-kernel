@@ -32,10 +32,16 @@ all dropped at shutdown; prune the chain only if a session's restart count
 ever makes that matter. -/
 def cacheModule (gen : Nat) : Name := Name.mkSimple s!"NbdslSessionCache{gen}"
 
-/-- The generation to save as: the length of the chain already imported. -/
-private def freshModule (env : Environment) : Name :=
-  cacheModule <| env.allImportedModuleNames.filter
+/-- The first generated name absent from the imported environment. Starting
+at the prefix count keeps the usual chain compact; the loop handles sparse or
+foreign imported names without ever reusing one. -/
+private def freshModule (env : Environment) : Name := Id.run do
+  let imported := env.allImportedModuleNames
+  let mut gen := imported.filter
     (·.toString.startsWith "NbdslSessionCache") |>.size
+  while imported.contains (cacheModule gen) do
+    gen := gen + 1
+  return cacheModule gen
 
 /-- Records which generation is current, so `load` knows the chain head. -/
 def headFile : String := "module.txt"

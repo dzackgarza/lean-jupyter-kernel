@@ -34,6 +34,8 @@ import tomllib
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+MATHLIB_URL = "https://github.com/leanprover-community/mathlib4.git"
+MATHLIB_TYPE = "git"
 
 
 def load_release(root: Path) -> dict[str, str | int]:
@@ -51,8 +53,11 @@ def load_release(root: Path) -> dict[str, str | int]:
     if not re.fullmatch(r"\d+\.\d+\.\d+", str(flat["version"])):
         sys.exit(f"release.toml: malformed release.version {flat['version']!r}")
     for key in ("plugin_api", "wire_protocol"):
-        if type(flat[key]) is not int:
-            sys.exit(f"release.toml: compat.{key} must be an integer")
+        if type(flat[key]) is not int or flat[key] < 0:
+            sys.exit(f"release.toml: compat.{key} must be a nonnegative integer")
+    if type(flat["lean"]) is not str or not re.fullmatch(
+            r"leanprover/lean4:v\d+\.\d+\.\d+", flat["lean"]):
+        sys.exit("release.toml: toolchain.lean must be an exact Lean release")
     if type(flat["mathlib"]) is not str or not flat["mathlib"]:
         sys.exit("release.toml: toolchain.mathlib must be a nonempty string")
     if type(flat["mathlib_commit"]) is not str or not re.fullmatch(
@@ -73,13 +78,19 @@ def mathlib_lock(root: Path) -> tuple[Path, dict[str, object], dict[str, object]
     ]
     if len(matches) != 1:
         sys.exit(f"{path}: expected exactly one mathlib package, found {len(matches)}")
-    return path, manifest, matches[0]
+    package = matches[0]
+    if package.get("type") != MATHLIB_TYPE or package.get("url") != MATHLIB_URL:
+        sys.exit(
+            f"{path}: mathlib must be type={MATHLIB_TYPE!r}, url={MATHLIB_URL!r}")
+    return path, manifest, package
 
 
 def mathlib_lock_agrees(root: Path, rel: dict[str, str | int]) -> bool:
     _, _, package = mathlib_lock(root)
     return (
-        package.get("inputRev") == rel["mathlib"]
+        package.get("type") == MATHLIB_TYPE
+        and package.get("url") == MATHLIB_URL
+        and package.get("inputRev") == rel["mathlib"]
         and package.get("rev") == rel["mathlib_commit"]
     )
 
@@ -154,6 +165,8 @@ def project(root: Path, rel: dict[str, str | int]) -> dict[Path, str]:
 
 def write(root: Path) -> None:
     rel = load_release(root)
+    # Validate the manifest and its source ownership before changing any file.
+    mathlib_lock(root)
     for path, content in project(root, rel).items():
         (root / path).write_text(content)
         print(f"projected {path}")

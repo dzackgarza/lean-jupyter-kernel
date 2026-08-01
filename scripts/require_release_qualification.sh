@@ -17,9 +17,19 @@ check_runs="$(
     --paginate \
     --slurp
 )"
+workflow_runs="$(
+  gh api --method GET \
+    -H 'Accept: application/vnd.github+json' \
+    -H 'X-GitHub-Api-Version: 2022-11-28' \
+    "repos/${repository}/actions/workflows/ci.yml/runs" \
+    -F head_sha="${commit_sha}" \
+    -F status=success \
+    -F per_page=100
+)"
+governed_suites="$(jq -c '[.workflow_runs[].check_suite_id]' <<<"${workflow_runs}")"
 
 unsatisfied="$(
-  jq -r --arg commit_sha "${commit_sha}" '
+  jq -r --arg commit_sha "${commit_sha}" --argjson governed "${governed_suites}" '
     [
       "worker (mathlib-free gate)",
       "NbDsl + kernel round-trip + e2e",
@@ -29,7 +39,11 @@ unsatisfied="$(
     | [.[].check_runs[]] as $runs
     | $required[] as $context
     | ($runs
-       | map(select(.name == $context and .app.slug == "github-actions"))
+       | map(select(
+           .name == $context
+           and .app.slug == "github-actions"
+           and (.check_suite.id as $id | $governed | index($id))
+         ))
        | sort_by(.id)
        | last) as $run
     | if $run == null then

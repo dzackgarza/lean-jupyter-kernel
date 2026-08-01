@@ -133,14 +133,6 @@ class WorkerError(_Frame):
     message: str
 
 
-class DescribeReply(_Frame, BuildInfo):
-    status: Literal["ok"]
-    protocol: int
-    lean: str
-    snapshot: int
-    snapshot_count: int
-
-
 class CompleteOk(_Frame):
     status: Literal["ok"]
     matches: list[str]

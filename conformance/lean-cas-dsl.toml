@@ -16,8 +16,7 @@ name = "lean-cas-dsl"
 [plugin]
 source = "https://github.com/dzackgarza/lean-cas-dsl"
 # The frozen qualification baseline. This field is the single owner of that
-# fact — the WS6 qualification script and CI read the pin from here. It pins
-# both kernel dependency channels to 92c0caefb9587f4fee0a0e67e79afd91c8cb4f49.
+# fact — the WS6 qualification script and CI read the active value below.
 # Promoted 2026-07-31 from 1b6822a after the owner-directed #32/#33 fixes
 # landed on consumer main through its full gate (named-refusal runtime change
 # + acceptance-notebook regeneration): the post-release repin ships from this
@@ -62,9 +61,9 @@ projection = ["render", "presentation", "value"]
 setup = []
 
 [failure]
-# A false assertion — the plugin's own semantic failure, decided by its
-# evaluator rather than by Lean's type checker.
+prefix = "let confErrorLeak := 37 in ℤ"
 command = "assert 2 + 3 = 6"
+probe = "assert confErrorLeak = 37"
 
 [cancellation]
 # The cancelled cell binds FIRST and then elaborates a wide, flat term whose

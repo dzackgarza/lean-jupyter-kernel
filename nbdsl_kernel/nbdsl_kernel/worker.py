@@ -99,7 +99,7 @@ def adapter_identity() -> BuildInfo:
     path = Path(os.environ.get("NBDSL_BUILD_INFO") or BUILD_INFO)
     try:
         raw = path.read_text()
-    except OSError as e:
+    except (OSError, UnicodeError) as e:
         raise ProvenanceError(
             f"adapter build identity missing at {path}; install nbdsl-kernel "
             "from a built wheel or an editable install so hatch_build.py "
@@ -357,7 +357,12 @@ class WorkerClient:
         """Validate a launch before its process tree or channels are owned."""
         worker = BuildInfo.model_validate(ready.model_dump())
         disagree, agreed = compare(adapter, worker)
-        with worker_exe.open("rb") as f:
+        expected_lean = adapter.toolchain.removeprefix("leanprover/lean4:v")
+        if ready.protocol != adapter.wire:
+            disagree.append("protocol")
+        if ready.lean != expected_lean:
+            disagree.append("lean")
+        with Path(f"/proc/{ready.pid}/exe").open("rb") as f:
             digest = hashlib.file_digest(f, "sha256").hexdigest()
         provenance: dict[str, object] = {
             "adapter": adapter.model_dump(),
@@ -466,6 +471,22 @@ class WorkerClient:
             h.update(b"\x00" + code.encode())
         return h.hexdigest()
 
+    def _cache_descriptor(self) -> dict[str, str]:
+        assert self.cache_dir is not None
+        root = Path(self.cache_dir)
+        head = (root / "module.txt").read_text().strip()
+
+        def digest(path: Path) -> str:
+            with path.open("rb") as stream:
+                return hashlib.file_digest(stream, "sha256").hexdigest()
+
+        return {
+            "ledger": self._ledger_key(),
+            "head": head,
+            "olean_sha256": digest(root / f"{head}.olean"),
+            "scope_sha256": digest(root / "scope.json"),
+        }
+
     def save_session(self) -> None:
         """Persist committed state after a REPL commit (cheap: the olean holds
         only session-local constants + extension entries)."""
@@ -481,7 +502,7 @@ class WorkerClient:
             return
         key = Path(self.cache_dir) / "key.txt"
         if isinstance(rep, SaveSessionOk) and rep.saved:
-            key.write_text(self._ledger_key())
+            key.write_text(json.dumps(self._cache_descriptor(), sort_keys=True))
         else:
             # Uncacheable state (open scopes, syntax-valued options, …):
             # drop the key so restart falls back to replay.
@@ -491,7 +512,13 @@ class WorkerClient:
         if self.cache_dir is None:
             return False
         key = Path(self.cache_dir) / "key.txt"
-        if not key.exists() or key.read_text() != self._ledger_key():
+        if not key.exists():
+            return False
+        try:
+            recorded = json.loads(key.read_text())
+            if recorded != self._cache_descriptor():
+                return False
+        except (OSError, UnicodeError, json.JSONDecodeError):
             return False
         # Past this point the key matched, so a miss is something going wrong
         # rather than ordinary uncacheable state: say what, then replay.

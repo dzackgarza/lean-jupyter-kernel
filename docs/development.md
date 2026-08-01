@@ -42,7 +42,7 @@ contract and calls the private `_mypy` recipe directly
 | `nbdsl_kernel/tests/test_identity.py` | bare worker + installed kernelspec | build identity end to end: `ready`/`describe` carry the authored `release.toml` contract plus a real commit, the `nbdsl_provenance` comm publishes the compared pair and the SHA-256 of the binary actually executed, a static contract mismatch refuses cells typed, a commit mismatch on a dirty tree runs and reports `unverifiable-dirty` while two CLEAN artifacts from different commits are refused, a dirty tree suspends only the commit comparison (never the static contract), an installer's untracked droppings do not read as dirty, and missing build info is a typed error from a live kernel. Also proves the atomic-rebuild property `just build` provides: building the worker and running `scripts/sync_build_info.py` leaves a pair the real `compare` accepts. Staged by pointing a real kernel at a scratch build-info file via `NBDSL_BUILD_INFO` — the authoritative file is never mutated |
 | `nbdsl_kernel/tests/test_restart.py` | production WorkerClient, mathlib-free (`Init` prelude) | recovery laws, as red tests for two shipped defects: a failed replay must not consume the ledger (it used to truncate it, so the next restart replayed a stump and reported success over a half-empty environment), and a session restored from cache then killed again must recover (it used to abort the worker with a stack overflow — saving a restored state wrote an olean importing itself) |
 | `nbdsl_kernel/tests/test_inspect.py` | production WorkerClient, mathlib-free (`Lean` prelude) | inspection discriminates under a plugin catch-all: a low-priority bare-`term` command used to make every `inspect` answer with that syntax declaration's docstring, shadowing real constants. Reproduced in plain Lean, no plugin needed |
-| `nbdsl_kernel/tests/sandbox_check.py` | production WorkerClient under bwrap | read-only project, private tmpfs, elaboration alive; **fails loudly if bwrap is missing** (not in CI — runners lack reliable userns; `scripts/check.sh` covers it locally) |
+| `nbdsl_kernel/tests/sandbox_check.py` | production WorkerClient under bwrap | read-only project, private tmpfs, elaboration alive; **fails loudly if bwrap is missing**; hosted CI enables Ubuntu's AppArmor user-namespace permission before running it |
 | `jupyterlab_nbdsl/` `jlpm test` | node, no browser | tokenizer (incl. `:=`, unicode, custom keywords), document message builder, stale-class computation, path-payload validation |
 | `scripts/check.sh` | everything above + e2e + kernelspec install | the full local verification |
 
@@ -54,11 +54,13 @@ interrupt test must precede the document test).
 
 ## CI (`.github/workflows/ci.yml`)
 
-Three jobs on push/PR: `worker` (mathlib-free build + boundary grep, ~30 s),
+Four jobs on push/PR: `worker` (mathlib-free build + boundary grep, ~30 s),
 `dsl` (mathlib cache → builds → strict mypy with ai-review-ci's config
 fetched raw → roundtrip → kernelspec + e2e; ~2–4 min warm via
-`actions/cache`), `frontend` (jlpm install/test/build, ~1 min).
-CI green does **not** cover the sandbox claim (documented in the workflow).
+`actions/cache`), `compat` (release projection plus frozen-consumer
+qualification), and `frontend` (jlpm install/test/build, ~1 min).
+CI runs the runner-contract, inspection, and production Bubblewrap sandbox
+proofs after installing the real kernel package and kernelspec.
 
 ## Ceilings & parked work (deliberate, not forgotten)
 
@@ -66,8 +68,9 @@ CI green does **not** cover the sandbox claim (documented in the workflow).
 - Prefix completion is an environment scan (dot completion is type-aware);
   full expected-type-aware completion would use `Lean.Server.Completion`.
 - The session cache refuses open scopes / `variable` decls /
-  syntax-valued options (falls back to replay) and is validated by key
-  match + load success, not by replay comparison.
+  syntax-valued options (falls back to replay) and is validated by the ledger
+  key plus the selected module/scope hashes and load success, not by replay
+  comparison.
 - `predicate` records the object part only; the iso-invariance
   (functoriality through `core(C)`) obligation is the designed next step,
   as is a registered free-group functor making `#via B ∈ Groups` resolve.

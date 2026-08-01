@@ -129,7 +129,12 @@ def sdist_identity(project: Path) -> dict[str, Any]:
 
 def identity_for_build(project: Path) -> dict[str, Any]:
     """Choose one explicit provenance carrier for this source-tree kind."""
-    if (project / "PKG-INFO").is_file():
+    git_checkout = subprocess.run(
+        ["git", "-C", str(project), "rev-parse", "--is-inside-work-tree"],
+        capture_output=True,
+        text=True,
+    )
+    if git_checkout.returncode != 0 and (project / "PKG-INFO").is_file():
         return sdist_identity(project)
     return build_identity(project)
 

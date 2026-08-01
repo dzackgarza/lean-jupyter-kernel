@@ -33,6 +33,25 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def exact_json_equal(left: object, right: object) -> bool:
+    """JSON equality with scalar types preserved (bool/float are not ints)."""
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        assert isinstance(right, dict)
+        return (
+            left.keys() == right.keys()
+            and all(exact_json_equal(left[key], right[key]) for key in left)
+        )
+    if isinstance(left, list):
+        assert isinstance(right, list)
+        return (
+            len(left) == len(right)
+            and all(exact_json_equal(a, b) for a, b in zip(left, right))
+        )
+    return left == right
+
+
 def git_identity(allowed_untracked: list[Path]) -> str:
     commit = subprocess.run(
         ["git", "-C", str(REPO), "rev-parse", "HEAD"],
@@ -125,13 +144,21 @@ def main() -> None:
     current = build(args.worker, args.dist,
                     [args.worker, *args.dist, args.provenance])
     recorded = json.loads(args.provenance.read_text())
+    recorded_worker = recorded.get("worker_binary")
+    current_worker = current.get("worker_binary")
+    if not isinstance(recorded_worker, dict) or not isinstance(
+            recorded_worker.get("sha256"), str):
+        sys.exit("provenance worker_binary must carry a sha256 string")
+    if not isinstance(current_worker, dict) or not isinstance(
+            current_worker.get("sha256"), str):
+        raise AssertionError("generated worker provenance is malformed")
     # The recorded worker path may differ across environments; identity is
     # the hash, not the location.
-    recorded_cmp = {**recorded, "worker_binary": recorded["worker_binary"]["sha256"]}
-    current_cmp = {**current, "worker_binary": current["worker_binary"]["sha256"]}
-    if recorded_cmp != current_cmp:
+    recorded_cmp = {**recorded, "worker_binary": recorded_worker["sha256"]}
+    current_cmp = {**current, "worker_binary": current_worker["sha256"]}
+    if not exact_json_equal(recorded_cmp, current_cmp):
         for key in current_cmp:
-            if recorded_cmp.get(key) != current_cmp[key]:
+            if not exact_json_equal(recorded_cmp.get(key), current_cmp[key]):
                 print(f"disagreement on {key}:\n  recorded: "
                       f"{recorded_cmp.get(key)}\n  current:  {current_cmp[key]}")
         sys.exit(1)

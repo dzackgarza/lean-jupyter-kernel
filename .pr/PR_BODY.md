@@ -17,10 +17,20 @@
 - Scope, constraints, and preserved behavior
 - Fixed design decisions
 - Execution graph
-- Workstreams 1–7
+- Workstream 1: Lean worker semantic transaction and recovery
+- Workstream 2: Python adapter, transport, kernelspec, and installation
+- Workstream 3: plugin contract and shared semantic conformance
+- Workstream 4: JupyterLab extension and distributable packaging
+- Workstream 5: compatibility authority, provenance, protection, and publication
+- Workstream 6: external `lean-cas-dsl` integration
+- Workstream 7: CI and qualification composition
 - System-level proof matrix
-- Non-goals and stop conditions
-- Completion condition and public traceability
+- What the conformance laws found
+- Non-goals
+- Stop conditions
+- Completion condition
+- Progress and review use
+- Public traceability
 
 ## Researcher-visible after-state
 
@@ -33,9 +43,11 @@ nested under a Git/Lake plugin dependency.
 The resulting notebook has one mathematical environment contract. Successful Lean and
 DSL commands commit their environment changes. Failed and cooperatively cancelled
 commands commit nothing. Forced source replay and recovery after real worker death
-reconstruct the same committed state. Completion and inspection see objects registered
-in the active environment and do not see them in an independent environment. Plugin
-output cannot be parsed as worker control traffic.
+reconstruct the same committed state. Completion and inspection see constant-shaped
+registrations in the active environment and not in an independent environment.
+Persistent extension registrations remain deliberately outside plugin API v1
+completion/inspection visibility and are observed through plugin-authored structured
+commands. Plugin output cannot be parsed as worker control traffic.
 
 NbDsl and the external `lean-cas-dsl` plugin satisfy these same kernel-owned laws. The
 external profile supplies only plugin-specific commands and structured observations; it
@@ -332,7 +344,9 @@ Acceptance:
   differ exactly as expected for success.
 - Forced replay and real worker restart reconstruct the committed observation.
 - An independent environment lacks the registered object.
-- Completion and inspection find the object only in the environment that registered it.
+- Completion and inspection find constant-shaped registrations only in the environment
+  that registered them; extension-shaped state is tested through its structured
+  plugin-authored observation because plugin API v1 does not expose it to queries.
 - An independent frame codec decodes control traffic while adversarial plugin/user
   output remains ordinary output.
 

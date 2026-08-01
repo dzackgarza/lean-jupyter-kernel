@@ -99,7 +99,7 @@ REQUIRED = {
     "registration": ["setup", "command", "shape"],
     "observation": ["command", "mimes", "projection"],
     "control": ["setup"],
-    "failure": ["command"],
+    "failure": ["prefix", "command", "probe"],
     "cancellation": ["prefix", "slow_header", "slow_step", "slow_repeat",
                      "slow_footer", "probe", "interrupt_after_seconds"],
     "replay": ["force", "restore"],
@@ -151,12 +151,14 @@ def load_profile(path: Path) -> dict[str, Any]:
     try:
         with path.open("rb") as fh:
             profile = tomllib.load(fh)
-    except tomllib.TOMLDecodeError as exc:
-        raise ProfileError(f"profile TOML is malformed: {exc}") from exc
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise ProfileError(f"cannot load profile {path}: {exc}") from exc
     _reject_forbidden(profile)
     for section, keys in REQUIRED.items():
         if section not in profile:
             raise ProfileError(f"profile is missing section [{section}]")
+        if not isinstance(profile[section], dict):
+            raise ProfileError(f"profile section [{section}] must be a table")
         for key in keys:
             if key not in profile[section]:
                 raise ProfileError(f"profile is missing {section}.{key}")
@@ -248,6 +250,28 @@ def worker_processes(kernel_pid: int) -> list[tuple[int, str]]:
     return found
 
 
+def worker_process_groups(
+    kernel_pid: int,
+) -> list[tuple[int, int, str, list[int]]]:
+    groups: dict[int, tuple[int, int, str, list[int]]] = {}
+    for pid, cmd in worker_processes(kernel_pid):
+        pgid = os.getpgid(pid)
+        if pgid in groups:
+            groups[pgid][3].append(pid)
+        else:
+            groups[pgid] = (pid, pgid, cmd, [pid])
+    return list(groups.values())
+
+
+def await_dead(pids: list[int], timeout: float = 30) -> None:
+    deadline = time.monotonic() + timeout
+    while any(_alive(pid) for pid in pids):
+        if time.monotonic() >= deadline:
+            survivors = [pid for pid in pids if _alive(pid)]
+            raise ProfileError(f"worker processes survived SIGKILL: {survivors}")
+        time.sleep(0.2)
+
+
 def _free_gb() -> int:
     for line in Path("/proc/meminfo").read_text().splitlines():
         if line.startswith("MemAvailable:"):
@@ -285,17 +309,22 @@ class Session:
     def close(self) -> None:
         """Shut down, then make sure no mathlib worker outlived the kernel — an
         orphan holds gigabytes for the rest of the run."""
-        pids = worker_processes(self.pid)
+        groups = worker_process_groups(self.pid)
         try:
             self.kc.stop_channels()
             self.km.shutdown_kernel(now=True)
         finally:
-            for pid, _ in pids:
+            for pid, pgid, _, _ in groups:
                 if _alive(pid):
                     try:
-                        os.killpg(os.getpgid(pid), signal.SIGKILL)
+                        os.killpg(pgid, signal.SIGKILL)
                     except (ProcessLookupError, PermissionError):
                         pass
+            await_dead([
+                member
+                for _, _, _, members in groups
+                for member in members
+            ])
 
     # -- messaging ---------------------------------------------------------
 
@@ -350,24 +379,20 @@ class Session:
 
     def kill_worker(self) -> dict[str, Any]:
         """SIGKILL the real worker process group and prove it is gone."""
-        before = worker_processes(self.pid)
+        before = worker_process_groups(self.pid)
         if not before:
             raise ProfileError(
                 "no live worker process found under the kernel; the restart "
                 "law has nothing to kill")
         killed: list[dict[str, Any]] = []
-        for pid, cmd in before:
-            pgid = os.getpgid(pid)
+        for pid, pgid, cmd, _ in before:
             os.killpg(pgid, signal.SIGKILL)
             killed.append({"pid": pid, "pgid": pgid, "cmdline": cmd[:200]})
-        deadline = time.monotonic() + 30
-        while time.monotonic() < deadline:
-            if not any(_alive(k["pid"]) for k in killed):
-                break
-            time.sleep(0.2)
-        survivors = [k["pid"] for k in killed if _alive(k["pid"])]
-        if survivors:
-            raise ProfileError(f"worker processes survived SIGKILL: {survivors}")
+        await_dead([
+            member
+            for _, _, _, members in before
+            for member in members
+        ])
         return {"killed": killed}
 
 
@@ -525,16 +550,31 @@ def run_candidate(session: Session, profile: dict[str, Any],
         "observed again")
 
     # -- error-rolls-back --------------------------------------------------
-    reply, _ = session.run(profile["failure"]["command"])
+    failure_cfg = profile["failure"]
+    failing_cell = "\n".join(
+        [failure_cfg["prefix"], failure_cfg["command"]])
+    reply, _ = session.run(failing_cell)
+    absent_reply, _ = session.run(failure_cfg["probe"])
     after_error = observe(session, obs_cfg)
+    prefix_reply, _ = session.run(failure_cfg["prefix"])
+    present_reply, _ = session.run(failure_cfg["probe"])
     report.record(
         "error-rolls-back",
-        reply["status"] == "error" and after_error == committed,
-        {"failing_command": profile["failure"]["command"],
+        reply["status"] == "error"
+        and absent_reply["status"] == "error"
+        and prefix_reply["status"] == "ok"
+        and present_reply["status"] == "ok"
+        and after_error == committed,
+        {"failing_command": failing_cell,
          "failing_status": reply["status"],
          "failing_error": str(reply.get("evalue", ""))[:400],
+         "probe": failure_cfg["probe"],
+         "probe_after_failure": absent_reply["status"],
+         "prefix_alone": prefix_reply["status"],
+         "probe_after_prefix": present_reply["status"],
          "pre": committed, "post": after_error},
-        "a failing command leaves the pre/post structured observation equal")
+        "a failing cell discards a candidate registration whose prefix and "
+        "probe independently demonstrate that registration is observable")
 
     candidate_queries = query_answers(session, profile)
 
@@ -568,11 +608,15 @@ def run_candidate(session: Session, profile: dict[str, Any],
     pids_after = {pid for pid, _ in worker_processes(session.pid)}
     probe_reply, _ = session.run(cancel_cfg["probe"])
     after_cancel = observe(session, obs_cfg)
+    prefix_reply, _ = session.run(cancel_cfg["prefix"])
+    present_reply, _ = session.run(cancel_cfg["probe"])
     cooperative = (reply.get("ename") == "Interrupted"
                    and bool(pids_before) and pids_before == pids_after)
     report.record(
         "cancellation-rolls-back",
         cooperative and probe_reply["status"] == "error"
+        and prefix_reply["status"] == "ok"
+        and present_reply["status"] == "ok"
         and after_cancel == committed,
         {"reply_ename": reply.get("ename"),
          "reply_evalue": str(reply.get("evalue", ""))[:300],
@@ -582,10 +626,12 @@ def run_candidate(session: Session, profile: dict[str, Any],
          "cancelled_registration": cancel_cfg["prefix"],
          "probe": cancel_cfg["probe"], "probe_status": probe_reply["status"],
          "probe_detail": str(probe_reply.get("evalue", ""))[:300],
+         "prefix_alone_status": prefix_reply["status"],
+         "probe_after_prefix_status": present_reply["status"],
          "observation_after": after_cancel},
-        "cooperative cancellation at an elaboration checkpoint discarded the "
-        "cancelled cell's candidate registration and left the committed "
-        "observation equal")
+        "cooperative cancellation discarded a candidate registration whose "
+        "prefix/probe pair independently proved it observable, and left the "
+        "committed observation equal")
 
     # -- restart-reconstructs ----------------------------------------------
     killed = session.kill_worker()
@@ -798,6 +844,9 @@ def resolve_checkout(profile: dict[str, Any],
     path = path.expanduser().resolve()
     if not path.is_dir():
         raise ProfileError(f"plugin checkout {path} does not exist (via {how})")
+    if profile["plugin"]["commit"] == "IN-REPOSITORY" and path != REPO.resolve():
+        raise ProfileError(
+            f"IN-REPOSITORY profile must use {REPO.resolve()}, not {path}")
     return {"checkout": str(path), "resolved_via": how, **git_identity(path)}
 
 

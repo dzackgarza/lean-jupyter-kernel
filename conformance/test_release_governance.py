@@ -551,6 +551,7 @@ def qualification_response(provider: str, commit: str) -> str:
                 "status": "completed",
                 "conclusion": "success",
                 "app": {"slug": provider},
+                "check_suite": {"id": 7},
             }
             for index, name in enumerate(names, start=1)
         ],
@@ -572,7 +573,11 @@ def test_release_qualification_requires_the_github_actions_provider(
     fake_gh.write_text(
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
-        "printf '%s\\n' \"${CHECK_RUNS_JSON:?}\"\n"
+        "case \"$*\" in\n"
+        "  *actions/workflows/ci.yml/runs*) "
+        "printf '%s\\n' '{\"workflow_runs\":[{\"check_suite_id\":7}]}' ;;\n"
+        "  *) printf '%s\\n' \"${CHECK_RUNS_JSON:?}\" ;;\n"
+        "esac\n"
     )
     fake_gh.chmod(0o755)
     commit = "a" * 40

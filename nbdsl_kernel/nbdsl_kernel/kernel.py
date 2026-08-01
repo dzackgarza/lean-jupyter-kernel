@@ -87,7 +87,7 @@ class NbDslKernel(Kernel):
                 self._ensure_worker()
                 prov = self.worker.provenance
                 assert prov is not None  # invariant: set by every start()
-            except WorkerDied as e:
+            except (WorkerDied, TimeoutError) as e:
                 self.worker.kill()
                 prov = {"agreed": False, "error": str(e)}
             except ProvenanceError as e:

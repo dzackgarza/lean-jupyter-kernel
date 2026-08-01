@@ -113,13 +113,20 @@ def test_runner_kills_each_owned_process_group_once(
         "killpg",
         lambda pgid, sig: killed.append((pgid, sig)),
     )
-    monkeypatch.setattr(runner, "_alive", lambda _pid: False)
+    observed: list[int] = []
+
+    def dead(pid: int) -> bool:
+        observed.append(pid)
+        return False
+
+    monkeypatch.setattr(runner, "_alive", dead)
     session.pid = 1
 
     result = session.kill_worker()
 
     assert killed == [(77, runner.signal.SIGKILL)]
     assert len(result["killed"]) == 1
+    assert set(observed) == {101, 102}
 
 
 def test_session_close_waits_until_owned_worker_is_dead(
@@ -134,8 +141,8 @@ def test_session_close_waits_until_owned_worker_is_dead(
             assert now is True
 
     session = object.__new__(runner.Session)
-    session.kc = Channels()
-    session.km = Manager()
+    session.kc = cast(Any, Channels())
+    session.km = cast(Any, Manager())
     session.pid = 1
     monkeypatch.setattr(
         runner,
@@ -181,8 +188,10 @@ def test_independent_frame_oracle_uses_external_project_worker(
         / "nbdsl_worker"
     )
     external_worker.parent.mkdir(parents=True)
-    external_worker.hardlink_to(
-        REPO / "worker/.lake/build/bin/nbdsl_worker")
+    shutil.copy2(
+        REPO / "worker/.lake/build/bin/nbdsl_worker",
+        external_worker,
+    )
 
     namespace = runpy.run_path(str(isolated_runner))
     independent_frame_check = cast(

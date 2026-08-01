@@ -102,8 +102,9 @@ file, and requires every section the laws consume: `[profile]`, `[plugin]`,
 A single JSON object identifying the kernel commit and its `release.toml`
 declaration; the plugin source, the commit the profile pins, the commit observed
 in the checkout under test and whether it was dirty, and **how that checkout was
-resolved** (`--source-dir`, the profile's `source_env`, or the local fallback —
-the fallback is developer convenience and never CI evidence); the kernelspec and
+resolved** (explicit `--source-dir`, the profile's `$source_env`, its declared
+profile fallback, or this repository when no external source is configured;
+profile fallback is developer convenience and never CI evidence); the kernelspec and
 its Lean toolchain; the runtime provenance comm (recorded as `absent` when the
 kernel opens none — no law depends on it yet); and for every law its status,
 boundary observation, and the fault it detects.

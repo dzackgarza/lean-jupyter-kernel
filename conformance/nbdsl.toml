@@ -50,8 +50,10 @@ projection = ["object", "source", "target", "steps"]
 setup = ["open NbDsl NbDsl.Std"]
 
 [failure]
-# Ill-typed, so the failure is elaboration's and not a parse accident.
-command = 'def confBroken : Nat := "not a Nat"'
+# The prefix alone creates probeable state; the later error must discard it.
+prefix = "def confErrorLeak : Nat := 37"
+command = "#check zzzNoSuchNameZzz"
+probe = "#check confErrorLeak"
 
 [cancellation]
 # The cancelled cell registers FIRST and then elaborates a wide, flat term:

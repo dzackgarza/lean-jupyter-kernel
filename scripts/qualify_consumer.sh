@@ -24,6 +24,10 @@ CANDIDATE="${1:?usage: qualify_consumer.sh <candidate-kernel-sha> [workdir]}"
 WORKDIR="${2:-$(mktemp -d /tmp/consumer-qualification-XXXXXX)}"
 PROFILE="$KERNEL_REPO/conformance/lean-cas-dsl.toml"
 AI_REVIEW_CI_SHA="${AI_REVIEW_CI_SHA:?qualification requires AI_REVIEW_CI_SHA}"
+[[ "$CANDIDATE" =~ ^[0-9a-f]{40}$ ]] || {
+  echo "qualification: candidate must be a 40-hex commit"
+  exit 1
+}
 [[ "$AI_REVIEW_CI_SHA" =~ ^[0-9a-f]{40}$ ]] || {
   echo "qualification: AI_REVIEW_CI_SHA must be a 40-hex commit"
   exit 1
@@ -79,6 +83,9 @@ for name, pat, repl in rewrites:
     print(f"override: {name} -> {url} @ {sha}")
 EOF
 (cd "$CO" && lake update nbdsl-worker >/dev/null)
+git -C "$CO" diff --binary -- \
+  justfile lake-manifest.json lakefile.lean \
+  > "$WORKDIR/expected-overrides.diff"
 RESOLVED=$(python3 -c "import json; m=json.load(open('$CO/lake-manifest.json')); print([p['rev'] for p in m['packages'] if p['name'].strip('«»')=='nbdsl-worker'][0])")
 [ "$RESOLVED" = "$CANDIDATE" ] || { echo "lake manifest resolved $RESOLVED != candidate"; exit 1; }
 
@@ -141,6 +148,11 @@ EOF
 
 # --- unchanged-worktree proof: exactly the declared overrides, nothing else ---
 git -C "$CO" status --porcelain > "$WORKDIR/worktree-status.txt"
+git -C "$CO" diff --binary > "$WORKDIR/actual-overrides.diff"
+cmp "$WORKDIR/expected-overrides.diff" "$WORKDIR/actual-overrides.diff" || {
+  echo "worktree content differs from the exact declared dependency overrides"
+  exit 1
+}
 # LC_ALL=C so the comparison cannot depend on the runner's collation (a
 # locale that folds punctuation orders lakefile.lean before
 # lake-manifest.json; the C locale does the reverse).

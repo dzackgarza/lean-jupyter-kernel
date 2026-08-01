@@ -104,16 +104,17 @@ jobs:
       - name: adapter/worker identity through the installed kernelspec
         run: pytest nbdsl_kernel/tests/test_identity.py nbdsl_kernel/tests/test_restart.py
 
+      - name: runner contracts, inspection, and sandbox boundary
+        run: |
+          pytest conformance/test_runner_contracts.py nbdsl_kernel/tests/test_inspect.py
+          python3 nbdsl_kernel/tests/sandbox_check.py
+
       # Semantic plugin conformance (#3). The in-repository reference plugin
       # runs here, where the worker, the DSL and the kernel package are all
       # already built. The external plugin's profile is driven by the consumer
       # qualification job, which owns clean checkouts (#6).
       - name: semantic conformance — NbDsl profile
         run: python3 conformance/runner.py conformance/nbdsl.toml
-
-      # The focused identity suite above runs the production Bubblewrap path
-      # against the worker. sandbox_check.py remains a local diagnostic rather
-      # than a second CI proof of the same boundary.
 
   compat:
     name: compatibility + external consumer

@@ -43,7 +43,17 @@ test: build
         { echo 'BOUNDARY: the core must never import DSL modules'; exit 1; }
     @just -f ~/ai-review-ci/justfiles/python.just -d nbdsl_kernel _mypy
     @python3 nbdsl_kernel/tests/roundtrip.py
-    @uv run --isolated --no-project --with build --with pyyaml --with-editable './nbdsl_kernel[test]' python -m pytest conformance/test_release_governance.py conformance/test_runner_contracts.py nbdsl_kernel/tests/test_build_artifacts.py nbdsl_kernel/tests/test_identity.py nbdsl_kernel/tests/test_restart.py
+    @JUPYTER_DATA_DIR="$(mktemp -d)"; export JUPYTER_DATA_DIR; \
+      trap 'rm -rf "$JUPYTER_DATA_DIR"' EXIT; \
+      uv run --isolated --no-project --with build --with pyyaml \
+        --with-editable './nbdsl_kernel[test]' sh -c \
+        'python -m nbdsl_kernel.install --project "$PWD/dsls/nbdsl" && \
+         python -m pytest conformance/test_release_governance.py \
+           conformance/test_runner_contracts.py \
+           nbdsl_kernel/tests/test_build_artifacts.py \
+           nbdsl_kernel/tests/test_identity.py \
+           nbdsl_kernel/tests/test_restart.py \
+           nbdsl_kernel/tests/test_inspect.py'
 
 # Interpreter for the recipes needing the kernel package installed. CI
 # installs into the job python; locally: `just python=.venv/bin/python …`.
