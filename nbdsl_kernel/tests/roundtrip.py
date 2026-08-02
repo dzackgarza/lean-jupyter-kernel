@@ -255,6 +255,14 @@ def _run(w: Worker) -> None:
     assert path is not None and "text/plain" in path, rep
     print("ok: DSL sequence (prefer / let / #home / #via) with structured output")
 
+    # Parse failure after a rich-emitting prefix must not report that bundle
+    # (issue #11). Snapshot isolation is already covered above.
+    before = w.request("describe")["snapshot"]
+    rep = w.execute("#via G ∈ Sets\ndef ( := )")
+    assert rep["status"] == "error" and rep["snapshot"] == before, rep
+    assert rep.get("outputs") == [], rep
+    print("ok: parse-failed cell suppresses prefix display bundles")
+
     # Predicates as category methods: defined in the DSL, registered,
     # enumerable, and decidable on declared objects.
     rep = w.execute("predicate RTAbelian (G ∈ Groups) := ∀ a b : G, a * b = b * a")
