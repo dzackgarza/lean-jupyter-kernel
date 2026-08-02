@@ -1,17 +1,9 @@
-"""Process management and framed-JSON transport for the nbdsl worker.
-
-Owns everything fd-shaped: pipe setup, capturing `lake env` then spawning
-`nbdsl_worker` as the owned child, the length-prefixed frame codec,
-stdout/stderr pump threads, the replay ledger, and kill/respawn. The kernel
-class never touches fds.
-"""
+"""Process management and request API for one persistent nbdsl_worker."""
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
-import select
 import signal
 import subprocess
 import threading
@@ -23,156 +15,31 @@ from typing import IO
 
 import psutil
 
-from .protocol import (
+from ..protocol import (
     COMPLETE_REPLY,
     INSPECT_REPLY,
     IS_COMPLETE_REPLY,
-    LOAD_SESSION_REPLY,
-    SAVE_SESSION_REPLY,
-    WIRE_PROTOCOL,
     CompleteOk,
     ExecuteReply,
     InspectOk,
     IsCompleteOk,
-    LoadSessionOk,
     ReadyFrame,
-    SaveSessionOk,
     WorkerError,
 )
-
-RawFrame = dict[str, object]
-
-READY_TIMEOUT = 600.0  # first prelude import loads mathlib oleans
-REPLY_TIMEOUT = 3600.0  # elaboration can legitimately be slow; interrupt kills
-CACHE_RESTORE_TIMEOUT = 120.0  # Mathlib olean restore; product path, not disposable
-CANCEL_GRACE = 3.0  # cooperative-cancel window before the worker is killed
-
-
-class WorkerDied(RuntimeError):
-    pass
-
-
-class WorkerInterrupted(WorkerDied):
-    """The worker was killed because a Jupyter interrupt escalated past the
-    cooperative-cancel grace window. Deliberate — recovery paths must never
-    auto-restart on this, or an interrupted cell would be transparently
-    re-executed."""
+from .cache import SessionCacheMixin
+from .errors import (
+    CANCEL_GRACE,
+    READY_TIMEOUT,
+    REPLY_TIMEOUT,
+    WorkerDied,
+    WorkerInterrupted,
+    check_wire_protocol,
+)
+from .frames import FrameReader, RawFrame, process_running
+from .resolve import find_worker_exe, lake_env
 
 
-class WireProtocolError(RuntimeError):
-    """The worker speaks an incompatible wire protocol version."""
-
-
-LIVENESS_SLICE = 5.0  # reply-wait slice between worker liveness probes
-
-
-def check_wire_protocol(ready: ReadyFrame) -> None:
-    """Refuse a worker whose wire protocol the adapter does not speak."""
-    if ready.protocol != WIRE_PROTOCOL:
-        raise WireProtocolError(
-            f"worker wire protocol {ready.protocol} is incompatible "
-            f"with adapter wire protocol {WIRE_PROTOCOL}")
-
-
-def _process_running(pid: int) -> bool:
-    """Use psutil's required cross-platform process status authority.
-
-    PID existence alone is insufficient because zombies still exist. Missing
-    and zombie processes are dead; access or observation failures propagate
-    because liveness cannot be inferred honestly without this capability.
-    """
-    try:
-        status = psutil.Process(pid).status()
-    except (psutil.NoSuchProcess, psutil.ZombieProcess):
-        return False
-    return status not in {psutil.STATUS_DEAD, psutil.STATUS_ZOMBIE}
-
-
-def lake_env(project_root: Path) -> dict[str, str]:
-    """Environment `lake env` would establish, without keeping lake as parent."""
-    out = subprocess.check_output(
-        ["lake", "env", "printenv"], cwd=project_root, text=True)
-    env: dict[str, str] = {}
-    for line in out.splitlines():
-        key, sep, value = line.partition("=")
-        if sep:
-            env[key] = value
-    if not env:
-        raise WorkerDied(f"lake env printenv produced no bindings in {project_root}")
-    return env
-
-
-def find_worker_exe(project_root: str | Path) -> Path | None:
-    """The built worker binary for a Lean project — in its own build tree, or
-    in a dependency's (git deps live under .lake/packages, one level deeper
-    when the require names a subDir package; path deps build in place at the
-    directory the Lake manifest records). Manifested path dependencies take
-    precedence over stale package-cache candidates, so an exact local
-    qualification cannot launch an older cached worker. None if not built."""
-    root = Path(project_root)
-    path_candidates: list[Path] = []
-    manifest = root / "lake-manifest.json"
-    if manifest.exists():
-        for pkg in json.loads(manifest.read_text()).get("packages", []):
-            if (pkg.get("type") == "path"
-                    and pkg.get("name", "").strip("«»") == "nbdsl-worker"
-                    and pkg.get("dir")):
-                path_candidates.append(
-                    (root / pkg.get("dir", ".")).resolve()
-                    / ".lake/build/bin/nbdsl_worker")
-    if path_candidates:
-        # A manifested path dependency is authoritative. Falling through to
-        # .lake/packages when its executable is absent can launch stale code.
-        return next((c for c in path_candidates if c.exists()), None)
-    candidates: list[Path] = []
-    candidates += [
-        root / ".lake/build/bin/nbdsl_worker",
-        *root.glob(".lake/packages/*/.lake/build/bin/nbdsl_worker"),
-        *root.glob(".lake/packages/*/*/.lake/build/bin/nbdsl_worker"),
-    ]
-    return next((c for c in candidates if c.exists()), None)
-
-
-class _FrameReader:
-    """One incremental decoder state for a length-prefixed reply stream."""
-
-    def __init__(self, fd: int) -> None:
-        self.fd = fd
-        self.buf = b""
-        self.frame_length: int | None = None
-
-    def read_frame(self, timeout: float, process_pid: int) -> RawFrame:
-        deadline = time.monotonic() + timeout
-        while True:
-            if self.frame_length is None and b"\n" in self.buf:
-                line, self.buf = self.buf.split(b"\n", 1)
-                self.frame_length = int(line)
-            if (self.frame_length is not None
-                    and len(self.buf) >= self.frame_length):
-                length = self.frame_length
-                payload, self.buf = self.buf[:length], self.buf[length:]
-                self.frame_length = None
-                frame: RawFrame = json.loads(payload)
-                return frame
-            self._fill(deadline, process_pid)
-
-    def _fill(self, deadline: float, process_pid: int) -> None:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError("timed out waiting for worker reply")
-        ready, _, _ = select.select(
-            [self.fd], [], [], min(LIVENESS_SLICE, remaining))
-        if not ready:
-            if not _process_running(process_pid):
-                raise WorkerDied(f"worker process {process_pid} is gone")
-            return
-        chunk = os.read(self.fd, 65536)
-        if not chunk:
-            raise WorkerDied("worker closed the reply channel")
-        self.buf += chunk
-
-
-class WorkerClient:
+class WorkerClient(SessionCacheMixin):
     """One persistent nbdsl_worker process plus its replay ledger."""
 
     def __init__(self, project_root: str | Path,
@@ -184,7 +51,7 @@ class WorkerClient:
             on_stream or (lambda name, text: None)
         self.proc: subprocess.Popen[bytes] | None = None
         self.req_fd: int | None = None
-        self.replies: _FrameReader | None = None
+        self.replies: FrameReader | None = None
         self._request_pipe: IO[bytes] | None = None
         self._reply_pipe: IO[bytes] | None = None
         self._pump_threads: list[threading.Thread] = []
@@ -201,8 +68,6 @@ class WorkerClient:
         self.cache_dir: str | None = None
         self._rid = 0
         self._pending: dict[object, RawFrame] = {}
-
-    # -- lifecycle ---------------------------------------------------------
 
     def _maybe_sandbox(self, cmd: list[str], worker_exe: Path) -> list[str]:
         """NBDSL_SANDBOX=1: run the worker under bubblewrap — project and
@@ -319,7 +184,7 @@ class WorkerClient:
                 pump_threads.append(thread)
                 thread.start()
 
-            replies = _FrameReader(rep_r.fileno())
+            replies = FrameReader(rep_r.fileno())
             ready = ReadyFrame.model_validate(
                 replies.read_frame(READY_TIMEOUT, proc.pid))
             if os.environ.get("NBDSL_SANDBOX") == "1":
@@ -395,7 +260,7 @@ class WorkerClient:
             self.proc is not None
             and self.worker_pid is not None
             and self.proc.poll() is None
-            and _process_running(self.worker_pid)
+            and process_running(self.worker_pid)
         )
 
     def restart_and_replay(self) -> int:
@@ -426,90 +291,6 @@ class WorkerClient:
             self.ledger = ledger
             raise
         return len(ledger)
-
-    # -- session cache -----------------------------------------------------
-
-    def _ledger_key(self) -> str:
-        h = hashlib.sha256(self.prelude.encode())
-        for _, code in self.ledger:
-            h.update(b"\x00" + code.encode())
-        return h.hexdigest()
-
-    def _cache_descriptor(self) -> dict[str, str]:
-        assert self.cache_dir is not None
-        root = Path(self.cache_dir)
-        head = (root / "module.txt").read_text().strip()
-
-        def digest(path: Path) -> str:
-            with path.open("rb") as stream:
-                return hashlib.file_digest(stream, "sha256").hexdigest()
-
-        return {
-            "ledger": self._ledger_key(),
-            "head": head,
-            "olean_sha256": digest(root / f"{head}.olean"),
-            "scope_sha256": digest(root / "scope.json"),
-        }
-
-    def save_session(self) -> None:
-        """Persist committed state after a REPL commit (cheap: the olean holds
-        only session-local constants + extension entries)."""
-        if self.cache_dir is None:
-            return
-        try:
-            rep = SAVE_SESSION_REPLY.validate_python(self._request(
-                "save_session", {"path": str(self.cache_dir)}, timeout=60))
-        except (WorkerDied, TimeoutError) as e:
-            # Not fatal — the ledger still describes the state — but silence
-            # here makes the later replay look inexplicable. Name the cause.
-            self.on_stream("stderr", f"session cache not saved: {e}\n")
-            return
-        key = Path(self.cache_dir) / "key.txt"
-        if isinstance(rep, SaveSessionOk) and rep.saved:
-            key.write_text(json.dumps(self._cache_descriptor(), sort_keys=True))
-        else:
-            # Uncacheable state (open scopes, syntax-valued options, …):
-            # drop the key so restart falls back to replay.
-            key.unlink(missing_ok=True)
-
-    def _try_restore_session(self) -> bool:
-        if self.cache_dir is None:
-            return False
-        key = Path(self.cache_dir) / "key.txt"
-        if not key.exists():
-            return False
-        try:
-            recorded = json.loads(key.read_text())
-            if recorded != self._cache_descriptor():
-                return False
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            return False
-        # Past this point the key matched, so a miss is something going wrong
-        # rather than ordinary uncacheable state: say what, then replay.
-        try:
-            rep = LOAD_SESSION_REPLY.validate_python(self._request(
-                "load_session", {"path": str(self.cache_dir)},
-                timeout=CACHE_RESTORE_TIMEOUT))
-        except TimeoutError:
-            self.on_stream(
-                "stderr",
-                "session cache restore timed out after "
-                f"{CACHE_RESTORE_TIMEOUT:g}s; discarding worker before replay\n",
-            )
-            self.kill()
-            return False
-        except WorkerDied as e:
-            self.on_stream("stderr", f"session cache not restored: {e}\n")
-            self.kill()
-            return False
-        if not isinstance(rep, LoadSessionOk):
-            self.on_stream("stderr",
-                           f"session cache not restored: {rep.message}\n")
-            return False
-        self.snapshot = rep.snapshot
-        return True
-
-    # -- requests ----------------------------------------------------------
 
     def _write_frame(self, obj: RawFrame) -> None:
         if self.req_fd is None:
