@@ -25,6 +25,7 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 
+import psutil
 import pytest
 from jupyter_client.provisioning import LocalProvisioner
 from nbdsl_kernel.worker import WorkerClient, WorkerDied
@@ -130,6 +131,15 @@ def test_worker_death_recovers_transparently(tmp_path: Path) -> None:
         assert isinstance(prov, LocalProvisioner) and prov.process is not None
         worker, _ = find_worker_under(prov.process.pid)
         os.kill(worker, signal.SIGKILL)
+        deadline = time.monotonic() + 5.0
+        while True:
+            try:
+                if psutil.Process(worker).status() == psutil.STATUS_ZOMBIE:
+                    break
+            except (psutil.NoSuchProcess, psutil.ZombieProcess):
+                break
+            assert time.monotonic() < deadline, f"worker {worker} still live"
+            time.sleep(0.01)
         reply, outputs = run_cell(kc, "#eval x + 1", timeout=120)
         assert reply["status"] == "ok", reply
         text = texts(outputs)
