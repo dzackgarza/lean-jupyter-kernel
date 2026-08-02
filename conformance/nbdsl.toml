@@ -50,6 +50,10 @@ projection = ["object", "source", "target", "steps"]
 setup = ["open NbDsl NbDsl.Std"]
 
 [failure]
+# demo_* proves the probe shape works without committing the leak name that
+# recovery must keep absent across worker death.
+demo_prefix = "def confErrorDemo : Nat := 37"
+demo_probe = "#check confErrorDemo"
 # The prefix alone creates probeable state; the later error must discard it.
 prefix = "def confErrorLeak : Nat := 37"
 output = """#via confG ∈ Sets
@@ -62,6 +66,8 @@ output_mime = "application/vnd.nbdsl.path+json"
 [parse_failure]
 # The valid prefix and output must disappear when the malformed tail stops the
 # command loop, not just when elaboration reports a type error.
+demo_prefix = "def confParseDemo : Nat := 37"
+demo_probe = "#check confParseDemo"
 prefix = "def confParseLeak : Nat := 37"
 output = """#via confG ∈ Sets
 #eval IO.println "candidate-parse-output\""""
@@ -74,7 +80,10 @@ output_mime = "application/vnd.nbdsl.path+json"
 # The cancelled cell registers FIRST and then elaborates a bounded flat term:
 # enough `have` steps to remain in flight, each passing an elaboration
 # cancellation checkpoint. Interrupting mid-term must discard the registration
-# on the first line with it.
+# on the first line with it. demo_* proves observability; the cancelled name
+# stays uncommitted for the recovery ledger check.
+demo_prefix = "let confCancelDemo := GrpCat.of PUnit ∈ Groups"
+demo_probe = "#home confCancelDemo"
 prefix = "let confH := GrpCat.of PUnit ∈ Groups"
 slow_header = """set_option maxHeartbeats 0 in
 example : True := by"""

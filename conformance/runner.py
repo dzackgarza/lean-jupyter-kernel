@@ -125,13 +125,13 @@ REQUIRED = {
     "registration": ["setup", "command", "shape"],
     "observation": ["command", "mimes", "projection"],
     "control": ["setup"],
-    "failure": ["prefix", "output", "command", "probe", "output_marker",
-                "output_mime"],
-    "parse_failure": ["prefix", "output", "command", "probe",
-                      "output_marker", "output_mime"],
-    "cancellation": ["prefix", "slow_header", "slow_step", "slow_repeat",
-                     "slow_footer", "output", "output_marker", "probe",
-                     "interrupt_after_seconds"],
+    "failure": ["demo_prefix", "demo_probe", "prefix", "output", "command",
+                "probe", "output_marker", "output_mime"],
+    "parse_failure": ["demo_prefix", "demo_probe", "prefix", "output",
+                      "command", "probe", "output_marker", "output_mime"],
+    "cancellation": ["demo_prefix", "demo_probe", "prefix", "slow_header",
+                     "slow_step", "slow_repeat", "slow_footer", "output",
+                     "output_marker", "probe", "interrupt_after_seconds"],
     "replay": ["force", "restore"],
     "completion": ["garbage", "constant_code", "constant_cursor",
                    "constant_match", "registered_code", "registered_cursor",
@@ -653,12 +653,51 @@ class Report:
 # candidate-session laws
 # --------------------------------------------------------------------------
 
+def ledger_absence(session: Session,
+                   profile: dict[str, Any]) -> dict[str, Any]:
+    """Failed and cancelled registrations must stay out of the ledger.
+
+    The atomicity laws prove rollback in-session; recovery must prove those
+    rolled-back names do not reappear after real worker death. The probes are
+    the same ones the failure/parse/cancel laws use for the leak names — never
+    the demo prefixes that were intentionally committed to prove observability.
+    """
+    probes = {
+        "failure": profile["failure"]["probe"],
+        "parse_failure": profile["parse_failure"]["probe"],
+        "cancellation": profile["cancellation"]["probe"],
+    }
+    results: dict[str, Any] = {}
+    all_absent = True
+    for kind, code in probes.items():
+        reply, _ = session.run(code)
+        absent = reply["status"] == "error"
+        results[kind] = {
+            "probe": code,
+            "status": reply["status"],
+            "absent": absent,
+            "detail": str(reply.get("evalue", ""))[:300],
+        }
+        all_absent = all_absent and absent
+    return {"absent": all_absent, "probes": results}
+
+
 def run_recovery(session: Session, profile: dict[str, Any],
                  report: Report,
                  committed: dict[str, Any]) -> dict[str, Any]:
     """Run only the two worker-death recovery laws for a targeted regression."""
     obs_cfg = profile["observation"]
     timings: dict[str, float] = {}
+    before_ledger = _recovery_phase(
+        "pre-restart ledger absence",
+        lambda: ledger_absence(session, profile),
+        timings,
+    )
+    if not before_ledger["absent"]:
+        raise ProfileError(
+            "recovery prerequisite: failed/cancelled registrations must be "
+            "absent before worker death (atomicity must not re-commit them): "
+            f"{before_ledger}")
     candidate_queries = _recovery_phase(
         "pre-restart queries", lambda: query_answers(session, profile), timings)
 
@@ -675,17 +714,27 @@ def run_recovery(session: Session, profile: dict[str, Any],
         lambda: query_answers(session, profile),
         timings,
     )
+    ledger_after_restart = _recovery_phase(
+        "post-first-recovery ledger absence",
+        lambda: ledger_absence(session, profile),
+        timings,
+    )
     report.record(
         "restart-reconstructs",
-        after_restart == committed and queries_after_restart == candidate_queries,
+        after_restart == committed
+        and queries_after_restart == candidate_queries
+        and ledger_after_restart["absent"],
         {**killed, "recovery_route": _route(stream),
          "recovery_trace": _recovery_trace(stream, reply),
          "recovery_stream": stream[:400], "phase_seconds": dict(timings),
          "observation_after": after_restart,
-         "queries_after_recovery": queries_after_restart},
+         "queries_after_recovery": queries_after_restart,
+         "ledger_absence_before": before_ledger,
+         "ledger_absence": ledger_after_restart},
         "the worker process was SIGKILLed from outside the kernel and the "
         "production restart path reconstructed the committed observation and "
-        "the same completion/inspection answers")
+        "the same completion/inspection answers, without restoring "
+        "failed/cancelled registrations")
 
     for code in profile["replay"]["force"]:
         reply, _ = _recovery_phase(
@@ -708,21 +757,29 @@ def run_recovery(session: Session, profile: dict[str, Any],
         lambda: query_answers(session, profile),
         timings,
     )
+    ledger_after_replay = _recovery_phase(
+        "post-second-recovery ledger absence",
+        lambda: ledger_absence(session, profile),
+        timings,
+    )
     route = _route(stream)
     report.record(
         "replay-reconstructs",
         route == "replay"
         and after_replay == committed
-        and queries_after_replay == candidate_queries,
+        and queries_after_replay == candidate_queries
+        and ledger_after_replay["absent"],
         {**killed, "recovery_route": route, "recovery_stream": stream[:400],
          "recovery_trace": _recovery_trace(stream, reply),
          "phase_seconds": dict(timings),
          "cache_invalidated_by": profile["replay"]["force"],
          "observation_after": after_replay,
-         "queries_after_recovery": queries_after_replay},
+         "queries_after_recovery": queries_after_replay,
+         "ledger_absence": ledger_after_replay},
         "with the session cache invalidated the worker recovered by replaying "
         "the committed sources and reconstructed the same observation and "
-        "completion/inspection answers")
+        "completion/inspection answers, without restoring failed/cancelled "
+        "registrations")
     for code in profile["replay"]["restore"]:
         reply, outputs = _recovery_phase(
             f"cache restore {code!r}",
@@ -778,6 +835,10 @@ def run_candidate(session: Session, profile: dict[str, Any],
 
     # -- error-rolls-back --------------------------------------------------
     failure_cfg = profile["failure"]
+    demo_reply, _ = session.run(failure_cfg["demo_prefix"])
+    demo_probe_reply, _ = session.run(failure_cfg["demo_probe"])
+    demo_ok = (demo_reply["status"] == "ok"
+               and demo_probe_reply["status"] == "ok")
     failing_cell = "\n".join(
         [failure_cfg["prefix"], failure_cfg["output"],
          failure_cfg["command"]])
@@ -787,14 +848,11 @@ def run_candidate(session: Session, profile: dict[str, Any],
     reply, failure_outputs = session.run(failing_cell)
     absent_reply, _ = session.run(failure_cfg["probe"])
     after_error = observe(session, obs_cfg)
-    prefix_reply, _ = session.run(failure_cfg["prefix"])
-    present_reply, _ = session.run(failure_cfg["probe"])
     report.record(
         "error-rolls-back",
         reply["status"] == "error"
         and absent_reply["status"] == "error"
-        and prefix_reply["status"] == "ok"
-        and present_reply["status"] == "ok"
+        and demo_ok
         and output_ready
         and not output_leaked(failure_outputs, failure_cfg)
         and after_error == committed,
@@ -805,17 +863,23 @@ def run_candidate(session: Session, profile: dict[str, Any],
          "output_probe_ready": output_ready,
          "candidate_output_published": output_leaked(
              failure_outputs, failure_cfg),
+         "demo_prefix": failure_cfg["demo_prefix"],
+         "demo_probe": failure_cfg["demo_probe"],
+         "demo_probe_status": demo_probe_reply["status"],
          "probe": failure_cfg["probe"],
          "probe_after_failure": absent_reply["status"],
-         "prefix_alone": prefix_reply["status"],
-         "probe_after_prefix": present_reply["status"],
          "pre": committed, "post": after_error},
-        "a failing cell discards a candidate registration whose prefix and "
-        "probe independently demonstrate that registration is observable, "
-        "without publishing candidate output")
+        "a failing cell discards a candidate registration whose demo "
+        "prefix/probe pair independently demonstrates that registration is "
+        "observable, without publishing candidate output or leaving the "
+        "failed name committed")
 
     # -- parse-error-rolls-back ---------------------------------------------
     parse_cfg = profile["parse_failure"]
+    demo_reply, _ = session.run(parse_cfg["demo_prefix"])
+    demo_probe_reply, _ = session.run(parse_cfg["demo_probe"])
+    demo_ok = (demo_reply["status"] == "ok"
+               and demo_probe_reply["status"] == "ok")
     output_reply, output_outputs = session.run(parse_cfg["output"])
     output_ready = (output_reply["status"] == "ok"
                     and output_matches(output_outputs, parse_cfg))
@@ -824,14 +888,11 @@ def run_candidate(session: Session, profile: dict[str, Any],
     reply, parse_outputs = session.run(parse_cell)
     absent_reply, _ = session.run(parse_cfg["probe"])
     after_parse = observe(session, obs_cfg)
-    prefix_reply, _ = session.run(parse_cfg["prefix"])
-    present_reply, _ = session.run(parse_cfg["probe"])
     report.record(
         "parse-error-rolls-back",
         reply["status"] == "error"
         and absent_reply["status"] == "error"
-        and prefix_reply["status"] == "ok"
-        and present_reply["status"] == "ok"
+        and demo_ok
         and output_ready
         and not output_leaked(parse_outputs, parse_cfg)
         and after_parse == committed,
@@ -842,13 +903,15 @@ def run_candidate(session: Session, profile: dict[str, Any],
          "output_probe_ready": output_ready,
          "candidate_output_published": output_leaked(
              parse_outputs, parse_cfg),
+         "demo_prefix": parse_cfg["demo_prefix"],
+         "demo_probe": parse_cfg["demo_probe"],
+         "demo_probe_status": demo_probe_reply["status"],
          "probe": parse_cfg["probe"],
          "probe_after_failure": absent_reply["status"],
-         "prefix_alone": prefix_reply["status"],
-         "probe_after_prefix": present_reply["status"],
          "pre": committed, "post": after_parse},
         "a malformed tail discards a candidate registration and buffered "
-        "output while preserving the committed observation")
+        "output while preserving the committed observation, without leaving "
+        "the failed name committed")
 
     if not atomicity_only:
         candidate_queries = query_answers(session, profile)
@@ -931,6 +994,10 @@ def run_candidate(session: Session, profile: dict[str, Any],
     # reply text: the interrupt escalation path also answers `Interrupted`, but
     # only after killing the worker. Same live pid before and after is the
     # structural difference between the two.
+    demo_reply, _ = session.run(cancel_cfg["demo_prefix"])
+    demo_probe_reply, _ = session.run(cancel_cfg["demo_probe"])
+    demo_ok = (demo_reply["status"] == "ok"
+               and demo_probe_reply["status"] == "ok")
     pids_before = {pid for pid, _ in worker_processes(session.pid)}
     output_reply, output_outputs = session.run(cancel_cfg["output"])
     output_ready = (output_reply["status"] == "ok"
@@ -941,15 +1008,12 @@ def run_candidate(session: Session, profile: dict[str, Any],
     pids_after = {pid for pid, _ in worker_processes(session.pid)}
     probe_reply, _ = session.run(cancel_cfg["probe"])
     after_cancel = observe(session, obs_cfg)
-    prefix_reply, _ = session.run(cancel_cfg["prefix"])
-    present_reply, _ = session.run(cancel_cfg["probe"])
     cooperative = (reply.get("ename") == "Interrupted"
                    and bool(pids_before) and pids_before == pids_after)
     report.record(
         "cancellation-rolls-back",
         cooperative and probe_reply["status"] == "error"
-        and prefix_reply["status"] == "ok"
-        and present_reply["status"] == "ok"
+        and demo_ok
         and output_ready
         and not output_leaked(cancellation_outputs, cancel_cfg)
         and after_cancel == committed,
@@ -963,14 +1027,16 @@ def run_candidate(session: Session, profile: dict[str, Any],
          "worker_pids_before": sorted(pids_before),
          "worker_pids_after": sorted(pids_after),
          "cancelled_registration": cancel_cfg["prefix"],
+         "demo_prefix": cancel_cfg["demo_prefix"],
+         "demo_probe": cancel_cfg["demo_probe"],
+         "demo_probe_status": demo_probe_reply["status"],
          "probe": cancel_cfg["probe"], "probe_status": probe_reply["status"],
          "probe_detail": str(probe_reply.get("evalue", ""))[:300],
-         "prefix_alone_status": prefix_reply["status"],
-         "probe_after_prefix_status": present_reply["status"],
          "observation_after": after_cancel},
         "cooperative cancellation discarded a candidate registration whose "
-        "prefix/probe pair independently proved it observable, and left the "
-        "committed observation equal")
+        "demo prefix/probe pair independently proved observability, left the "
+        "committed observation equal, and did not re-commit the cancelled "
+        "name")
 
     if atomicity_only:
         return {"committed": committed}

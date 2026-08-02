@@ -60,6 +60,8 @@ projection = ["render", "presentation", "value"]
 setup = []
 
 [failure]
+demo_prefix = "let confErrorDemo := 37 in ℤ"
+demo_probe = "assert confErrorDemo = 37"
 prefix = "let confErrorLeak := 37 in ℤ"
 output = """confN.factor()
 #eval IO.println "candidate-elaboration-output\""""
@@ -69,6 +71,8 @@ output_marker = "candidate-elaboration-output"
 output_mime = "application/vnd.casdsl.value+json"
 
 [parse_failure]
+demo_prefix = "let confParseDemo := 37 in ℤ"
+demo_probe = "assert confParseDemo = 37"
 prefix = "let confParseLeak := 37 in ℤ"
 output = """confN.factor()
 #eval IO.println "candidate-parse-output\""""
@@ -80,7 +84,10 @@ output_mime = "application/vnd.casdsl.value+json"
 [cancellation]
 # The cancelled cell binds FIRST and then elaborates a bounded flat term whose
 # `have` steps pass elaboration cancellation checkpoints without turning the
-# conformance run into a memory stress test.
+# conformance run into a memory stress test. demo_* proves observability; the
+# cancelled binding stays uncommitted for the recovery ledger check.
+demo_prefix = "let confCancelDemo := 7 in ℤ"
+demo_probe = "assert confCancelDemo = 7"
 prefix = "let confCancel := 7 in ℤ"
 slow_header = """set_option maxHeartbeats 0 in
 example : True := by"""

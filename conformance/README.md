@@ -19,9 +19,10 @@ law passes, `1` on a law failure, and `2` when the profile or the environment it
 names is unusable — a missing kernelspec, a kernelspec pointing at a different
 checkout, or a profile pinning a commit the checkout is not at.
 
-`--journey all` is the six-journey closure proof: atomic cells, plugin-owned
+`--journey all` is the Journeys 2–5 proof matrix: atomic cells, plugin-owned
 queries, repeated recovery, and transport-safe output are all exercised through
-the installed kernelspec. `--journey atomicity` is the targeted Journey 2
+the installed kernelspec. Journey 1 (`test_clean_install.py`) and Journey 6
+(`scripts/qualify_consumer.sh`) are separate closure boundaries. `--journey atomicity` is the targeted Journey 2
 proof for iteration; it runs only the success, elaboration-failure,
 parse-failure, and cooperative-cancellation laws, including candidate-state
 and notebook-output rollback. `--journey recovery` is the targeted recovery
@@ -56,8 +57,8 @@ shares the `NBDSL_CONFORMANCE_LOCK` with the worker-heavy shell gates.
 | `error-rolls-back` | a failing command leaves the pre/post structured observation equal and does not publish candidate output |
 | `parse-error-rolls-back` | a malformed tail discards the valid prefix and buffered output while preserving the committed observation |
 | `cancellation-rolls-back` | cooperative cancellation at a real elaboration checkpoint discards the cancelled cell's registration and buffered output, leaving the committed observation equal |
-| `replay-reconstructs` | with the session cache invalidated, worker death recovers by replaying committed sources and reconstructs the same observation and query answers |
-| `restart-reconstructs` | real worker process death plus the production restart path reconstructs the committed observation and query answers |
+| `replay-reconstructs` | with the session cache invalidated, worker death recovers by replaying committed sources and reconstructs the same observation and query answers, without restoring failed/cancelled registrations |
+| `restart-reconstructs` | real worker process death plus the production restart path reconstructs the committed observation and query answers, and failed/cancelled registrations stay absent |
 | `completion-sees-environment` | completion discriminates, and answers about the environment that registered the object |
 | `inspection-sees-environment` | inspection discriminates, and answers about that environment |
 | `output-control-separated` | frame-shaped output stays ordinary output at the Jupyter boundary, and an independent decoder confirms it never became a control frame |

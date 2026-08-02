@@ -372,11 +372,20 @@ def test_malformed_observation_projection_fails_loudly() -> None:
         runner._read(reply, [malformed], config)
 
 
+def _ledger_probes(profile: dict[str, Any]) -> set[str]:
+    return {
+        profile["failure"]["probe"],
+        profile["parse_failure"]["probe"],
+        profile["cancellation"]["probe"],
+    }
+
+
 def test_failed_replay_restore_is_reported_by_runner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     profile = tomllib.loads(REFERENCE_PROFILE.read_text())
     committed = {"present": True}
+    probes = _ledger_probes(profile)
 
     class FakeSession:
         def __init__(self) -> None:
@@ -391,6 +400,8 @@ def test_failed_replay_restore_is_reported_by_runner(
             self.calls.append(code)
             if code in profile["replay"]["restore"]:
                 return {"status": "error", "evalue": "missing restore"}, []
+            if code in probes:
+                return {"status": "error", "evalue": "not bound"}, []
             return {"status": "ok"}, []
 
     session = FakeSession()
@@ -408,3 +419,45 @@ def test_failed_replay_restore_is_reported_by_runner(
 
     assert session.kills == 2
     assert session.calls[-1] == profile["replay"]["restore"][0]
+
+
+def test_recovery_fails_when_rolled_back_registration_reappears(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Journey 4: failed/cancelled names must stay absent across worker death."""
+    profile = tomllib.loads(REFERENCE_PROFILE.read_text())
+    committed = {"present": True}
+    probes = _ledger_probes(profile)
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.kills = 0
+
+        def kill_worker(self) -> dict[str, object]:
+            self.kills += 1
+            return {"killed": [{"pid": self.kills}]}
+
+        def run(self, code: str) -> tuple[dict[str, str], list[object]]:
+            if code in probes:
+                # Absent before the first kill; "restored" afterward.
+                if self.kills == 0:
+                    return {"status": "error", "evalue": "not bound"}, []
+                return {"status": "ok"}, []
+            return {"status": "ok"}, []
+
+    report = runner.Report(runner.RECOVERY_LAWS)
+    monkeypatch.setattr(
+        runner,
+        "query_answers",
+        lambda _session, _profile: {"queries": "stable"},
+    )
+    monkeypatch.setattr(runner, "_read", lambda _reply, _outputs, _cfg: committed)
+    monkeypatch.setattr(
+        runner, "texts",
+        lambda _outputs: "Lean worker died; restarting…\nRestored session from cache.\n")
+
+    runner.run_recovery(FakeSession(), profile, report, committed)
+
+    restart = report.laws["restart-reconstructs"]
+    assert restart["status"] == "fail"
+    assert restart["observation"]["ledger_absence"]["absent"] is False
