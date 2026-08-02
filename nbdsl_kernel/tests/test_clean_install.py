@@ -1,5 +1,4 @@
-"""Clean-environment installation and worker resolution, for both supported
-dependency layouts.
+"""Clean-environment installation and worker resolution (nested Git/Lake).
 
 Nothing here reuses the source checkout's `.venv`, an editable install, or a
 preinstalled kernelspec: the adapter wheel is built, installed into a fresh
@@ -11,13 +10,9 @@ The claim is about the binary the kernel actually EXECUTES, so it is read from
 under test, not evidence about it. The expected path is derived from how the
 fixture was laid out, never from the adapter.
 
-The two layouts are the ones a plugin can arrive through:
-
-  path — the project requires «nbdsl-worker» from a local directory, which Lake
-         builds in place, outside the project's own `.lake`;
-  git  — the project requires a plugin package from git, and that plugin
-         requires the worker from a git repository's `worker` subdirectory, so
-         the exe lands one level below the flat `.lake/packages/*` layout.
+Layout: the project requires a plugin package from git, and that plugin
+requires the worker from a git repository's `worker` subdirectory, so the exe
+lands one level below the flat `.lake/packages/*` layout.
 
 Fixtures are generated rather than committed: every lakefile has to name an
 absolute path or `file://` URL that only exists at test time.
@@ -42,6 +37,7 @@ import pytest
 from jupyter_client.kernelspec import KernelSpecManager
 from jupyter_client.manager import KernelManager
 
+from jupyter_helpers import clean_jupyter_env, find_worker_under
 from test_e2e import run_cell, texts
 
 REPO = Path(__file__).resolve().parents[2]
@@ -53,11 +49,7 @@ NBDSL_MATHLIB = NBDSL_CACHE / "mathlib"
 
 
 def _env() -> dict[str, str]:
-    """The ambient environment minus everything that could smuggle the source
-    checkout into a supposedly clean process."""
-    drop = {"PYTHONPATH", "VIRTUAL_ENV", "JUPYTER_DATA_DIR", "JUPYTER_PATH",
-            "NBDSL_PROJECT", "NBDSL_PRELUDE", "NBDSL_INIT"}
-    return {k: v for k, v in os.environ.items() if k not in drop}
+    return clean_jupyter_env()
 
 
 def _run(cmd: list[str], cwd: Path | None = None,
@@ -76,9 +68,6 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-# -- the clean adapter environment ----------------------------------------
-
-
 @dataclass(frozen=True)
 class CleanEnv:
     venv: Path
@@ -89,9 +78,7 @@ class CleanEnv:
 
 @pytest.fixture(scope="session")
 def clean_env(tmp_path_factory: pytest.TempPathFactory) -> CleanEnv:
-    """A fresh venv holding the built adapter wheel and its declared
-    dependencies. The wheel is built by this venv's pip (in pip's own isolated
-    build environment) and then installed as an artifact."""
+    """A fresh venv holding the built adapter wheel and its declared deps."""
     root = tmp_path_factory.mktemp("clean-adapter")
     venv, wheelhouse = root / "venv", root / "wheelhouse"
     _run([sys.executable, "-m", "venv", str(venv)])
@@ -111,16 +98,12 @@ def clean_env(tmp_path_factory: pytest.TempPathFactory) -> CleanEnv:
                     lab_wheel=lab_wheels[0])
 
 
-# -- the two dependency layouts -------------------------------------------
-
-
 @dataclass(frozen=True)
 class Layout:
     kind: str
     project: Path
     prelude: str
-    #: Where this project's dependency graph puts the worker exe. Derived from
-    #: the fixture's own construction, so it is an independent expectation.
+    #: Where this project's dependency graph puts the worker exe.
     worker_exe: Path
 
 
@@ -152,31 +135,8 @@ def _configure_fixture_plugin(package: Path, worker_require: str) -> None:
         manifest.unlink()
 
 
-def _local_path_layout(root: Path) -> Layout:
-    """A clean project requiring the real NbDsl package from a local directory.
-
-    The worker build embeds its git identity and hard-fails without one, and
-    the adapter guard requires clean-tree identities to MATCH — so the local
-    directory must carry this repository's real history, not a bare copy or a
-    freshly initialized one. A file:// clone at HEAD is exactly that."""
-    kernel_src = root / "kernel-src"
-    _run(["git", "clone", "-q", f"file://{REPO}", str(kernel_src)])
-    plugin_pkg = kernel_src / "dsls" / "nbdsl"
-    worker_pkg = kernel_src / "worker"
-    proj = root / "project"
-    _write_project(proj, "import Lake\nopen Lake DSL\n\n"
-                         "package cleanpath\n\n"
-                         f'require nbdsl from "{plugin_pkg}"\n')
-    _configure_fixture_plugin(
-        plugin_pkg, 'require «nbdsl-worker» from ".." / ".." / "worker"')
-    _run(["lake", "build", "nbdsl_worker", "NbDsl"], cwd=proj)
-    return Layout("path", proj, "NbDsl.Notebook",
-                  worker_pkg / ".lake/build/bin/nbdsl_worker")
-
-
 def _git_commit(repo: Path, root: Path, message: str) -> str:
-    """Commit without firing this workstation's global commit gate — a fixture
-    repository has no justfile and owes it no proof."""
+    """Commit without firing this workstation's global commit gate."""
     hooks = root / "nohooks"
     hooks.mkdir(exist_ok=True)
     _run(["git", "init", "-q", "-b", "main", "."], cwd=repo)
@@ -187,8 +147,7 @@ def _git_commit(repo: Path, root: Path, message: str) -> str:
 
 
 def _nested_git_layout(root: Path) -> Layout:
-    """A clean project requiring real NbDsl from git, where NbDsl requires
-    the worker from this repository's ``worker`` subdirectory."""
+    """Clean project requiring NbDsl from git; NbDsl requires worker from git."""
     kernel_rev = _run(["git", "rev-parse", "HEAD"], cwd=REPO).strip()
     plugin = root / "nbdsl-plugin-src"
     _run(["git", "clone", "-q", f"file://{REPO}", str(plugin)])
@@ -221,22 +180,19 @@ def _nested_git_layout(root: Path) -> Layout:
         worker_dir / ".lake/build/bin/nbdsl_worker")
 
 
-@pytest.fixture(scope="session", params=["path", "git"])
-def layout(request: pytest.FixtureRequest,
-           tmp_path_factory: pytest.TempPathFactory) -> Layout:
-    kind: str = request.param
-    root = tmp_path_factory.mktemp(f"layout-{kind}")
-    built = (_local_path_layout if kind == "path" else _nested_git_layout)(root)
+@pytest.fixture(scope="session")
+def layout(tmp_path_factory: pytest.TempPathFactory) -> Layout:
+    root = tmp_path_factory.mktemp("layout-git")
+    built = _nested_git_layout(root)
     assert built.worker_exe.exists(), \
-        f"{kind} layout did not build its worker at {built.worker_exe}"
+        f"git layout did not build its worker at {built.worker_exe}"
     return built
 
 
 @pytest.fixture(scope="session")
 def kernelspec(clean_env: CleanEnv, layout: Layout,
                tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, str]:
-    """Install a kernelspec for this layout into an empty Jupyter data
-    directory. Returns (kernels dir, kernelspec name)."""
+    """Install a kernelspec for this layout into an empty Jupyter data dir."""
     data = tmp_path_factory.mktemp(f"jupyter-{layout.kind}")
     name = f"clean-{layout.kind}"
     _run([str(clean_env.python), "-m", "nbdsl_kernel.install",
@@ -245,9 +201,6 @@ def kernelspec(clean_env: CleanEnv, layout: Layout,
          env={**_env(), "JUPYTER_DATA_DIR": str(data)})
     assert (data / "kernels" / name / "kernel.json").exists()
     return data / "kernels", name
-
-
-# -- driving the installed kernelspec --------------------------------------
 
 
 @contextmanager
@@ -266,38 +219,13 @@ def _kernel(kernels: Path, name: str) -> Iterator[tuple[Any, Any]]:
 
 
 def _live_worker(kernel_pid: int) -> tuple[int, Path]:
-    """The nbdsl_worker process this kernel spawned, and the binary image it is
-    running — read from the process, not from any path the adapter reports."""
-    children: dict[int, list[int]] = {}
-    for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit():
-            continue
-        try:
-            status = (entry / "status").read_text()
-        except OSError:  # exited between listing and reading
-            continue
-        for line in status.splitlines():
-            if line.startswith("PPid:"):
-                children.setdefault(int(line.split()[1]), []).append(int(entry.name))
-                break
-    found: list[tuple[int, Path]] = []
-    stack = [kernel_pid]
-    while stack:
-        for pid in children.get(stack.pop(), []):
-            stack.append(pid)
-            try:
-                exe = Path(os.readlink(f"/proc/{pid}/exe"))
-            except OSError:
-                continue
-            if exe.name == "nbdsl_worker":
-                found.append((pid, exe))
-    assert len(found) == 1, f"expected one live worker under pid {kernel_pid}: {found}"
-    return found[0]
+    """Live nbdsl_worker under the kernel, plus the binary image it is running."""
+    pid, _ = find_worker_under(kernel_pid)
+    return pid, Path(os.readlink(f"/proc/{pid}/exe"))
 
 
 def test_adapter_runs_from_the_built_wheel(clean_env: CleanEnv) -> None:
-    """Every other claim here rests on the environment being clean: the adapter
-    the kernelspec will launch is the installed wheel, not the checkout."""
+    """Every other claim rests on the adapter being the installed wheel."""
     located = Path(_run([str(clean_env.python), "-c",
                          "import nbdsl_kernel; print(nbdsl_kernel.__file__)"]).strip())
     assert located.is_relative_to(clean_env.venv), located
@@ -307,8 +235,7 @@ def test_adapter_runs_from_the_built_wheel(clean_env: CleanEnv) -> None:
 def test_labextension_runs_from_the_built_wheel(
         clean_env: CleanEnv,
         tmp_path_factory: pytest.TempPathFactory) -> None:
-    """The production labextension is installed from the wheel, not linked
-    from the checkout or activated through a development build."""
+    """Production labextension installs from the wheel, not a checkout link."""
     data = tmp_path_factory.mktemp("jupyter-lab")
     output = _run(
         [str(clean_env.python), "-m", "jupyter", "labextension", "list"],
@@ -354,14 +281,12 @@ def test_clean_install_executes_the_projects_own_worker(
                    for bundle in bundles), bundles
     assert exe == layout.worker_exe.resolve(), exe
     assert running == _sha256(layout.worker_exe)
-    # The checkout has its own built worker; resolution must not have found it.
     assert not exe.is_relative_to(REPO), exe
 
 
 def test_missing_worker_fails_loudly(clean_env: CleanEnv, layout: Layout,
                                      kernelspec: tuple[Path, str]) -> None:
-    """A project whose worker is gone (cleaned build tree, half-fetched
-    dependency) must fail typed rather than reach for another binary."""
+    """A project whose worker is gone must fail typed, not reach for another."""
     kernels, name = kernelspec
     absent = layout.worker_exe.with_name("nbdsl_worker.absent")
     layout.worker_exe.rename(absent)

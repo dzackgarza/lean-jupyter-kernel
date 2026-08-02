@@ -26,14 +26,10 @@ cache:
     @cd dsls/nbdsl && lake exe cache get
 
 # Build the core worker package and the reference DSL plugin.
-# The worker re-embeds its build identity here, so the adapter's half is
-# refreshed in the same breath: rebuilding one alone is what makes a kernel
-# refuse the pair (editable installs read _build_info.json from the tree).
 build: build-inner
 
 build-inner:
     @cd worker && lake build nbdsl_worker
-    @python3 scripts/sync_build_info.py
     @cd dsls/nbdsl && lake build NbDsl
 
 # Run the full repository QC gate
@@ -53,8 +49,7 @@ test-inner:
       uv run --isolated --no-project --with build --with pyyaml \
         --with-editable './nbdsl_kernel[test]' sh -c \
         'python -m nbdsl_kernel.install --project "$PWD/dsls/nbdsl" && \
-         python -m pytest conformance/test_runner_contracts.py \
-           nbdsl_kernel/tests/test_build_artifacts.py \
+         python -m pytest nbdsl_kernel/tests/test_worker_resolve.py \
            nbdsl_kernel/tests/test_identity.py \
            nbdsl_kernel/tests/test_restart.py \
            nbdsl_kernel/tests/test_inspect.py \
@@ -65,18 +60,14 @@ test-inner:
 python := "python3"
 export LEAN_NUM_THREADS := "1"
 
-# Semantic plugin conformance (#3): the same six-journey laws against the
-# in-repo reference plugin. Use --journey atomicity directly for a targeted
-# Journey 2 iteration; this recipe is the closure proof.
-# Needs the kernel package installed (jupyter_client, a kernelspec).
+# Semantic plugin conformance (#3): Journeys 2–5 against the in-repo NbDsl case.
 conformance:
-    @{{python}} conformance/runner.py conformance/nbdsl.toml --journey all
+    @{{python}} -m pytest conformance/test_semantic.py -k nbdsl
 
-# …and against an EXTERNAL plugin. Point CONFORMANCE_CAS_DSL at a clean
-# checkout; the profile falls back to a sibling working tree. The qualification
-# script uses --source-dir for its ephemeral exact-candidate checkout.
+# …and against lean-cas-dsl. Point CONFORMANCE_CAS_DSL at a clean checkout, or
+# use the sibling ../lean-cas-dsl fallback. Skips if neither is present.
 conformance-external:
-    @{{python}} conformance/runner.py conformance/lean-cas-dsl.toml --journey all
+    @{{python}} -m pytest conformance/test_semantic.py -k 'lean-cas-dsl'
 
 [private]
 test-commit: test

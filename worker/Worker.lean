@@ -17,7 +17,6 @@ import Worker.Query
 import Worker.Output
 import Worker.SessionCache
 import Worker.ReleaseInfo
-import Worker.BuildCommit
 
 open Worker.Protocol
 open Lean (Json toJson)
@@ -61,22 +60,6 @@ structure Session where
   value, so retaining it is the whole snapshot mechanism. -/
   snapshots : Array Snapshot
   current : Nat
-
-/--
-This binary's immutable identity: the authored compatibility contract
-(`Worker.ReleaseInfo`, a projection of the repository's `release.toml`) plus
-the exact commit it was built from (`Worker.BuildCommit`, generated at build
-time). Reported by both `ready` and `describe`; the adapter refuses to execute
-cells against a worker whose identity disagrees with its own.
--/
-def identity : List (String × Json) :=
-  [("release", Json.str ReleaseInfo.version),
-   ("commit", Json.str BuildCommit.commit),
-   ("dirty", toJson BuildCommit.dirty),
-   ("plugin_api", toJson ReleaseInfo.pluginApi),
-   ("wire", toJson ReleaseInfo.wireProtocol),
-   ("toolchain", Json.str ReleaseInfo.toolchain),
-   ("mathlib", Json.str ReleaseInfo.mathlibRev)]
 
 /-- Echo the request id (if any) into a reply object. -/
 def reply (req : Json) (fields : List (String × Json)) : Json :=
@@ -275,12 +258,13 @@ def handleRequest (session : IO.Ref Session) (inflight : Inflight)
           return reply req [("status", Json.str "ok"), ("snapshot", toJson id)]
   | .ok "describe" =>
       let s ← session.get
-      return reply req <|
+      return reply req
         [("status", Json.str "ok"),
          ("protocol", toJson ReleaseInfo.wireProtocol),
          ("lean", Json.str Lean.versionString),
+         ("release", Json.str ReleaseInfo.version),
          ("snapshot", toJson s.current),
-         ("snapshot_count", toJson s.snapshots.size)] ++ identity
+         ("snapshot_count", toJson s.snapshots.size)]
   | .ok op =>
       return reply req
         [("status", Json.str "unsupported"), ("op", Json.str op)]
@@ -355,14 +339,15 @@ unsafe def main (argv : List String) : IO UInt32 := do
       let inflight : Worker.Inflight ← IO.mkRef none
       let queue ← Std.CloseableChannel.Sync.new
       let _reader ← IO.asTask (Worker.readerTask ch queue inflight) .dedicated
-      writeFrame ch <| Json.mkObj <|
+      writeFrame ch <| Json.mkObj
         [("op", Json.str "ready"),
          ("protocol", toJson Worker.ReleaseInfo.wireProtocol),
          ("lean", Json.str Lean.versionString),
+         ("release", Json.str Worker.ReleaseInfo.version),
          -- The client probes this pid between reply-read slices: a worker
          -- that dies under a still-live `lake env` wrapper is otherwise
          -- invisible to `proc.poll()` and would hang the read.
          ("pid", toJson (← IO.Process.getPID).toNat),
-         ("snapshot", toJson (0 : Nat))] ++ Worker.identity
+         ("snapshot", toJson (0 : Nat))]
       Worker.mainLoop ch queue session inflight
       return 0

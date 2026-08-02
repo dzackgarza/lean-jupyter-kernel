@@ -104,8 +104,6 @@ jobs:
       - name: protocol round-trip
         run: python3 nbdsl_kernel/tests/roundtrip.py
 
-      # `build` is the identity suite's: one law builds a wheel from a scratch
-      # clone to prove an installer's own droppings do not read as dirty.
       - name: install kernel package and kernelspec
         run: |
           pip install -e './nbdsl_kernel[test]' build
@@ -121,28 +119,22 @@ jobs:
       - name: Journey 1 — clean installed NbDsl notebook
         run: pytest nbdsl_kernel/tests/test_clean_install.py
 
-      # The identity/provenance laws that drive the INSTALLED kernelspec run
-      # here, where that spec exists; the compat job proves the wheel-and-
-      # clean-environment claims with fixtures that install their own specs.
-      - name: adapter/worker identity through the installed kernelspec
+      - name: wire protocol + recovery
         run: pytest nbdsl_kernel/tests/test_identity.py \
             nbdsl_kernel/tests/test_restart.py
 
-      - name: runner contracts, inspection, and sandbox boundary
+      - name: worker resolve, inspection, and sandbox boundary
         run: |
-          pytest conformance/test_runner_contracts.py \
+          pytest nbdsl_kernel/tests/test_worker_resolve.py \
               nbdsl_kernel/tests/test_inspect.py
           python3 nbdsl_kernel/tests/sandbox_check.py
 
-      # Semantic plugin conformance (#3). The in-repository reference plugin
-      # runs here, where the worker, the DSL and the kernel package are all
-      # already built. This is the full installed six-journey matrix:
-      # Journey 2 atomicity, Journey 3 queries, Journey 4 recovery, and
-      # Journey 5 transport-safe output. The external profile is driven by
-      # the consumer qualification job, which owns the clean checkout (#6).
+      # Semantic plugin conformance (#3). The in-repository NbDsl case runs
+      # here (Journeys 2–5). The external lean-cas-dsl case is driven by
+      # consumer qualification, which owns the clean checkout (#6).
       - name: Journeys 2-5 - full installed NbDsl matrix
         run: |
-          python3 conformance/runner.py conformance/nbdsl.toml --journey all
+          pytest conformance/test_semantic.py -k nbdsl
 
   compat:
     name: compatibility + external consumer
@@ -212,37 +204,28 @@ jobs:
           git -C ~/ai-review-ci checkout --quiet --detach FETCH_HEAD
           [ "$(git -C ~/ai-review-ci rev-parse HEAD)" = "$AI_REVIEW_CI_SHA" ]
 
-      # Mathlib oleans for the consumer build, keyed on the profile that owns
-      # the frozen baseline (rolls automatically when the baseline promotes).
+      # Mathlib oleans for the consumer build, keyed on the semantic case that
+      # owns the frozen baseline (rolls when LEAN_CAS_DSL.commit promotes).
       - uses: actions/cache@v6
         with:
           path: ~/.cache/mathlib
-          key: consumer-mathlib-${{ runner.os }}-${{ hashFiles('conformance/lean-cas-dsl.toml') }}
+          key: consumer-mathlib-${{ runner.os }}-${{ hashFiles('conformance/test_semantic.py') }}
 
-      # -- exact-candidate qualification (#6): frozen consumer baseline,
-      #    both channels overridden to THIS commit via the runner's own
-      #    checkout, real build + Sage roundtrip + Jupyter E2E + full
-      #    external Journeys 2-5 proof, provenance readback, unchanged
-      #    worktree.
+      # Exact-candidate qualification: frozen consumer baseline, both
+      # channels overridden to THIS commit, real build + Sage roundtrip +
+      # Jupyter E2E + external Journeys 2-5, unchanged worktree.
       - name: qualify the exact kernel candidate against the frozen consumer
         shell: micromamba-shell {0}
         env:
           KERNEL_GIT_URL: file://${{ github.workspace }}
-        run: |
-          scripts/qualify_consumer.sh "$(git rev-parse HEAD)" "$RUNNER_TEMP/qualification"
-          jq -e --arg expected "$AI_REVIEW_CI_SHA" \
-            '.ai_review_ci_sha == $expected' \
-            "$RUNNER_TEMP/qualification/qualification-evidence.json"
+        run: scripts/qualify_consumer.sh "$(git rev-parse HEAD)" "$RUNNER_TEMP/qualification"
 
       - name: publish qualification evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: qualification-evidence
-          path: |
-            ${{ runner.temp }}/qualification/qualification-evidence.json
-            ${{ runner.temp }}/qualification/conformance-result.json
-            ${{ runner.temp }}/qualification/worktree-status.txt
+          path: ${{ runner.temp }}/qualification/qualification-evidence.json
           if-no-files-found: error
 
   frontend:

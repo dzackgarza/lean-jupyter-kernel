@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import IO
 
 import psutil
-from pydantic import ValidationError
 
 from .protocol import (
     COMPLETE_REPLY,
@@ -30,7 +29,7 @@ from .protocol import (
     IS_COMPLETE_REPLY,
     LOAD_SESSION_REPLY,
     SAVE_SESSION_REPLY,
-    BuildInfo,
+    WIRE_PROTOCOL,
     CompleteOk,
     ExecuteReply,
     InspectOk,
@@ -39,7 +38,6 @@ from .protocol import (
     ReadyFrame,
     SaveSessionOk,
     WorkerError,
-    compare,
 )
 
 RawFrame = dict[str, object]
@@ -48,8 +46,6 @@ READY_TIMEOUT = 600.0  # first prelude import loads mathlib oleans
 REPLY_TIMEOUT = 3600.0  # elaboration can legitimately be slow; interrupt kills
 CACHE_RESTORE_TIMEOUT = 30.0  # cache is optional; the canonical ledger replays
 CANCEL_GRACE = 3.0  # cooperative-cancel window before the worker is killed
-
-BUILD_INFO = Path(__file__).parent / "_build_info.json"
 
 
 class WorkerDied(RuntimeError):
@@ -63,7 +59,17 @@ class WorkerInterrupted(WorkerDied):
     re-executed."""
 
 
+class WireProtocolError(RuntimeError):
+    """The worker speaks an incompatible wire protocol version."""
+
+
 LIVENESS_SLICE = 5.0  # reply-wait slice between worker liveness probes
+
+
+def expected_wire_protocol() -> int:
+    """Adapter wire expectation. NBDSL_WIRE_PROTOCOL overrides for tests."""
+    raw = os.environ.get("NBDSL_WIRE_PROTOCOL")
+    return int(raw) if raw is not None else WIRE_PROTOCOL
 
 
 def _process_running(pid: int) -> bool:
@@ -78,39 +84,6 @@ def _process_running(pid: int) -> bool:
     except (psutil.NoSuchProcess, psutil.ZombieProcess):
         return False
     return status not in {psutil.STATUS_DEAD, psutil.STATUS_ZOMBIE}
-
-
-class ProvenanceError(RuntimeError):
-    """This adapter cannot prove it may run against this worker."""
-
-
-def adapter_identity() -> BuildInfo:
-    """This adapter's build identity, generated at wheel build time.
-
-    Read on worker start, never at kernel construction: a kernel that dies
-    before answering kernel_info is an opaque failure ("Kernel died before
-    replying to kernel_info"), not a loud one. Missing identity must reach the
-    notebook as a typed error on execute, like the init-cell path.
-
-    NBDSL_BUILD_INFO overrides the path. That seam exists so refusal can be
-    proved against a real kernel and a real worker: a test points it at a
-    scratch copy with one field changed. The authoritative file is never
-    written by anything but the build hook.
-    """
-    path = Path(os.environ.get("NBDSL_BUILD_INFO") or BUILD_INFO)
-    try:
-        raw = path.read_text()
-    except (OSError, UnicodeError) as e:
-        raise ProvenanceError(
-            f"adapter build identity missing at {path}; install nbdsl-kernel "
-            "from a built wheel or an editable install so hatch_build.py "
-            f"generates it ({e})") from e
-    try:
-        payload = json.loads(raw)
-        return BuildInfo.model_validate(payload)
-    except (json.JSONDecodeError, ValidationError) as e:
-        raise ProvenanceError(
-            f"adapter build identity at {path} is invalid") from e
 
 
 def find_worker_exe(project_root: str | Path) -> Path | None:
@@ -213,9 +186,6 @@ class WorkerClient:
         self.cache_dir: str | None = None
         self._rid = 0
         self._pending: dict[object, RawFrame] = {}
-        # Set by every start(): the compared identities and the hash of the
-        # binary actually executed. Published over the nbdsl_provenance comm.
-        self.provenance: dict[str, object] | None = None
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -300,7 +270,6 @@ class WorkerClient:
         assert (self.proc is None and self.req_fd is None
                 and self.replies is None and self._request_pipe is None
                 and self._reply_pipe is None)
-        adapter = adapter_identity()
         worker_exe = self._worker_exe()
         with ExitStack() as cleanup:
             req_r_fd, req_w_fd = os.pipe()
@@ -350,7 +319,10 @@ class WorkerClient:
                 **ready.model_dump(),
                 "pid": host_worker_pid,
             })
-            provenance = self._check_identity(adapter, ready, worker_exe)
+            if ready.protocol != expected_wire_protocol():
+                raise WireProtocolError(
+                    f"worker wire protocol {ready.protocol} is incompatible "
+                    f"with adapter wire protocol {expected_wire_protocol()}")
 
             self.proc = proc
             self._request_pipe = req_w
@@ -359,44 +331,9 @@ class WorkerClient:
             self.replies = replies
             self.worker_pid = ready.pid
             self._pump_threads = pump_threads
-            self.provenance = provenance
             self.snapshot = ready.snapshot
             cleanup.pop_all()
         return ready
-
-    def _check_identity(
-            self, adapter: BuildInfo, ready: ReadyFrame,
-            worker_exe: Path) -> dict[str, object]:
-        """Validate a launch before its process tree or channels are owned."""
-        worker = BuildInfo.model_validate(ready.model_dump())
-        disagree, agreed = compare(adapter, worker)
-        expected_lean = adapter.toolchain.removeprefix("leanprover/lean4:v")
-        if ready.protocol != adapter.wire:
-            disagree.append("protocol")
-        if ready.lean != expected_lean:
-            disagree.append("lean")
-        with Path(f"/proc/{ready.pid}/exe").open("rb") as f:
-            digest = hashlib.file_digest(f, "sha256").hexdigest()
-        provenance: dict[str, object] = {
-            "adapter": adapter.model_dump(),
-            "worker": worker.model_dump(),
-            "worker_binary_sha256": digest,
-            "agreed": agreed,
-        }
-        if disagree:
-            raise ProvenanceError(
-                f"adapter and worker disagree on {', '.join(disagree)}; "
-                "refusing to execute cells. "
-                f"adapter={adapter.model_dump_json()} "
-                f"worker={worker.model_dump_json()} "
-                f"worker_binary={worker_exe}")
-        if agreed is not True:
-            self.on_stream(
-                "stderr",
-                f"nbdsl: adapter {adapter.commit[:8]} and worker "
-                f"{worker.commit[:8]} are not a verified pair ({agreed}); "
-                "`just build` rebuilds both halves together.\n")
-        return provenance
 
     def _pump(self, pipe: IO[bytes], name: str) -> None:
         for line in iter(pipe.readline, b""):

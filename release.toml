@@ -1,15 +1,9 @@
-# The one authored static compatibility contract for lean-jupyter-kernel.
+# The authored static compatibility contract for lean-jupyter-kernel.
 #
-# Every tool-owned version/toolchain declaration in this repository is a
-# GENERATED projection of this file (scripts/release_projection.py write);
-# CI fails if any projection drifts (… check). The release tag is derived
-# deterministically as "v" + release.version. Build provenance adds the
-# exact clean git commit at build time — a tracked file cannot truthfully
-# contain its own commit, so that value never appears here.
-#
-# Repository tools parse this as TOML. `mathlib` is the authored Lake input
-# revision; `mathlib_commit` is the immutable commit that the checked-in Lake
-# manifest must resolve for that input.
+# Package/toolchain/wire versions are projected into packaging files by
+# scripts/release_projection.py. The release tag is "v" + release.version.
+# Runtime compares only the wire protocol; CI's checked-out SHA identifies
+# a candidate — there is no exact-commit identity theater at cell execute.
 
 schema = 1
 

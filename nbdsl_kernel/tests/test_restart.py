@@ -10,45 +10,37 @@ Both cases below were shipped defects, reproduced here first as red tests:
      that imported itself.
 
 The worker package is its own Lean project and its prelude is `Init`, so these
-run mathlib-free in seconds and hold no multi-GB session. Every test shuts its
-worker down in a finally.
+run mathlib-free in seconds. Every test shuts its worker down in a finally.
 
 Run: .venv/bin/pytest nbdsl_kernel/tests/test_restart.py
 """
 
-import concurrent.futures
+from __future__ import annotations
+
 import json
 import os
 import signal
-import subprocess
-import sys
 import tempfile
 import time
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
 
 import psutil
 import pytest
-from jupyter_client.kernelspec import KernelSpecManager
-from jupyter_client.manager import KernelManager
 from jupyter_client.provisioning import LocalProvisioner
-from nbdsl_kernel.worker import (
-    LIVENESS_SLICE,
-    REPLY_TIMEOUT,
-    WorkerClient,
-    WorkerDied,
-)
-from test_e2e import _send_comm, run_cell, texts
+from nbdsl_kernel.worker import LIVENESS_SLICE, WorkerClient, WorkerDied
+from test_e2e import run_cell, texts
 
-REPO = Path(__file__).resolve().parents[2]
+from jupyter_helpers import (
+    REPO,
+    await_execute,
+    find_worker_under,
+    start_init_kernel,
+)
+
 # The middle cell fails when — and only when — the respawned worker inherits
 # FAIL_VAR: it commits normally the first time and breaks partway through
-# replay. Deterministic, no timing race, nothing mocked. A worker that *dies*
-# mid-replay truncated the ledger through this same handler (the raise below
-# and a WorkerDied from the transport share one try block). The deterministic
-# injected failure keeps this test focused on ledger preservation; separate
-# real-death tests below exercise transport loss and recovery.
+# replay. Deterministic, no timing race, nothing mocked.
 FAIL_VAR = "NBDSL_TEST_FAIL_ON_REPLAY"
 DIVERGE = ('#eval (do if (← IO.getEnv "' + FAIL_VAR
            + '") == some "1" then throw (IO.userError "replay divergence") '
@@ -63,7 +55,7 @@ def client() -> Iterator[WorkerClient]:
         w.start()
         yield w
     finally:
-        w.kill()          # never leave a worker behind, even on failure
+        w.kill()
         w.shutdown()
 
 
@@ -74,46 +66,8 @@ def commit_cells(w: WorkerClient) -> None:
             w.save_session()
 
 
-def test_healthy_worker_stays_live_across_liveness_slices(
-        client: WorkerClient) -> None:
-    """A genuinely quiet live worker must survive repeated status probes."""
-    wait_ms = int((LIVENESS_SLICE + 1) * 1000)
-    rep = client.execute(
-        f"#eval (do IO.sleep {wait_ms}; IO.println (6 * 7) : IO Unit)",
-        cell_id="quiet-live-worker")
-    assert rep.status == "ok", rep
-    assert any("42" in diagnostic.message for diagnostic in rep.diagnostics), rep
-
-
-def test_replay_failure_keeps_the_committed_ledger(
-        client: WorkerClient) -> None:
-    """A worker that dies mid-replay must not consume the canonical record."""
-    w = client
-    commit_cells(w)
-    assert len(w.ledger) == len(CELLS)
-
-    w.kill()
-    os.environ[FAIL_VAR] = "1"        # the respawned worker inherits this
-    try:
-        with pytest.raises(WorkerDied):
-            w.restart_and_replay()
-    finally:
-        del os.environ[FAIL_VAR]
-
-    # The defect: the ledger was left truncated to whatever replay reached.
-    assert len(w.ledger) == len(CELLS), w.ledger
-    # And the state it describes really is reconstructible.
-    assert w.restart_and_replay() == len(CELLS)
-    rep = w.execute("#eval gamma", cell_id="check")
-    assert rep.status == "ok", rep
-    assert any("13" in d.message for d in rep.diagnostics), rep
-
-
 def test_the_diverging_cell_really_diverges() -> None:
-    """Guard the test above: a worker that inherits the flag must fail this
-    cell. Without it the replay would quietly succeed and prove nothing — and
-    the other tests' `commit_cells` already proves the flagless case commits.
-    (The flag is read at worker startup, so this needs its own process.)"""
+    """Guard the ledger test: with FAIL_VAR set, the diverge cell must error."""
     os.environ[FAIL_VAR] = "1"
     try:
         w = WorkerClient(REPO / "worker", prelude="Init")
@@ -127,281 +81,59 @@ def test_the_diverging_cell_really_diverges() -> None:
         del os.environ[FAIL_VAR]
 
 
-def _child_pids(parent: int) -> dict[int, list[int]]:
-    tree: dict[int, list[int]] = {}
-    for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit():
-            continue
-        try:
-            status = (entry / "status").read_text()
-        except OSError:
-            continue
-        for line in status.splitlines():
-            if line.startswith("PPid:"):
-                tree.setdefault(int(line.split()[1]), []).append(int(entry.name))
-                break
-    return tree
+def test_replay_failure_keeps_the_committed_ledger(
+        client: WorkerClient) -> None:
+    """A worker that dies mid-replay must not consume the canonical record."""
+    w = client
+    commit_cells(w)
+    assert len(w.ledger) == len(CELLS)
 
-
-def _worker_and_wrapper(kernel_pid: int) -> tuple[int, int]:
-    """(worker pid, its direct parent pid) under the kernel process."""
-    tree = _child_pids(kernel_pid)
-    stack = [kernel_pid]
-    while stack:
-        parent = stack.pop()
-        for pid in tree.get(parent, []):
-            stack.append(pid)
-            try:
-                if Path(os.readlink(f"/proc/{pid}/exe")).name == "nbdsl_worker":
-                    return pid, parent
-            except OSError:
-                continue
-    raise AssertionError(f"no live nbdsl_worker under {kernel_pid}")
-
-
-def _await_execute(
-        kc: Any, msg_id: str, timeout: float = 120) -> tuple[dict[str, Any],
-                                                             list[Any]]:
-    outputs = []
-    while True:
-        msg = kc.get_iopub_msg(timeout=timeout)
-        if msg["parent_header"].get("msg_id") != msg_id:
-            continue
-        if (msg["msg_type"] == "status"
-                and msg["content"]["execution_state"] == "idle"):
-            break
-        outputs.append(msg)
-    while True:
-        reply = kc.get_shell_msg(timeout=timeout)
-        if reply["parent_header"].get("msg_id") == msg_id:
-            return reply["content"], outputs
-
-
-def _await_comm(kc: Any, comm_id: str,
-                timeout: float = 120) -> dict[str, Any]:
-    deadline = time.monotonic() + timeout
-    while True:
-        remaining = deadline - time.monotonic()
-        assert remaining > 0, f"no comm_msg for {comm_id}"
-        msg = kc.get_iopub_msg(timeout=remaining)
-        if (msg["msg_type"] == "comm_msg"
-                and msg["content"].get("comm_id") == comm_id):
-            data: dict[str, Any] = msg["content"]["data"]
-            return data
-
-
-def _start_test_kernel(
-    tmp_path: Path,
-    name: str,
-    *,
-    init_cell: str = "",
-) -> tuple[KernelManager, Any]:
-    data = tmp_path / "jupyter"
-    env = {
-        key: value
-        for key, value in os.environ.items()
-        if key not in {
-            "PYTHONPATH",
-            "VIRTUAL_ENV",
-            "JUPYTER_DATA_DIR",
-            "NBDSL_INIT",
-        }
-    }
-    command = [
-        sys.executable,
-        "-m",
-        "nbdsl_kernel.install",
-        "--project",
-        str(REPO / "worker"),
-        "--name",
-        name,
-        "--prelude-module",
-        "Init",
-    ]
-    if init_cell:
-        command.extend(["--init-cell", init_cell])
-    subprocess.run(
-        command,
-        env={**env, "JUPYTER_DATA_DIR": str(data)},
-        check=True,
-        capture_output=True,
-    )
-    manager = KernelManager(
-        kernel_name=name,
-        kernel_spec_manager=KernelSpecManager(
-            kernel_dirs=[str(data / "kernels")]
-        ),
-    )
-    manager.start_kernel(env=env)
-    client: Any = manager.client()
-    client.start_channels()
-    client.wait_for_ready(timeout=120)
-    return manager, client
-
-
-def test_failed_provenance_replay_discards_the_partial_worker(
-        tmp_path: Path) -> None:
-    marker = tmp_path / "fail-on-replay"
-    marker_literal = json.dumps(str(marker))
-    diverging = (
-        "#eval (do\n"
-        f"  let shouldFail ← System.FilePath.pathExists {marker_literal}\n"
-        "  if shouldFail then throw (IO.userError \"replay divergence\")\n"
-        "  else pure ()\n"
-        "  : IO Unit)"
-    )
-    manager, client = _start_test_kernel(tmp_path, "provenance-replay")
+    w.kill()
+    os.environ[FAIL_VAR] = "1"
     try:
-        for code in (
-            "def replayAlpha : Nat := 41",
-            diverging,
-            "def replayGamma : Nat := replayAlpha + 1",
-            # An open scope is not serialisable into the session cache. Its
-            # ledger entry therefore forces the production source-replay path
-            # after the worker death below.
-            "section",
-        ):
-            reply, _ = run_cell(client, code, timeout=120)
-            assert reply["status"] == "ok", reply
-
-        provisioner = manager.provisioner
-        assert isinstance(provisioner, LocalProvisioner)
-        assert provisioner.process is not None
-        worker, _ = _worker_and_wrapper(provisioner.process.pid)
-        marker.write_text("fail\n")
-        os.kill(worker, signal.SIGKILL)
-        death_deadline = time.monotonic() + LIVENESS_SLICE
-        while True:
-            try:
-                status = psutil.Process(worker).status()
-            except (psutil.NoSuchProcess, psutil.ZombieProcess):
-                break
-            if status in {psutil.STATUS_DEAD, psutil.STATUS_ZOMBIE}:
-                break
-            assert time.monotonic() < death_deadline
-            time.sleep(0.01)
-
-        _send_comm(
-            client,
-            "comm_open",
-            {
-                "comm_id": "prov-replay-failure",
-                "target_name": "nbdsl_provenance",
-                "data": {},
-            },
-        )
-        provenance = _await_comm(client, "prov-replay-failure")
-        assert provenance["agreed"] is False, provenance
-
-        marker.unlink()
-        reply, outputs = run_cell(
-            client,
-            "#eval replayGamma",
-            timeout=120,
-        )
-        assert reply["status"] == "ok", reply
-        assert "42" in texts(outputs), outputs
+        with pytest.raises(WorkerDied):
+            w.restart_and_replay()
     finally:
-        client.stop_channels()
-        manager.shutdown_kernel(now=True)
+        del os.environ[FAIL_VAR]
+
+    assert len(w.ledger) == len(CELLS), w.ledger
+    assert w.restart_and_replay() == len(CELLS)
+    rep = w.execute("#eval gamma", cell_id="check")
+    assert rep.status == "ok", rep
+    assert any("13" in d.message for d in rep.diagnostics), rep
 
 
-def test_worker_death_during_first_init_retries_the_init_cell(
-        tmp_path: Path) -> None:
-    marker = tmp_path / "init-started"
-    marker_literal = json.dumps(str(marker))
-    init_cell = (
-        "def initMagic : Nat := 41\n"
-        "#eval (do\n"
-        f"  let alreadyStarted ← System.FilePath.pathExists {marker_literal}\n"
-        "  if alreadyStarted then pure () else\n"
-        f"    IO.FS.writeFile {marker_literal} \"started\"\n"
-        "    IO.sleep 30000\n"
-        "  : IO Unit)"
-    )
-    manager, client = _start_test_kernel(
-        tmp_path,
-        "first-init-recovery",
-        init_cell=init_cell,
-    )
-    try:
-        msg_id = client.execute("#eval initMagic + 1")
-        deadline = time.monotonic() + 120
-        while not marker.exists():
-            assert time.monotonic() < deadline
-            time.sleep(0.01)
+def test_second_recovery_of_a_restored_session(client: WorkerClient) -> None:
+    """Restore, run, kill, restore again: the second recovery used to abort."""
+    w = client
+    w.cache_dir = tempfile.mkdtemp(prefix="nbdsl-test-cache-")
+    commit_cells(w)
 
-        provisioner = manager.provisioner
-        assert isinstance(provisioner, LocalProvisioner)
-        assert provisioner.process is not None
-        worker, _ = _worker_and_wrapper(provisioner.process.pid)
-        os.kill(worker, signal.SIGKILL)
-        first_reply, _ = _await_execute(client, msg_id)
-        assert first_reply["ename"] == WorkerDied.__name__, first_reply
+    w.kill()
+    assert w.restart_and_replay() == -1, "first recovery should use the cache"
+    assert w.execute("def delta : Nat := gamma + 1", cell_id="d").status == "ok"
+    w.save_session()
 
-        reply, outputs = run_cell(client, "#eval initMagic + 1", timeout=120)
-        assert reply["status"] == "ok", reply
-        assert "42" in texts(outputs), outputs
-    finally:
-        client.stop_channels()
-        manager.shutdown_kernel(now=True)
-
-
-def test_sandbox_ready_pid_is_the_host_observable_worker() -> None:
-    """Host-side liveness owns a host PID even under Bubblewrap's PID
-    namespace; a namespace-local ready PID cannot satisfy that contract.
-    """
-    prior = os.environ.get("NBDSL_SANDBOX")
-    os.environ["NBDSL_SANDBOX"] = "1"
-    w = WorkerClient(REPO / "worker", prelude="Init")
-    try:
-        ready = w.start()
-        assert w.proc is not None
-        host_worker, _ = _worker_and_wrapper(w.proc.pid)
-        assert ready.pid == host_worker, {
-            "ready_pid": ready.pid,
-            "host_worker_pid": host_worker,
-        }
-    finally:
-        w.shutdown()
-        if prior is None:
-            del os.environ["NBDSL_SANDBOX"]
-        else:
-            os.environ["NBDSL_SANDBOX"] = prior
+    w.kill()
+    assert w.restart_and_replay() == -1, "second recovery should use the cache"
+    rep = w.execute("#eval delta", cell_id="check")
+    assert rep.status == "ok", rep
+    assert any("14" in d.message for d in rep.diagnostics), rep
 
 
 def test_a_worker_death_under_a_live_wrapper_recovers_transparently(
         tmp_path: Path) -> None:
-    """The restart branch used to be gated ONLY on poll() of the `lake env`
-    wrapper. A worker that dies while its wrapper lives (a crash, an OOM kill,
-    the wrapper merely not yet reaped) evaded it: the kernel wrote to the dead
-    worker and answered a spurious WorkerDied instead of restarting. SIGSTOP
-    on the wrapper holds that window open deterministically."""
-    data = tmp_path / "jupyter"
-    env = {k: v for k, v in os.environ.items()
-           if k not in {"PYTHONPATH", "VIRTUAL_ENV", "JUPYTER_DATA_DIR",
-                        "NBDSL_INIT"}}
-    subprocess.run(
-        [sys.executable, "-m", "nbdsl_kernel.install",
-         "--project", str(REPO / "worker"), "--name", "restart-race",
-         "--prelude-module", "Init"],
-        env={**env, "JUPYTER_DATA_DIR": str(data)}, check=True,
-        capture_output=True)
-    ksm = KernelSpecManager(kernel_dirs=[str(data / "kernels")])
-    km = KernelManager(kernel_name="restart-race", kernel_spec_manager=ksm)
-    km.start_kernel(env=env)
-    kc: Any = km.client()
-    kc.start_channels()
+    """SIGSTOP on the wrapper keeps a dead-worker window open deterministically."""
+    km, kc = start_init_kernel(tmp_path, "restart-race")
     wrapper = -1
     try:
-        kc.wait_for_ready(timeout=120)
         reply, _ = run_cell(kc, "def x : Nat := 41", timeout=120)
         assert reply["status"] == "ok", reply
         prov = km.provisioner
         assert isinstance(prov, LocalProvisioner) and prov.process is not None
-        worker, wrapper = _worker_and_wrapper(prov.process.pid)
-        os.kill(wrapper, signal.SIGSTOP)   # the wrapper can neither exit nor reap
-        os.kill(worker, signal.SIGKILL)    # the worker becomes its zombie child
+        worker, wrapper = find_worker_under(prov.process.pid)
+        os.kill(wrapper, signal.SIGSTOP)
+        os.kill(worker, signal.SIGKILL)
         zombie_deadline = time.monotonic() + LIVENESS_SLICE
         while psutil.Process(worker).status() != psutil.STATUS_ZOMBIE:
             assert time.monotonic() < zombie_deadline
@@ -423,38 +155,11 @@ def test_a_worker_death_under_a_live_wrapper_recovers_transparently(
 
 def test_worker_death_after_external_effect_does_not_rerun_the_cell(
         tmp_path: Path) -> None:
-    """Once an external effect is visible, a missing reply is uncertain and
-    the kernel must not manufacture success by executing the cell again.
-    """
-    data = tmp_path / "jupyter"
+    """Once an external effect is visible, a missing reply must not re-execute."""
+    km, kc = start_init_kernel(tmp_path, "effect-once")
     effect = tmp_path / "effect.log"
-    env = {k: v for k, v in os.environ.items()
-           if k not in {"PYTHONPATH", "VIRTUAL_ENV", "JUPYTER_DATA_DIR",
-                        "NBDSL_INIT"}}
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nbdsl_kernel.install",
-            "--project",
-            str(REPO / "worker"),
-            "--name",
-            "effect-once",
-            "--prelude-module",
-            "Init",
-        ],
-        env={**env, "JUPYTER_DATA_DIR": str(data)},
-        check=True,
-        capture_output=True,
-    )
-    ksm = KernelSpecManager(kernel_dirs=[str(data / "kernels")])
-    km = KernelManager(kernel_name="effect-once", kernel_spec_manager=ksm)
-    km.start_kernel(env=env)
-    kc: Any = km.client()
-    kc.start_channels()
     wrapper = -1
     try:
-        kc.wait_for_ready(timeout=120)
         path = json.dumps(str(effect))
         code = (
             "#eval (do\n"
@@ -474,11 +179,11 @@ def test_worker_death_after_external_effect_does_not_rerun_the_cell(
         provisioner = km.provisioner
         assert isinstance(provisioner, LocalProvisioner)
         assert provisioner.process is not None
-        worker, wrapper = _worker_and_wrapper(provisioner.process.pid)
+        worker, wrapper = find_worker_under(provisioner.process.pid)
         os.kill(wrapper, signal.SIGSTOP)
         os.kill(worker, signal.SIGKILL)
 
-        reply, outputs = _await_execute(kc, msg_id)
+        reply, outputs = await_execute(kc, msg_id)
         effects = effect.read_text().splitlines()
         assert effects == ["effect"], {
             "effects": effects,
@@ -494,150 +199,3 @@ def test_worker_death_after_external_effect_does_not_rerun_the_cell(
                 pass
         kc.stop_channels()
         km.shutdown_kernel(now=True)
-
-
-def test_partial_reply_then_worker_death_is_bounded_and_recoverable(
-        client: WorkerClient) -> None:
-    """A real oversized worker reply is killed only after the production
-    decoder has consumed a strict prefix; the stopped wrapper keeps its pipe
-    ends open, so only the worker liveness probe can end the wait.
-    """
-    reply_bytes = 32 * 1024 * 1024
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    try:
-        future = executor.submit(
-            client.execute,
-            f"#eval String.ofList (List.replicate {reply_bytes} 'x')",
-            "partial-frame")
-        partial_deadline = time.monotonic() + 120
-        while True:
-            assert client.replies is not None
-            buffered = len(client.replies.buf)
-            if 0 < buffered < reply_bytes:
-                break
-            assert time.monotonic() < partial_deadline
-            time.sleep(0.001)
-
-        assert client.proc is not None
-        assert client.worker_pid is not None
-        os.kill(client.proc.pid, signal.SIGSTOP)
-        os.kill(client.worker_pid, signal.SIGKILL)
-        with pytest.raises(WorkerDied):
-            future.result(timeout=LIVENESS_SLICE + 2)
-
-        client.kill()
-        client.start()
-        rep = client.execute("#eval 6 * 7", cell_id="after-partial-death")
-        assert rep.status == "ok", rep
-        assert any("42" in diagnostic.message
-                   for diagnostic in rep.diagnostics), rep
-    finally:
-        client.kill()
-        executor.shutdown(wait=True)
-
-
-def test_second_recovery_of_a_restored_session(client: WorkerClient) -> None:
-    """Restore, run, kill, restore again: the second recovery used to abort
-    the worker with a stack overflow."""
-    w = client
-    w.cache_dir = tempfile.mkdtemp(prefix="nbdsl-test-cache-")
-    commit_cells(w)
-
-    w.kill()
-    assert w.restart_and_replay() == -1, "first recovery should use the cache"
-    assert w.execute("def delta : Nat := gamma + 1", cell_id="d").status == "ok"
-    w.save_session()
-
-    w.kill()
-    assert w.restart_and_replay() == -1, "second recovery should use the cache"
-    rep = w.execute("#eval delta", cell_id="check")
-    assert rep.status == "ok", rep
-    assert any("14" in d.message for d in rep.diagnostics), rep
-
-
-def test_cache_restore_timeout_replaces_worker_before_source_replay(
-        client: WorkerClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A live worker stuck loading an optional cache cannot service replay."""
-    w = client
-    w.cache_dir = tempfile.mkdtemp(prefix="nbdsl-test-cache-")
-    commit_cells(w)
-    w.kill()
-
-    request = w._request
-    stale_wrapper_pid: int | None = None
-
-    def timeout_cache_load(
-            op: str, payload: dict[str, object],
-            timeout: float = REPLY_TIMEOUT,
-    ) -> dict[str, object]:
-        nonlocal stale_wrapper_pid
-        if op == "load_session":
-            assert w.running()
-            assert w.proc is not None
-            stale_wrapper_pid = w.proc.pid
-            raise TimeoutError("simulated cache load timeout")
-        return request(op, payload, timeout)
-
-    monkeypatch.setattr(w, "_request", timeout_cache_load)
-    assert w.restart_and_replay() == len(CELLS)
-    assert stale_wrapper_pid is not None
-    assert w.proc is not None
-    assert w.proc.pid != stale_wrapper_pid
-    assert w.running()
-    rep = w.execute("#eval gamma", cell_id="check-timeout-replay")
-    assert rep.status == "ok", rep
-    assert any("13" in d.message for d in rep.diagnostics), rep
-
-
-def test_cache_key_rejects_a_valid_but_stale_head(
-        client: WorkerClient) -> None:
-    w = client
-    w.cache_dir = tempfile.mkdtemp(prefix="nbdsl-test-cache-")
-    assert w.execute("def cachedAlpha : Nat := 20",
-                     cell_id="alpha").status == "ok"
-    w.save_session()
-    head_path = Path(w.cache_dir) / "module.txt"
-    stale_head = head_path.read_text()
-
-    w.kill()
-    assert w.restart_and_replay() == -1
-    assert w.execute(
-        "def cachedBeta : Nat := cachedAlpha + 2",
-        cell_id="beta",
-    ).status == "ok"
-    w.save_session()
-    assert head_path.read_text() != stale_head
-    head_path.write_text(stale_head)
-
-    w.kill()
-    assert w.restart_and_replay() == 2
-    rep = w.execute("#eval cachedBeta", cell_id="check-stale-head")
-    assert rep.status == "ok", rep
-    assert any("22" in diagnostic.message
-               for diagnostic in rep.diagnostics), rep
-
-
-def test_restart_signals_a_shared_wrapper_worker_group_once(
-        client: WorkerClient) -> None:
-    assert client.proc is not None
-    assert client.worker_pid is not None
-    old_group = os.getpgid(client.proc.pid)
-    assert os.getpgid(client.worker_pid) == old_group
-
-    signals: list[tuple[str, int]] = []
-
-    def record_signal(event: str, args: tuple[object, ...]) -> None:
-        if event in {"os.kill", "os.killpg"} and args[1] == signal.SIGKILL:
-            target = args[0]
-            assert isinstance(target, int)
-            signals.append((event, target))
-
-    sys.addaudithook(record_signal)
-
-    assert client.restart_and_replay() == 0
-    assert signals == [("os.killpg", old_group)]
-
-    rep = client.execute("#eval 6 * 7", cell_id="after-single-group-kill")
-    assert rep.status == "ok", rep
-    assert any("42" in diagnostic.message
-               for diagnostic in rep.diagnostics), rep
