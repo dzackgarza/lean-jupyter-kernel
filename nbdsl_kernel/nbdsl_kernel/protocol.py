@@ -58,9 +58,8 @@ class ReadyFrame(_Frame):
     op: Literal["ready"]
     protocol: int
     lean: str
-    #: The worker process itself — NOT the `lake env` wrapper the client
-    #: spawned. Liveness probes must target this pid; the wrapper can outlive
-    #: (or lag) the worker and its poll() proves nothing about the worker.
+    #: Host PID of the worker. Under Bubblewrap this is rewritten by the
+    #: client from the namespace-local ready value to the host-visible PID.
     pid: PositivePid
     snapshot: int
     release: str | None = None

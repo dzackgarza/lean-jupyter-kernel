@@ -1,8 +1,4 @@
-"""Semantic conformance: ten laws × two plugins via pytest.
-
-Journeys 2–5 through the installed kernelspec. Vocabulary is frozen
-dataclasses (no TOML / result JSON / provenance). One mathlib worker at a time.
-"""
+"""Semantic conformance: ten laws × two plugins via pytest (frozen vocab, one worker)."""
 
 from __future__ import annotations
 
@@ -31,11 +27,9 @@ def _kernel_repo() -> Path:
             if (c / "release.toml").exists() and (c / "nbdsl_kernel").is_dir():
                 return c
     raise RuntimeError("cannot locate the kernel repository")
-
 REPO = _kernel_repo()
 sys.path.insert(0, str(REPO / "nbdsl_kernel/tests"))
 from roundtrip import FrameReader, write_frame  # noqa: E402  independent oracle
-
 STARTUP, QUERY_TIMEOUT, MIN_FREE_GB = 900.0, 120.0, 6
 LEAN_NUM_THREADS = "1"
 CONFORMANCE_LOCK = Path(os.environ.get(
@@ -47,14 +41,12 @@ CONFORMANCE_LOCK_TIMEOUT = 15.0
 class FailureVocab:
     demo_prefix: str; demo_probe: str; prefix: str; output: str
     command: str; probe: str; output_marker: str; output_mime: str
-
 @dataclass(frozen=True)
 class CancelVocab:
     demo_prefix: str; demo_probe: str; prefix: str
     slow_header: str; slow_step: str; slow_repeat: int; slow_footer: str
     output: str; output_marker: str; output_mime: str
     interrupt_after_seconds: float; probe: str
-
 @dataclass(frozen=True)
 class QueryVocab:
     garbage: str
@@ -64,14 +56,12 @@ class QueryVocab:
     insp_constant_code: str; insp_constant_cursor: int; constant_signature: str
     insp_registered_code: str; insp_registered_cursor: int
     registered_signature: str
-
 @dataclass(frozen=True)
 class OutputVocab:
     ordinary_command: str; ordinary_marker: str
     rich_command: str; rich_mimes: tuple[str, ...]
     incremental_command: str; incremental_markers: tuple[str, ...]
     forge_command: str; forge_marker: str
-
 @dataclass(frozen=True)
 class PluginCase:
     id: str; source: str; commit: str
@@ -86,12 +76,10 @@ class PluginCase:
     cancellation: CancelVocab
     replay_force: tuple[str, ...]; replay_restore: tuple[str, ...]
     queries: QueryVocab; output: OutputVocab
-
     def obs_cfg(self) -> dict[str, Any]:
         return {"command": self.observation_command,
                 "mimes": list(self.observation_mimes),
                 "projection": list(self.observation_projection)}
-
 def _mk(t: tuple) -> PluginCase:
     (id_, source, commit, senv, sfall, package, prelude, kname, shape,
      setup, reg, obs, mimes, proj, ctrl, fail, parse, cancel,
@@ -101,7 +89,6 @@ def _mk(t: tuple) -> PluginCase:
         setup, reg, obs, mimes, proj, ctrl,
         FailureVocab(*fail), FailureVocab(*parse), CancelVocab(*cancel),
         rforce, rrestore, QueryVocab(*queries), OutputVocab(*output))
-
 NBDLSL = _mk(('nbdsl', 'https://github.com/dzackgarza/lean-jupyter-kernel', 'IN-REPOSITORY', None, None, 'dsls/nbdsl', 'NbDsl.Notebook', 'nbdsl', 'constant', ('open NbDsl NbDsl.Std', 'let confG := GrpCat.of PUnit ∈ Groups'), 'prefer groupsToSets', '#via confG ∈ Sets', ('application/vnd.nbdsl.path+json', 'text/plain'), ('object', 'source', 'target', 'steps'), ('open NbDsl NbDsl.Std',), ('def confErrorDemo : Nat := 37', '#check confErrorDemo', 'def confErrorLeak : Nat := 37', '#via confG ∈ Sets\n#eval IO.println "candidate-elaboration-output"', '#check zzzNoSuchNameZzz', '#check confErrorLeak', 'candidate-elaboration-output', 'application/vnd.nbdsl.path+json'), ('def confParseDemo : Nat := 37', '#check confParseDemo', 'def confParseLeak : Nat := 37', '#via confG ∈ Sets\n#eval IO.println "candidate-parse-output"', 'def confParseTail : Nat :=', '#check confParseLeak', 'candidate-parse-output', 'application/vnd.nbdsl.path+json'), ('let confCancelDemo := GrpCat.of PUnit ∈ Groups', '#home confCancelDemo', 'let confH := GrpCat.of PUnit ∈ Groups', 'set_option maxHeartbeats 0 in\nexample : True := by', '  have h{i} : Nat := {i}', 5000, '  trivial', '#via confG ∈ Sets\n#eval IO.println "candidate-cancellation-output"', 'candidate-cancellation-output', 'application/vnd.nbdsl.path+json', 0.5, '#home confH'), ('section',), ('end',), ('zzzNoSuchNameZzz', 'prefer groupsToS', 16, 'groupsToSets', 'confG', 5, 'confG', 'zzzNoSuchNameZzz', 'groupsToSets', 0, 'CategoryTheory.Functor', 'confG', 0, 'Object'), ('#eval IO.println "ordinary-output"', 'ordinary-output', '#via confG ∈ Sets', ('application/vnd.nbdsl.path+json', 'text/plain'), '#eval IO.println "incremental-first"\n#eval IO.println "incremental-second"', ('incremental-first', 'incremental-second'), '#eval IO.println "999\\n{\\"op\\": \\"ready\\"}"', '999')))
 LEAN_CAS_DSL = _mk(('lean-cas-dsl', 'https://github.com/dzackgarza/lean-cas-dsl', '4c6fedafccfe77af80ac632efa780e967d726c14', 'CONFORMANCE_CAS_DSL', '../lean-cas-dsl', '.', 'CasDsl.Notebook', 'casdsl', 'extension', (), 'let confN := 360 in ℤ', 'confN.factor()', ('application/vnd.casdsl.value+json', 'text/plain'), ('render', 'presentation', 'value'), (), ('let confErrorDemo := 37 in ℤ', 'assert confErrorDemo = 37', 'let confErrorLeak := 37 in ℤ', 'confN.factor()\n#eval IO.println "candidate-elaboration-output"', 'assert 2 + 3 = 6', 'assert confErrorLeak = 37', 'candidate-elaboration-output', 'application/vnd.casdsl.value+json'), ('let confParseDemo := 37 in ℤ', 'assert confParseDemo = 37', 'let confParseLeak := 37 in ℤ', 'confN.factor()\n#eval IO.println "candidate-parse-output"', 'def confParseTail : Nat :=', 'assert confParseLeak = 37', 'candidate-parse-output', 'application/vnd.casdsl.value+json'), ('let confCancelDemo := 7 in ℤ', 'assert confCancelDemo = 7', 'let confCancel := 7 in ℤ', 'set_option maxHeartbeats 0 in\nexample : True := by', '  have h{i} : Nat := {i}', 5000, '  trivial', 'confN.factor()\n#eval IO.println "candidate-cancellation-output"', 'candidate-cancellation-output', 'application/vnd.casdsl.value+json', 0.5, 'assert confCancel = 7'), ('section',), ('end',), ('zzzNoSuchNameZzz', 'CasDsl.Std.poly', 15, 'CasDsl.Std.polyZ', 'confN', 5, 'confN', 'zzzNoSuchNameZzz', 'CasDsl.Std.polyZ', 0, 'CasDsl.Obj', 'confN', 0, '360'), ('#eval IO.println "ordinary-output"', 'ordinary-output', 'confN.factor()', ('application/vnd.casdsl.value+json', 'text/plain'), '#eval IO.println "incremental-first"\n#eval IO.println "incremental-second"', ('incremental-first', 'incremental-second'), '#eval IO.println "999\\n{\\"op\\": \\"ready\\"}"', '999')))
 
@@ -125,7 +112,6 @@ def conformance_slot() -> Iterator[None]:
             yield
         finally:
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
-
 def await_memory() -> None:
     deadline = time.monotonic() + 600
     while time.monotonic() < deadline:
@@ -136,7 +122,6 @@ def await_memory() -> None:
                 break
         time.sleep(15)
     raise RuntimeError(f"need {MIN_FREE_GB} GB free for a mathlib worker")
-
 def _kernel_pid(km: Any) -> int:
     provisioner = getattr(km, "provisioner", None)
     for owner in (getattr(provisioner, "process", None), provisioner,
@@ -145,7 +130,6 @@ def _kernel_pid(km: Any) -> int:
         if isinstance(pid, int):
             return pid
     raise RuntimeError("cannot determine kernel pid")
-
 def _ppid_table() -> dict[int, int]:
     table: dict[int, int] = {}
     for entry in os.listdir("/proc"):
@@ -157,21 +141,18 @@ def _ppid_table() -> dict[int, int]:
             continue
         table[int(entry)] = int(stat[stat.rindex(")") + 2:].split()[1])
     return table
-
 def _alive(pid: int) -> bool:
     try:
         stat = Path(f"/proc/{pid}/stat").read_text()
     except OSError:
         return False
     return stat[stat.rindex(")") + 2:].split()[0] != "Z"
-
 def _cmdline(pid: int) -> str:
     try:
         return (Path(f"/proc/{pid}/cmdline").read_bytes()
                 .replace(b"\0", b" ").decode(errors="replace"))
     except OSError:
         return ""
-
 def worker_processes(kernel_pid: int) -> list[tuple[int, str]]:
     table = _ppid_table()
     found = []
@@ -187,7 +168,6 @@ def worker_processes(kernel_pid: int) -> list[tuple[int, str]]:
                     found.append((pid, cmd))
                 break
     return found
-
 def worker_process_groups(
         kernel_pid: int) -> list[tuple[int, int, str, list[int]]]:
     groups: dict[int, tuple[int, int, str, list[int]]] = {}
@@ -198,21 +178,12 @@ def worker_process_groups(
         else:
             groups[pgid] = (pid, pgid, cmd, [pid])
     return list(groups.values())
-
 def await_dead(pids: list[int], timeout: float = 30) -> None:
     deadline = time.monotonic() + timeout
     while any(_alive(p) for p in pids):
         if time.monotonic() >= deadline:
-            raise RuntimeError(
-                f"workers survived SIGKILL: {[p for p in pids if _alive(p)]}")
+            raise RuntimeError(f"workers survived SIGKILL: {[p for p in pids if _alive(p)]}")
         time.sleep(0.2)
-
-def cancellation_cell(cfg: CancelVocab) -> str:
-    steps = "\n".join(cfg.slow_step.replace("{i}", str(i))
-                      for i in range(cfg.slow_repeat))
-    return "\n".join([cfg.prefix, cfg.output, cfg.slow_header, steps,
-                      cfg.slow_footer])
-
 class Session:
     def __init__(self, kernel_name: str) -> None:
         await_memory()
@@ -222,7 +193,6 @@ class Session:
             kernel_name=kernel_name, startup_timeout=60, env=env)
         self.pid = _kernel_pid(self.km)
         self.comms: list[dict[str, Any]] = []
-
     def close(self) -> None:
         groups = worker_process_groups(self.pid)
         try:
@@ -236,7 +206,6 @@ class Session:
                     except (ProcessLookupError, PermissionError):
                         pass
             await_dead([m for _, _, _, ms in groups for m in ms])
-
     def _collect(self, msg_id: str, timeout: float) -> list[dict[str, Any]]:
         outputs: list[dict[str, Any]] = []
         while True:
@@ -249,25 +218,20 @@ class Session:
                     and msg["content"]["execution_state"] == "idle"):
                 return outputs
             outputs.append(msg)
-
     def _shell(self, msg_id: str, timeout: float) -> dict[str, Any]:
         while True:
             reply = self.kc.get_shell_msg(timeout=timeout)
             if reply["parent_header"].get("msg_id") == msg_id:
                 return cast(dict[str, Any], reply["content"])
-
     def run(self, code: str, timeout: float = STARTUP
             ) -> tuple[dict[str, Any], list[Any]]:
         msg_id = self.kc.execute(code)
         outputs = self._collect(msg_id, timeout)
         return self._shell(msg_id, timeout), outputs
-
     def complete(self, code: str, cursor: int) -> dict[str, Any]:
         return self._shell(self.kc.complete(code, cursor), QUERY_TIMEOUT)
-
     def inspect(self, code: str, cursor: int) -> dict[str, Any]:
         return self._shell(self.kc.inspect(code, cursor), QUERY_TIMEOUT)
-
     def run_and_interrupt(self, code: str, after: float,
                           timeout: float = STARTUP
                           ) -> tuple[dict[str, Any], list[Any]]:
@@ -280,7 +244,6 @@ class Session:
         self.km.interrupt_kernel()
         reply = self._shell(msg_id, timeout)
         return reply, self._collect(msg_id, timeout)
-
     def kill_worker(self) -> None:
         before = worker_process_groups(self.pid)
         if not before:
@@ -288,34 +251,20 @@ class Session:
         for pid, pgid, _, _ in before:
             os.killpg(pgid, signal.SIGKILL)
         await_dead([m for _, _, _, ms in before for m in ms])
-
 def texts(outputs: list[Any]) -> str:
     return "".join(m["content"]["text"] for m in outputs
                    if m["msg_type"] == "stream")
-
 def mime_bundles(outputs: list[Any]) -> list[dict[str, Any]]:
     return [m["content"]["data"] for m in outputs
             if m["msg_type"] in ("execute_result", "display_data")]
-
 def _visible(outputs: list[Any]) -> str:
     return texts(outputs) + json.dumps(mime_bundles(outputs), ensure_ascii=False)
-
 def output_matches(outputs: list[Any], cfg: FailureVocab | CancelVocab) -> bool:
     return (cfg.output_marker in _visible(outputs)
             and any(cfg.output_mime in b for b in mime_bundles(outputs)))
-
 def output_leaked(outputs: list[Any], cfg: FailureVocab | CancelVocab) -> bool:
     return (cfg.output_marker in _visible(outputs)
             or any(cfg.output_mime in b for b in mime_bundles(outputs)))
-
-def _dig(payload: Any, dotted: str) -> Any:
-    node = payload
-    for part in dotted.split("."):
-        if not isinstance(node, dict) or part not in node:
-            raise RuntimeError(f"projection {dotted!r} missing {part!r}")
-        node = node[part]
-    return node
-
 def _read(reply: dict[str, Any], outputs: list[Any],
           cfg: dict[str, Any]) -> dict[str, Any]:
     mimes: list[str] = cfg["mimes"]
@@ -324,21 +273,18 @@ def _read(reply: dict[str, Any], outputs: list[Any],
     if reply["status"] != "ok" or bundle is None:
         return {"present": False, "status": reply["status"],
                 "detail": str(reply.get("evalue", ""))[:400]}
-    return {"present": True, "mimes": sorted(mimes),
-            "projection": {k: _dig(bundle[mimes[0]], k)
-                           for k in cfg["projection"]}}
-
+    proj: dict[str, Any] = {}
+    for k in cfg["projection"]:
+        node: Any = bundle[mimes[0]]
+        for part in k.split("."):
+            if not isinstance(node, dict) or part not in node:
+                raise RuntimeError(f"projection {k!r} missing {part!r}")
+            node = node[part]
+        proj[k] = node
+    return {"present": True, "mimes": sorted(mimes), "projection": proj}
 def observe(session: Session, case: PluginCase) -> dict[str, Any]:
     reply, outputs = session.run(case.observation_command)
     return _read(reply, outputs, case.obs_cfg())
-
-def _route(stream: str) -> str:
-    if "Restored session from cache" in stream:
-        return "cache"
-    if "Replayed" in stream:
-        return "replay"
-    return "unknown"
-
 def query_answers(session: Session, case: PluginCase) -> dict[str, Any]:
     q = case.queries
     out: dict[str, Any] = {}
@@ -368,7 +314,6 @@ def query_answers(session: Session, case: PluginCase) -> dict[str, Any]:
                       else bool(rep.get("found")) and sig in text),
             "data": {k: str(v)[:400] for k, v in data.items()}}
     return out
-
 def ledger_absence(session: Session, case: PluginCase) -> dict[str, Any]:
     probes = {"failure": case.failure.probe,
               "parse_failure": case.parse_failure.probe,
@@ -383,7 +328,6 @@ def ledger_absence(session: Session, case: PluginCase) -> dict[str, Any]:
                          "detail": str(reply.get("evalue", ""))[:300]}
         all_absent = all_absent and absent
     return {"absent": all_absent, "probes": results}
-
 def independent_frame_check(project: Path, prelude: str,
                             out: OutputVocab) -> dict[str, Any]:
     await_memory()
@@ -428,15 +372,6 @@ def independent_frame_check(project: Path, prelude: str,
         if proc.poll() is None:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
             proc.wait()
-
-def _git_head(root: Path) -> str | None:
-    try:
-        return subprocess.run(
-            ["git", "-C", str(root), "rev-parse", "HEAD"],
-            capture_output=True, text=True, check=True).stdout.strip()
-    except (subprocess.CalledProcessError, OSError):
-        return None
-
 def resolve_checkout(case: PluginCase) -> Path:
     if case.commit == "IN-REPOSITORY":
         return REPO
@@ -449,20 +384,23 @@ def resolve_checkout(case: PluginCase) -> Path:
         raise RuntimeError(f"{case.id}: no checkout configured")
     if not path.is_dir():
         raise RuntimeError(f"{case.id}: checkout missing: {path}")
-    if len(case.commit) == 40 and _git_head(path) != case.commit:
-        raise RuntimeError(
-            f"{case.id}: expected {case.commit}, got {_git_head(path)}")
+    if len(case.commit) == 40:
+        try:
+            head = subprocess.run(
+                ["git", "-C", str(path), "rev-parse", "HEAD"],
+                capture_output=True, text=True, check=True).stdout.strip()
+        except (subprocess.CalledProcessError, OSError):
+            head = None
+        if head != case.commit:
+            raise RuntimeError(f"{case.id}: expected {case.commit}, got {head}")
     return path
-
 def project_root(case: PluginCase) -> Path:
     return (resolve_checkout(case) / case.package).resolve()
-
 def check_kernelspec(case: PluginCase, project: Path) -> None:
     try:
         spec = KernelSpecManager().get_kernel_spec(case.kernel_name)
     except Exception as exc:
-        raise RuntimeError(
-            f"kernelspec {case.kernel_name!r} not installed: {exc}") from exc
+        raise RuntimeError(f"kernelspec {case.kernel_name!r} missing: {exc}") from exc
     meta = (spec.metadata or {}).get("nbdsl", {})
     spec_project = Path(meta.get("project_root", "/nonexistent")).resolve()
     if spec_project != project.resolve():
@@ -476,29 +414,22 @@ def check_kernelspec(case: PluginCase, project: Path) -> None:
         raise RuntimeError(f"kernelspec launches {launched}, not {project}")
     if spec.env.get("NBDSL_PRELUDE") != case.prelude_module:
         raise RuntimeError(
-            f"prelude {spec.env.get('NBDSL_PRELUDE')!r} != "
-            f"{case.prelude_module!r}")
-
-def _cas_available() -> bool:
-    env = os.environ.get("CONFORMANCE_CAS_DSL")
-    if env and Path(env).expanduser().is_dir():
-        return True
-    return (REPO / "../lean-cas-dsl").resolve().is_dir()
-
+            f"prelude {spec.env.get('NBDSL_PRELUDE')!r} != {case.prelude_module!r}")
 def _require_case(case: PluginCase) -> Path:
-    if case.id == "lean-cas-dsl" and not _cas_available():
-        pytest.skip("lean-cas-dsl missing "
-                    "(set CONFORMANCE_CAS_DSL or ../lean-cas-dsl)")
+    if case.id == "lean-cas-dsl":
+        env = os.environ.get("CONFORMANCE_CAS_DSL")
+        ok = bool(env and Path(env).expanduser().is_dir()) or (
+            REPO / "../lean-cas-dsl").resolve().is_dir()
+        if not ok:
+            pytest.skip("lean-cas-dsl missing "
+                        "(set CONFORMANCE_CAS_DSL or ../lean-cas-dsl)")
     project = project_root(case)
     check_kernelspec(case, project)
     return project
-
 def _setup(session: Session, cells: tuple[str, ...]) -> None:
     for code in cells:
         reply, outputs = session.run(code)
-        assert reply["status"] == "ok", (
-            f"setup failed: {code!r} -> {reply}\n{texts(outputs)[:800]}")
-
+        assert reply["status"] == "ok", f"setup failed: {code!r} -> {reply}"
 def _assert_rollback(session: Session, case: PluginCase, committed: dict,
                      cfg: FailureVocab) -> None:
     demo_r, _ = session.run(cfg.demo_prefix)
@@ -513,7 +444,6 @@ def _assert_rollback(session: Session, case: PluginCase, committed: dict,
     assert reply["status"] == "error" and absent["status"] == "error"
     assert not output_leaked(fail_o, cfg)
     assert after == committed, {"pre": committed, "post": after}
-
 def _jupyter_output_half(session: Session, case: PluginCase,
                          committed: dict) -> None:
     out = case.output
@@ -535,7 +465,6 @@ def _jupyter_output_half(session: Session, case: PluginCase,
     assert r["status"] == "ok" and pos == sorted(pos) and all(p >= 0 for p in pos)
     assert observe(session, case) == committed
     assert len(session.comms) == n_comms
-
 def _assert_cancellation(session: Session, case: PluginCase,
                          committed: dict) -> None:
     cfg = case.cancellation
@@ -545,8 +474,11 @@ def _assert_cancellation(session: Session, case: PluginCase,
     before = {pid for pid, _ in worker_processes(session.pid)}
     out_r, out_o = session.run(cfg.output)
     assert out_r["status"] == "ok" and output_matches(out_o, cfg)
-    reply, cancel_o = session.run_and_interrupt(
-        cancellation_cell(cfg), cfg.interrupt_after_seconds)
+    steps = "\n".join(cfg.slow_step.replace("{i}", str(i))
+                      for i in range(cfg.slow_repeat))
+    cell = "\n".join([cfg.prefix, cfg.output, cfg.slow_header, steps,
+                      cfg.slow_footer])
+    reply, cancel_o = session.run_and_interrupt(cell, cfg.interrupt_after_seconds)
     after_pids = {pid for pid, _ in worker_processes(session.pid)}
     probe, _ = session.run(cfg.probe)
     after = observe(session, case)
@@ -557,7 +489,6 @@ def _assert_cancellation(session: Session, case: PluginCase,
     assert probe["status"] == "error"
     assert not output_leaked(cancel_o, cfg)
     assert after == committed
-
 def _assert_recovery(session: Session, case: PluginCase,
                      committed: dict, queries: dict) -> None:
     assert ledger_absence(session, case)["absent"]
@@ -566,21 +497,21 @@ def _assert_recovery(session: Session, case: PluginCase,
     assert _read(reply, outputs, case.obs_cfg()) == committed
     assert query_answers(session, case) == queries
     assert ledger_absence(session, case)["absent"]
-
     for code in case.replay_force:
         reply, _ = session.run(code)
-        assert reply["status"] == "ok", f"replay force failed: {code!r}"
+        assert reply["status"] == "ok", f"replay force: {code!r}"
     session.kill_worker()
     reply, outputs = session.run(case.observation_command)
     stream = texts(outputs)
-    assert _route(stream) == "replay", stream[:400]
+    route = ("cache" if "Restored session from cache" in stream
+             else "replay" if "Replayed" in stream else "unknown")
+    assert route == "replay", stream[:400]
     assert _read(reply, outputs, case.obs_cfg()) == committed
     assert query_answers(session, case) == queries
     assert ledger_absence(session, case)["absent"]
     for code in case.replay_restore:
         reply, outputs = session.run(code)
-        assert reply["status"] == "ok", (
-            f"replay restore failed: {code!r}\n{texts(outputs)[:800]}")
+        assert reply["status"] == "ok", f"replay restore: {code!r}"
 
 @pytest.mark.parametrize("case", [NBDLSL, LEAN_CAS_DSL], ids=lambda c: c.id)
 def test_candidate_matrix(case: PluginCase) -> None:
@@ -597,7 +528,6 @@ def test_candidate_matrix(case: PluginCase) -> None:
             assert reply["status"] == "ok"
             assert not before["present"]
             assert committed["present"] and committed == again
-
             _assert_rollback(session, case, committed, case.failure)
             _assert_rollback(session, case, committed, case.parse_failure)
             queries = query_answers(session, case)
@@ -622,7 +552,6 @@ def test_control(case: PluginCase) -> None:
             cand_q = query_answers(candidate, case)
         finally:
             candidate.close()
-
         control = Session(case.kernel_name)
         try:
             _setup(control, case.control_setup)

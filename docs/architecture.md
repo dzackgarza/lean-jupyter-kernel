@@ -84,9 +84,10 @@ Mathlib-free; builds in seconds. Modules:
 
 Process discipline: the worker runs in its **own session**
 (`start_new_session`) so Jupyter's interrupt SIGINT reaches only the
-kernel; `lake env` **forks** the worker rather than exec'ing it, so killing
-means `killpg` on the group, not the wrapper pid (both leak modes were
-observed and fixed; see git history).
+kernel. The client captures `lake env` then spawns `nbdsl_worker` as the
+owned child, so `proc.pid` is the worker (except under Bubblewrap, where
+host PID ownership is resolved from the process tree). Killing uses
+`killpg` on that group.
 
 ## The kernel adapter (`nbdsl_kernel/`)
 

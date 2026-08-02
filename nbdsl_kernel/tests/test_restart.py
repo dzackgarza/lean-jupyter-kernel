@@ -25,10 +25,9 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 
-import psutil
 import pytest
 from jupyter_client.provisioning import LocalProvisioner
-from nbdsl_kernel.worker import LIVENESS_SLICE, WorkerClient, WorkerDied
+from nbdsl_kernel.worker import WorkerClient, WorkerDied
 from test_e2e import run_cell, texts
 
 from jupyter_helpers import (
@@ -121,34 +120,22 @@ def test_second_recovery_of_a_restored_session(client: WorkerClient) -> None:
     assert any("14" in d.message for d in rep.diagnostics), rep
 
 
-def test_a_worker_death_under_a_live_wrapper_recovers_transparently(
-        tmp_path: Path) -> None:
-    """SIGSTOP on the wrapper keeps a dead-worker window open deterministically."""
+def test_worker_death_recovers_transparently(tmp_path: Path) -> None:
+    """A dead worker is restarted; the next cell reconstructs committed state."""
     km, kc = start_init_kernel(tmp_path, "restart-race")
-    wrapper = -1
     try:
         reply, _ = run_cell(kc, "def x : Nat := 41", timeout=120)
         assert reply["status"] == "ok", reply
         prov = km.provisioner
         assert isinstance(prov, LocalProvisioner) and prov.process is not None
-        worker, wrapper = find_worker_under(prov.process.pid)
-        os.kill(wrapper, signal.SIGSTOP)
+        worker, _ = find_worker_under(prov.process.pid)
         os.kill(worker, signal.SIGKILL)
-        zombie_deadline = time.monotonic() + LIVENESS_SLICE
-        while psutil.Process(worker).status() != psutil.STATUS_ZOMBIE:
-            assert time.monotonic() < zombie_deadline
-            time.sleep(0.01)
         reply, outputs = run_cell(kc, "#eval x + 1", timeout=120)
         assert reply["status"] == "ok", reply
         text = texts(outputs)
         assert "42" in text, text
         assert "Lean worker died; restarting" in text, text
     finally:
-        if wrapper > 0:
-            try:
-                os.kill(wrapper, signal.SIGCONT)
-            except ProcessLookupError:
-                pass
         kc.stop_channels()
         km.shutdown_kernel(now=True)
 
@@ -158,7 +145,6 @@ def test_worker_death_after_external_effect_does_not_rerun_the_cell(
     """Once an external effect is visible, a missing reply must not re-execute."""
     km, kc = start_init_kernel(tmp_path, "effect-once")
     effect = tmp_path / "effect.log"
-    wrapper = -1
     try:
         path = json.dumps(str(effect))
         code = (
@@ -179,8 +165,7 @@ def test_worker_death_after_external_effect_does_not_rerun_the_cell(
         provisioner = km.provisioner
         assert isinstance(provisioner, LocalProvisioner)
         assert provisioner.process is not None
-        worker, wrapper = find_worker_under(provisioner.process.pid)
-        os.kill(wrapper, signal.SIGSTOP)
+        worker, _ = find_worker_under(provisioner.process.pid)
         os.kill(worker, signal.SIGKILL)
 
         reply, outputs = await_execute(kc, msg_id)
@@ -192,10 +177,5 @@ def test_worker_death_after_external_effect_does_not_rerun_the_cell(
         }
         assert reply["status"] == "error", reply
     finally:
-        if wrapper > 0:
-            try:
-                os.kill(wrapper, signal.SIGCONT)
-            except ProcessLookupError:
-                pass
         kc.stop_channels()
         km.shutdown_kernel(now=True)

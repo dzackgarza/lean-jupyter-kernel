@@ -120,6 +120,4 @@ comparison and no `nbdsl_provenance` comm.
 
 - The replay ledger (committed `(cell_id, code)` pairs in REPL mode) is the
   canonical recovery record; the session cache is a validated shortcut.
-- Killing the worker means `os.killpg` — `lake env` forks the worker, so a
-  plain kill only hits the wrapper and a busy worker survives as a spinning
-  orphan.
+- Killing the worker means `os.killpg` on the worker's process group.

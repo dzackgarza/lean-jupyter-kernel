@@ -48,7 +48,7 @@ package subsystem.
 | `nbdsl_kernel/tests/test_clean_install.py` | built adapter and JupyterLab wheels in fresh temporary environments | Journey 1: the installed kernelspec launches real `NbDsl.Notebook` through a nested-Git/Lake worker layout, executes ordinary Lean plus state-dependent NbDsl cells, and confirms production labextension activation |
 | `conformance/test_semantic.py` | installed kernelspecs for NbDsl and frozen `lean-cas-dsl` cases | Journeys 2-5: atomic success/failure/cancellation rollback, plugin-owned completion and inspection with independent-session absence, cache and replay recovery with query agreement, and transport-safe ordinary/rich/control-looking/incremental output |
 | `nbdsl_kernel/tests/test_identity.py` | bare worker | wire-protocol gate: `check_wire_protocol` refuses a mismatched `ready.protocol`; a live worker must speak `WIRE_PROTOCOL` |
-| `nbdsl_kernel/tests/test_restart.py` | production WorkerClient + live kernelspec, mathlib-free (`Init` prelude) | recovery laws: failed mid-replay must not consume the ledger; cache restore then kill again must recover; worker death under a live wrapper restarts transparently; external-effect + death does not re-run the cell |
+| `nbdsl_kernel/tests/test_restart.py` | production WorkerClient + live kernelspec, mathlib-free (`Init` prelude) | recovery laws: failed mid-replay must not consume the ledger; cache restore then kill again must recover; worker death restarts transparently; external-effect + death does not re-run the cell |
 | `nbdsl_kernel/tests/test_inspect.py` | production WorkerClient, mathlib-free (`Lean` prelude) | inspection discriminates under a plugin catch-all: a low-priority bare-`term` command used to make every `inspect` answer with that syntax declaration's docstring, shadowing real constants. Reproduced in plain Lean, no plugin needed |
 | `nbdsl_kernel/tests/sandbox_check.py` | production WorkerClient under bwrap | read-only project, private tmpfs, elaboration alive; **fails loudly if bwrap is missing**; hosted CI enables Ubuntu's AppArmor user-namespace permission before running it |
 | `jupyterlab_nbdsl/` `jlpm test` | node, no browser | tokenizer (incl. `:=`, unicode, custom keywords), document message builder, stale-class computation, path-payload validation |
@@ -106,4 +106,4 @@ proofs after installing the real kernel package and kernelspec.
   distinguish idle-blocked (futex, EOF-recoverable) from spinning
   (interpreted loop, killpg only) from IO-thrashing (`filemap_fault`,
   check disk).
-- `lake env` forks: kill the process group, not the pid.
+- The owned child is `nbdsl_worker` itself (after capturing `lake env`); kill the process group, not a wrapper pid.

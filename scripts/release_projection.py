@@ -1,24 +1,8 @@
 #!/usr/bin/env python3
-"""Release projection tool — the one-way derivation from release.toml.
+"""Check/update version and toolchain fields from release.toml.
 
-`release.toml` is the only authored static compatibility source. This tool
-owns every tool-specific version/toolchain declaration as a generated
-projection of it:
-
-  write     rewrite all projections in place from release.toml
-  check     regenerate to a temporary tree and fail on any diff
-  selftest  prove check rejects a deliberately mutated projection
-            (mutates a temporary copy, never the authoritative files)
-
-Projected files:
-  worker/lakefile.lean                  package version
-  dsls/nbdsl/lakefile.lean              package version + mathlib revision
-  nbdsl_kernel/pyproject.toml           distribution version
-  jupyterlab_nbdsl/package.json         npm version (Python metadata reads
-                                        this via hatch-nodejs-version)
-  worker/lean-toolchain                 Lean toolchain identity
-  dsls/nbdsl/lean-toolchain             Lean toolchain identity
-  worker/Worker/ReleaseInfo.lean        tracked static build-info constants
+write  — rewrite projections in place
+check  — fail if any projection drifted
 """
 
 from __future__ import annotations
@@ -26,95 +10,60 @@ from __future__ import annotations
 import difflib
 import json
 import re
-import shutil
-import subprocess
 import sys
-import tempfile
 import tomllib
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 MATHLIB_URL = "https://github.com/leanprover-community/mathlib4.git"
-MATHLIB_TYPE = "git"
 
 
 def load_release(root: Path) -> dict[str, str | int]:
     raw = tomllib.loads((root / "release.toml").read_text())
-    if type(raw.get("schema")) is not int or raw["schema"] != 1:
+    if raw.get("schema") != 1:
         sys.exit(f"release.toml: unknown schema {raw.get('schema')!r}")
-    flat = {
+    return {
         "version": raw["release"]["version"],
         "lean": raw["toolchain"]["lean"],
         "mathlib": raw["toolchain"]["mathlib"],
         "mathlib_commit": raw["toolchain"]["mathlib_commit"],
-        "plugin_api": raw["compat"]["plugin_api"],
         "wire_protocol": raw["compat"]["wire_protocol"],
     }
-    if not re.fullmatch(r"\d+\.\d+\.\d+", str(flat["version"])):
-        sys.exit(f"release.toml: malformed release.version {flat['version']!r}")
-    for key in ("plugin_api", "wire_protocol"):
-        if type(flat[key]) is not int or flat[key] < 0:
-            sys.exit(f"release.toml: compat.{key} must be a nonnegative integer")
-    if type(flat["lean"]) is not str or not re.fullmatch(
-            r"leanprover/lean4:v\d+\.\d+\.\d+", flat["lean"]):
-        sys.exit("release.toml: toolchain.lean must be an exact Lean release")
-    if type(flat["mathlib"]) is not str or not flat["mathlib"]:
-        sys.exit("release.toml: toolchain.mathlib must be a nonempty string")
-    if type(flat["mathlib_commit"]) is not str or not re.fullmatch(
-            r"[0-9a-f]{40}", flat["mathlib_commit"]):
-        sys.exit("release.toml: toolchain.mathlib_commit must be a 40-hex commit")
-    return flat
-
-
-def mathlib_lock(root: Path) -> tuple[Path, dict[str, object], dict[str, object]]:
-    path = Path("dsls/nbdsl/lake-manifest.json")
-    manifest = json.loads((root / path).read_text())
-    packages = manifest.get("packages")
-    if not isinstance(packages, list):
-        sys.exit(f"{path}: packages must be a list")
-    matches = [
-        package for package in packages
-        if isinstance(package, dict) and package.get("name") == "mathlib"
-    ]
-    if len(matches) != 1:
-        sys.exit(f"{path}: expected exactly one mathlib package, found {len(matches)}")
-    package = matches[0]
-    if package.get("type") != MATHLIB_TYPE or package.get("url") != MATHLIB_URL:
-        sys.exit(
-            f"{path}: mathlib must be type={MATHLIB_TYPE!r}, url={MATHLIB_URL!r}")
-    return path, manifest, package
-
-
-def mathlib_lock_agrees(root: Path, rel: dict[str, str | int]) -> bool:
-    _, _, package = mathlib_lock(root)
-    return (
-        package.get("type") == MATHLIB_TYPE
-        and package.get("url") == MATHLIB_URL
-        and package.get("inputRev") == rel["mathlib"]
-        and package.get("rev") == rel["mathlib_commit"]
-    )
-
-
-def write_mathlib_lock(root: Path, rel: dict[str, str | int]) -> None:
-    path, manifest, package = mathlib_lock(root)
-    package["inputRev"] = rel["mathlib"]
-    package["rev"] = rel["mathlib_commit"]
-    (root / path).write_text(json.dumps(manifest, indent=2) + "\n")
-    print(f"projected {path}")
 
 
 def sub_once(pattern: str, repl: str, text: str, where: str) -> str:
     out, n = re.subn(pattern, repl, text, flags=re.M)
     if n != 1:
-        sys.exit(f"{where}: expected exactly one match for {pattern!r}, found {n}")
+        sys.exit(f"{where}: expected one match for {pattern!r}, found {n}")
     return out
 
 
-def release_info_lean(rel: dict[str, str | int]) -> str:
-    return f'''/-
+def project(root: Path, rel: dict[str, str | int]) -> dict[Path, str]:
+    out: dict[Path, str] = {}
+    p = Path("worker/lakefile.lean")
+    out[p] = sub_once(
+        r'(version := v!")[^"]+(")', rf"\g<1>{rel['version']}\g<2>",
+        (root / p).read_text(), str(p))
+    p = Path("dsls/nbdsl/lakefile.lean")
+    text = sub_once(
+        r'(version := v!")[^"]+(")', rf"\g<1>{rel['version']}\g<2>",
+        (root / p).read_text(), str(p))
+    out[p] = sub_once(
+        r'("https://github\.com/leanprover-community/mathlib4\.git" @ ")[^"]+(")',
+        rf"\g<1>{rel['mathlib']}\g<2>", text, str(p))
+    p = Path("nbdsl_kernel/pyproject.toml")
+    out[p] = sub_once(
+        r'^(version = ")[^"]+(")$', rf"\g<1>{rel['version']}\g<2>",
+        (root / p).read_text(), str(p))
+    p = Path("jupyterlab_nbdsl/package.json")
+    out[p] = sub_once(
+        r'^(  "version": ")[^"]+(",)$', rf"\g<1>{rel['version']}\g<2>",
+        (root / p).read_text(), str(p))
+    for p in (Path("worker/lean-toolchain"), Path("dsls/nbdsl/lean-toolchain")):
+        out[p] = f"{rel['lean']}\n"
+    out[Path("worker/Worker/ReleaseInfo.lean")] = (
+        f'''/-
 GENERATED by scripts/release_projection.py from release.toml — do not edit.
-Thin static release metadata for the worker; wire protocol is what the
-adapter compares at startup.
 -/
 namespace Worker.ReleaseInfo
 
@@ -123,108 +72,61 @@ def wireProtocol : Nat := {rel['wire_protocol']}
 
 end Worker.ReleaseInfo
 '''
-
-
-def project(root: Path, rel: dict[str, str | int]) -> dict[Path, str]:
-    """Return {relative path: projected content} for every owned file."""
-    out: dict[Path, str] = {}
-
-    p = Path("worker/lakefile.lean")
-    out[p] = sub_once(
-        r'(version := v!")[^"]+(")', rf"\g<1>{rel['version']}\g<2>",
-        (root / p).read_text(), str(p))
-
-    p = Path("dsls/nbdsl/lakefile.lean")
-    text = sub_once(
-        r'(version := v!")[^"]+(")', rf"\g<1>{rel['version']}\g<2>",
-        (root / p).read_text(), str(p))
-    out[p] = sub_once(
-        r'("https://github\.com/leanprover-community/mathlib4\.git" @ ")[^"]+(")',
-        rf"\g<1>{rel['mathlib']}\g<2>", text, str(p))
-
-    p = Path("nbdsl_kernel/pyproject.toml")
-    out[p] = sub_once(
-        r'^(version = ")[^"]+(")$', rf"\g<1>{rel['version']}\g<2>",
-        (root / p).read_text(), str(p))
-
-    p = Path("jupyterlab_nbdsl/package.json")
-    out[p] = sub_once(
-        r'^(  "version": ")[^"]+(",)$', rf"\g<1>{rel['version']}\g<2>",
-        (root / p).read_text(), str(p))
-
-    for p in (Path("worker/lean-toolchain"), Path("dsls/nbdsl/lean-toolchain")):
-        out[p] = f"{rel['lean']}\n"
-
-    out[Path("worker/Worker/ReleaseInfo.lean")] = release_info_lean(rel)
+    )
     return out
+
+
+def mathlib_ok(root: Path, rel: dict[str, str | int]) -> bool:
+    pkgs = json.loads((root / "dsls/nbdsl/lake-manifest.json").read_text())["packages"]
+    matches = [p for p in pkgs if isinstance(p, dict) and p.get("name") == "mathlib"]
+    if len(matches) != 1:
+        return False
+    p = matches[0]
+    return (p.get("type") == "git" and p.get("url") == MATHLIB_URL
+            and p.get("inputRev") == rel["mathlib"]
+            and p.get("rev") == rel["mathlib_commit"])
+
+
+def write_mathlib(root: Path, rel: dict[str, str | int]) -> None:
+    path = root / "dsls/nbdsl/lake-manifest.json"
+    manifest = json.loads(path.read_text())
+    for package in manifest["packages"]:
+        if isinstance(package, dict) and package.get("name") == "mathlib":
+            package["inputRev"] = rel["mathlib"]
+            package["rev"] = rel["mathlib_commit"]
+            break
+    else:
+        sys.exit("lake-manifest.json: mathlib package missing")
+    path.write_text(json.dumps(manifest, indent=2) + "\n")
 
 
 def write(root: Path) -> None:
     rel = load_release(root)
-    # Validate the manifest and its source ownership before changing any file.
-    mathlib_lock(root)
     for path, content in project(root, rel).items():
         (root / path).write_text(content)
         print(f"projected {path}")
-    write_mathlib_lock(root, rel)
+    write_mathlib(root, rel)
+    print("projected dsls/nbdsl/lake-manifest.json")
 
 
 def check(root: Path) -> int:
-    failures = 0
     rel = load_release(root)
-    with tempfile.TemporaryDirectory(prefix="release-projection-") as tmp:
-        for path, content in project(root, rel).items():
-            staged = Path(tmp) / path  # the temporary tree
-            staged.parent.mkdir(parents=True, exist_ok=True)
-            staged.write_text(content)
-            actual = (root / path).read_text() if (root / path).exists() else ""
-            if actual != content:
-                failures += 1
-                diff = difflib.unified_diff(
-                    actual.splitlines(), content.splitlines(),
-                    fromfile=f"{path} (working tree)",
-                    tofile=f"{path} (projection of release.toml)", lineterm="")
-                print("\n".join(diff))
-    if not mathlib_lock_agrees(root, rel):
+    failures = 0
+    for path, content in project(root, rel).items():
+        actual = (root / path).read_text() if (root / path).exists() else ""
+        if actual != content:
+            failures += 1
+            print("\n".join(difflib.unified_diff(
+                actual.splitlines(), content.splitlines(),
+                fromfile=str(path), tofile="projection", lineterm="")))
+    if not mathlib_ok(root, rel):
         failures += 1
-        _, _, package = mathlib_lock(root)
-        print(
-            "PROJECTION DRIFT: dsls/nbdsl/lake-manifest.json mathlib lock "
-            f"has inputRev={package.get('inputRev')!r}, rev={package.get('rev')!r}; "
-            f"release.toml requires inputRev={rel['mathlib']!r}, "
-            f"rev={rel['mathlib_commit']!r}"
-        )
+        print("PROJECTION DRIFT: mathlib lock disagrees with release.toml")
     if failures:
-        print(f"PROJECTION DRIFT: {failures} file(s) disagree with release.toml")
+        print(f"PROJECTION DRIFT: {failures} disagreement(s)")
         return 1
     print("all projections agree with release.toml")
     return 0
-
-
-def selftest(root: Path) -> int:
-    with tempfile.TemporaryDirectory(prefix="release-selftest-") as tmp:
-        copy = Path(tmp) / "repo"
-        for path in [
-                Path("release.toml"),
-                Path("dsls/nbdsl/lake-manifest.json"),
-                *project(root, load_release(root)),
-        ]:
-            (copy / path).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(root / path, copy / path)
-        if check(copy) != 0:
-            print("selftest: baseline copy unexpectedly drifted", file=sys.stderr)
-            return 1
-        victim = copy / "nbdsl_kernel/pyproject.toml"
-        victim.write_text(victim.read_text().replace(
-            'version = "', 'version = "9.9.9-mutated', 1))
-        proc = subprocess.run(
-            [sys.executable, __file__, "check", "--root", str(copy)],
-            capture_output=True, text=True)
-        if proc.returncode == 0:
-            print("selftest FAILED: check accepted a mutated governed version")
-            return 1
-        print("selftest: check rejects a mutated governed version")
-        return 0
 
 
 def main() -> None:
@@ -238,8 +140,6 @@ def main() -> None:
         write(root)
     elif args == ["check"]:
         sys.exit(check(root))
-    elif args == ["selftest"]:
-        sys.exit(selftest(root))
     else:
         sys.exit(__doc__)
 

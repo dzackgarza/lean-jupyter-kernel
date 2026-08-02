@@ -1,7 +1,7 @@
 """Process management and framed-JSON transport for the nbdsl worker.
 
-Owns everything fd-shaped: pipe setup, spawning under `lake env` (so elan
-resolves the project's pinned toolchain), the length-prefixed frame codec,
+Owns everything fd-shaped: pipe setup, capturing `lake env` then spawning
+`nbdsl_worker` as the owned child, the length-prefixed frame codec,
 stdout/stderr pump threads, the replay ledger, and kill/respawn. The kernel
 class never touches fds.
 """
@@ -86,6 +86,20 @@ def _process_running(pid: int) -> bool:
     except (psutil.NoSuchProcess, psutil.ZombieProcess):
         return False
     return status not in {psutil.STATUS_DEAD, psutil.STATUS_ZOMBIE}
+
+
+def lake_env(project_root: Path) -> dict[str, str]:
+    """Environment `lake env` would establish, without keeping lake as parent."""
+    out = subprocess.check_output(
+        ["lake", "env", "printenv"], cwd=project_root, text=True)
+    env: dict[str, str] = {}
+    for line in out.splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            env[key] = value
+    if not env:
+        raise WorkerDied(f"lake env printenv produced no bindings in {project_root}")
+    return env
 
 
 def find_worker_exe(project_root: str | Path) -> Path | None:
@@ -174,9 +188,8 @@ class WorkerClient:
         self._request_pipe: IO[bytes] | None = None
         self._reply_pipe: IO[bytes] | None = None
         self._pump_threads: list[threading.Thread] = []
-        #: The worker process itself, from its ready frame — `self.proc` is
-        #: the `lake env` wrapper, whose liveness proves nothing about the
-        #: worker's.
+        #: Host PID of the worker process (equal to `self.proc.pid` except
+        #: under Bubblewrap's PID namespace).
         self.worker_pid: int | None = None
         self.snapshot = 0
         # Committed (cell_id, code) pairs, for restart replay.
@@ -244,12 +257,7 @@ class WorkerClient:
 
     @staticmethod
     def _host_worker_pid(proc: subprocess.Popen[bytes]) -> int:
-        """Resolve the one host-visible worker owned by ``proc``'s group.
-
-        A sandboxed worker reports its PID in Bubblewrap's PID namespace.
-        Host liveness and signalling must instead use the executable identity
-        observed in the host process tree rooted at the exact wrapper.
-        """
+        """Resolve the host-visible worker when Bubblewrap owns a PID namespace."""
         try:
             root = psutil.Process(proc.pid)
             processes = [root, *root.children(recursive=True)]
@@ -260,7 +268,7 @@ class WorkerClient:
             ]
         except (psutil.NoSuchProcess, ProcessLookupError) as e:
             raise WorkerDied(
-                f"worker process tree under wrapper {proc.pid} exited "
+                f"worker process tree under sandbox {proc.pid} exited "
                 "before host PID ownership could be established") from e
         if len(candidates) != 1:
             raise WorkerDied(
@@ -272,7 +280,8 @@ class WorkerClient:
         assert (self.proc is None and self.req_fd is None
                 and self.replies is None and self._request_pipe is None
                 and self._reply_pipe is None)
-        worker_exe = self._worker_exe()
+        worker_exe = self._worker_exe().resolve()
+        env = lake_env(self.project_root)
         with ExitStack() as cleanup:
             req_r_fd, req_w_fd = os.pipe()
             rep_r_fd, rep_w_fd = os.pipe()
@@ -280,13 +289,16 @@ class WorkerClient:
             req_w = cleanup.enter_context(os.fdopen(req_w_fd, "wb", buffering=0))
             rep_r = cleanup.enter_context(os.fdopen(rep_r_fd, "rb", buffering=0))
             rep_w = cleanup.enter_context(os.fdopen(rep_w_fd, "wb", buffering=0))
+            cmd = [
+                str(worker_exe),
+                "--req-fd", str(req_r.fileno()),
+                "--rep-fd", str(rep_w.fileno()),
+                "--prelude-module", self.prelude,
+            ]
             proc = subprocess.Popen(
-                self._maybe_sandbox(
-                    ["lake", "env", str(worker_exe),
-                     "--req-fd", str(req_r.fileno()),
-                     "--rep-fd", str(rep_w.fileno()),
-                     "--prelude-module", self.prelude], worker_exe),
+                self._maybe_sandbox(cmd, worker_exe),
                 cwd=self.project_root,
+                env=env,
                 pass_fds=(req_r.fileno(), rep_w.fileno()),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
@@ -311,16 +323,16 @@ class WorkerClient:
             replies = _FrameReader(rep_r.fileno())
             ready = ReadyFrame.model_validate(
                 replies.read_frame(READY_TIMEOUT, proc.pid))
-            host_worker_pid = self._host_worker_pid(proc)
-            if (os.environ.get("NBDSL_SANDBOX") != "1"
-                    and ready.pid != host_worker_pid):
+            if os.environ.get("NBDSL_SANDBOX") == "1":
+                host_worker_pid = self._host_worker_pid(proc)
+                ready = ReadyFrame.model_validate({
+                    **ready.model_dump(),
+                    "pid": host_worker_pid,
+                })
+            elif ready.pid != proc.pid:
                 raise WorkerDied(
-                    f"worker ready PID {ready.pid} does not identify its host "
-                    f"process {host_worker_pid}")
-            ready = ReadyFrame.model_validate({
-                **ready.model_dump(),
-                "pid": host_worker_pid,
-            })
+                    f"worker ready PID {ready.pid} does not match owned "
+                    f"process {proc.pid}")
             check_wire_protocol(ready)
 
             self.proc = proc
@@ -379,7 +391,7 @@ class WorkerClient:
         self.replies = None
 
     def running(self) -> bool:
-        """Whether both the owned wrapper and actual host worker are live."""
+        """Whether the owned worker process is still live."""
         return (
             self.proc is not None
             and self.worker_pid is not None
