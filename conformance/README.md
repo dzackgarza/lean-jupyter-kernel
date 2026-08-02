@@ -37,7 +37,7 @@ mocks, source-shape checks, or law skips are used.
 
 The runner refuses to start unless it is already inside a finite, no-swap
 resource scope. Use `scripts/resource_limited.py --` (or `just conformance`);
-the launcher applies a 4 GiB hard memory cap, 3 GiB throttling threshold,
+the launcher applies a 4 GiB hard memory cap, 3.5 GiB throttling threshold,
 four-core CPU quota, 128-task cap, and finite runtime limit.
 
 **Resource contract:** at most one mathlib-loaded worker is alive at a time. The
