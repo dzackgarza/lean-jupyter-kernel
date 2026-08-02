@@ -172,7 +172,15 @@ class NbDslKernel(Kernel):
             self._stream("stdout",
                          f"Starting Lean worker ({self.worker.project_root})…\n")
             self.worker.start()
-            self._run_init_cell()
+            try:
+                self._run_init_cell()
+            except (ProvenanceError, WorkerDied, WorkerInterrupted,
+                    TimeoutError):
+                # Bootstrap owns a live worker before `_started` flips. Make
+                # a failed query-first bootstrap retryable without leaving
+                # that process in WorkerClient's ownership slots.
+                self.worker.kill()
+                raise
             self._started = True
         elif not self.worker.running():
             # The worker died — normally from an interrupt escalation.

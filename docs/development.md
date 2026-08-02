@@ -33,6 +33,10 @@ doctor has no profile for that, so the repo declares no `ai_review_ci_*`
 contract and calls the private `_mypy` recipe directly
 (ai-review-ci#353 tracks the gap).
 
+Worker-heavy checks use the shared `NBDSL_CONFORMANCE_LOCK` and export
+`LEAN_NUM_THREADS=1`; do not launch the full conformance matrix concurrently
+with `scripts/check.sh` or consumer qualification.
+
 ## Test suites — what proves what
 
 | Suite | Runs | Proves |

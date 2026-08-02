@@ -58,6 +58,7 @@ test: build
 # Interpreter for the recipes needing the kernel package installed. CI
 # installs into the job python; locally: `just python=.venv/bin/python …`.
 python := "python3"
+export LEAN_NUM_THREADS := "1"
 
 # Semantic plugin conformance (#3): the same six-journey laws against the
 # in-repo reference plugin. Use --journey atomicity directly for a targeted

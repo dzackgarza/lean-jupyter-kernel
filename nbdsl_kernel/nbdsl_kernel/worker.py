@@ -120,14 +120,21 @@ def find_worker_exe(project_root: str | Path) -> Path | None:
     precedence over stale package-cache candidates, so an exact local
     qualification cannot launch an older cached worker. None if not built."""
     root = Path(project_root)
-    candidates: list[Path] = []
+    path_candidates: list[Path] = []
     manifest = root / "lake-manifest.json"
     if manifest.exists():
         for pkg in json.loads(manifest.read_text()).get("packages", []):
-            if pkg.get("type") == "path" and pkg.get("dir"):
-                candidates.append(
+            if (pkg.get("type") == "path"
+                    and pkg.get("name", "").strip("«»") == "nbdsl-worker"
+                    and pkg.get("dir")):
+                path_candidates.append(
                     (root / pkg.get("dir", ".")).resolve()
                     / ".lake/build/bin/nbdsl_worker")
+    if path_candidates:
+        # A manifested path dependency is authoritative. Falling through to
+        # .lake/packages when its executable is absent can launch stale code.
+        return next((c for c in path_candidates if c.exists()), None)
+    candidates: list[Path] = []
     candidates += [
         root / ".lake/build/bin/nbdsl_worker",
         *root.glob(".lake/packages/*/.lake/build/bin/nbdsl_worker"),

@@ -80,6 +80,7 @@ STARTUP = 900.0
 QUERY_TIMEOUT = 120.0
 MIN_FREE_GB = 6  # a mathlib worker is 3-4 GB; never start one into swap
 CANCELLATION_STEP_LIMIT = 5000
+LEAN_NUM_THREADS = "1"
 CONFORMANCE_LOCK = Path(
     os.environ.get(
         "NBDSL_CONFORMANCE_LOCK",
@@ -370,8 +371,13 @@ class Session:
 
     def __init__(self, kernel_name: str) -> None:
         await_memory()
+        env = os.environ.copy()
+        # Mathlib-backed workers have large working sets. Keep each proof
+        # session single-threaded so a serialized run does not still create
+        # reclaim pressure from Lean's default host-wide task pool.
+        env["LEAN_NUM_THREADS"] = LEAN_NUM_THREADS
         self.km, self.kc = start_new_kernel(kernel_name=kernel_name,
-                                            startup_timeout=60)
+                                            startup_timeout=60, env=env)
         self.pid = _kernel_pid(self.km)
         self.comms: list[dict[str, Any]] = []
 
@@ -1073,6 +1079,17 @@ def check_kernelspec(profile: dict[str, Any], kernel_name: str,
         raise ProfileError(
             f"kernelspec {kernel_name!r} runs {spec_project}, not the checkout "
             f"under test {project.resolve()}")
+    try:
+        project_pos = spec.argv.index("--project")
+        launched_project = Path(spec.argv[project_pos + 1]).resolve()
+    except (ValueError, IndexError):
+        raise ProfileError(
+            f"kernelspec {kernel_name!r} has no usable --project launch "
+            "argument") from None
+    if launched_project != project.resolve():
+        raise ProfileError(
+            f"kernelspec {kernel_name!r} launches {launched_project}, not "
+            f"the checkout under test {project.resolve()}")
     prelude = spec.env.get("NBDSL_PRELUDE")
     if prelude != profile["plugin"]["prelude_module"]:
         raise ProfileError(

@@ -14,6 +14,7 @@ concurrency:
 
 env:
   AI_REVIEW_CI_SHA: 07c8cf3fbc766e45ced22b058d1b00810166c614
+  LEAN_NUM_THREADS: 1
 
 jobs:
   core:

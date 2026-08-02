@@ -36,7 +36,8 @@ mocks, source-shape checks, or law skips are used.
 candidate session is shut down before the independent control session starts —
 the laws compare observations, not simultaneity — and each session kills any
 worker that outlives its kernel. The runner waits for free memory before
-starting one rather than swapping the machine.
+starting one rather than swapping the machine, sets `LEAN_NUM_THREADS=1`, and
+shares the `NBDSL_CONFORMANCE_LOCK` with the worker-heavy shell gates.
 
 ## The laws
 

@@ -139,10 +139,77 @@ def test_worker_resolution_prefers_manifested_path_dependency(
     stale_exe.write_text("stale")
     (project / ".lake").mkdir(exist_ok=True)
     (project / "lake-manifest.json").write_text(json.dumps({
-        "packages": [{"type": "path", "dir": "../active-worker"}],
+            "packages": [{"type": "path", "name": "«nbdsl-worker»",
+                          "dir": "../active-worker"}],
     }))
 
     assert find_worker_exe(project) == active_exe
+
+
+def test_worker_resolution_fails_closed_for_unbuilt_manifested_path_dependency(
+    tmp_path: Path) -> None:
+    project = tmp_path / "consumer"
+    stale = project / ".lake/packages/nbdsl-worker/worker"
+    stale_exe = stale / ".lake/build/bin/nbdsl_worker"
+    stale_exe.parent.mkdir(parents=True)
+    stale_exe.write_text("stale")
+    (project / ".lake").mkdir(exist_ok=True)
+    (project / "lake-manifest.json").write_text(json.dumps({
+    "packages": [{"type": "path", "name": "«nbdsl-worker»",
+                  "dir": "../active-worker"}],
+    }))
+
+    assert find_worker_exe(project) is None
+
+
+def test_session_bounds_lean_worker_threads(
+    monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    class Manager:
+        pass
+
+    class Client:
+        pass
+
+    monkeypatch.setattr(runner, "await_memory", lambda: 8)
+    monkeypatch.setattr(
+        runner,
+        "start_new_kernel",
+        lambda **kwargs: (captured.update(kwargs) or (Manager(), Client())),
+    )
+    monkeypatch.setattr(runner, "_kernel_pid", lambda _manager: 123)
+
+    runner.Session("nbdsl")
+
+    assert captured["env"]["LEAN_NUM_THREADS"] == "1"
+
+
+def test_kernelspec_must_launch_the_declared_project(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    other = tmp_path / "other"
+    project.mkdir()
+    other.mkdir()
+
+    class Spec:
+        metadata = {"nbdsl": {"project_root": str(project)}}
+        argv = ["python", "-m", "nbdsl_kernel", "--project", str(other)]
+        env = {"NBDSL_PRELUDE": "NbDsl.Notebook"}
+
+    class Manager:
+        def get_kernel_spec(self, _name: str) -> Spec:
+            return Spec()
+
+    monkeypatch.setattr(runner, "KernelSpecManager", Manager)
+
+    with pytest.raises(runner.ProfileError, match="launches"):
+        runner.check_kernelspec(
+            {"plugin": {"prelude_module": "NbDsl.Notebook"}},
+            "nbdsl",
+            project,
+        )
 
 
 def test_runner_kills_each_owned_process_group_once(

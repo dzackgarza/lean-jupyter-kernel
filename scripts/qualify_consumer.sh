@@ -24,6 +24,8 @@ CANDIDATE="${1:?usage: qualify_consumer.sh <candidate-kernel-sha> [workdir]}"
 WORKDIR="${2:-$(mktemp -d /tmp/consumer-qualification-XXXXXX)}"
 PROFILE="$KERNEL_REPO/conformance/lean-cas-dsl.toml"
 AI_REVIEW_CI_SHA="${AI_REVIEW_CI_SHA:?qualification requires AI_REVIEW_CI_SHA}"
+export LEAN_NUM_THREADS=1
+export NBDSL_CONFORMANCE_LOCK="${NBDSL_CONFORMANCE_LOCK:-${TMPDIR:-/tmp}/nbdsl-conformance-${UID}.lock}"
 [[ "$CANDIDATE" =~ ^[0-9a-f]{40}$ ]] || {
   echo "qualification: candidate must be a 40-hex commit"
   exit 1
@@ -126,10 +128,11 @@ WORKER_SHA256=$(sha256sum "$WORKER_BIN" | cut -d' ' -f1)
 # is the independent second gate. Both halves here come from one controlled
 # checkout at one candidate SHA, so the bar is exactly `True` — a session that
 # merely was not refused (unverifiable-dirty) does not qualify a release.
-python3 - "$WORKDIR/conformance-result.json" "$CANDIDATE" <<'EOF'
+python3 - "$WORKDIR/conformance-result.json" "$CANDIDATE" "$WORKER_SHA256" <<'EOF'
 import json, sys
 res = json.load(open(sys.argv[1]))
 candidate = sys.argv[2]
+expected_hash = sys.argv[3]
 prov = res.get("provenance", {})
 if prov.get("status") != "present":
     sys.exit(f"qualification: no runtime provenance observed ({prov!r})")
@@ -146,6 +149,10 @@ for p in records:
         if got != candidate:
             sys.exit(f"qualification: {half} ran at {got}, not the candidate "
                      f"{candidate}")
+    got_hash = p.get("worker_binary_sha256")
+    if got_hash != expected_hash:
+        sys.exit("qualification: runtime worker hash does not match the "
+                 f"qualified binary ({got_hash!r} != {expected_hash!r})")
 print(f"provenance: adapter and worker both at {candidate}, strictly agreed")
 EOF
 
