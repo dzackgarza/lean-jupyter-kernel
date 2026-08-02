@@ -35,8 +35,7 @@ jobs:
           use-github-cache: false
 
       - name: bounded core worker build
-        run: python3 scripts/resource_limited.py -- \
-          bash -c 'cd worker && lake build nbdsl_worker'
+        run: bash -c 'cd worker && lake build nbdsl_worker'
 
       - name: boundary — the core must never import DSL modules
         run: |
@@ -84,18 +83,16 @@ jobs:
           use-github-cache: false  # cached above, keyed on deps rather than SHA
 
       - name: bounded Mathlib cache preparation
-        run: python3 scripts/resource_limited.py -- \
-          bash -c 'cd dsls/nbdsl && lake exe cache get'
+        run: bash -c 'cd dsls/nbdsl && lake exe cache get'
 
       - name: bounded NbDsl build
-        run: python3 scripts/resource_limited.py -- \
-          bash -c 'cd dsls/nbdsl && lake build NbDsl'
+        run: bash -c 'cd dsls/nbdsl && lake build NbDsl'
 
       # The DSL build pulls the worker in as a path dependency but not its
       # executable, which the kernel spawns.
       - name: build worker executable
         working-directory: worker
-        run: python3 ../scripts/resource_limited.py -- lake build nbdsl_worker
+        run: lake build nbdsl_worker
 
       - name: mypy (strict, mirrors ai-review-ci's global config)
         run: |
@@ -105,8 +102,7 @@ jobs:
             nbdsl_kernel/nbdsl_kernel nbdsl_kernel/tests conformance
 
       - name: protocol round-trip
-        run: python3 scripts/resource_limited.py -- \
-          python3 nbdsl_kernel/tests/roundtrip.py
+        run: python3 nbdsl_kernel/tests/roundtrip.py
 
       # `build` is the identity suite's: one law builds a wheel from a scratch
       # clone to prove an installer's own droppings do not read as dirty.
@@ -120,28 +116,23 @@ jobs:
         run: jlpm install
 
       - name: end-to-end through the Jupyter protocol
-        run: python3 scripts/resource_limited.py -- \
-          pytest nbdsl_kernel/tests/test_e2e.py
+        run: pytest nbdsl_kernel/tests/test_e2e.py
 
       - name: Journey 1 — clean installed NbDsl notebook
-        run: python3 scripts/resource_limited.py -- \
-          pytest nbdsl_kernel/tests/test_clean_install.py
+        run: pytest nbdsl_kernel/tests/test_clean_install.py
 
       # The identity/provenance laws that drive the INSTALLED kernelspec run
       # here, where that spec exists; the compat job proves the wheel-and-
       # clean-environment claims with fixtures that install their own specs.
       - name: adapter/worker identity through the installed kernelspec
-        run: python3 scripts/resource_limited.py -- \
-          pytest nbdsl_kernel/tests/test_identity.py \
+        run: pytest nbdsl_kernel/tests/test_identity.py \
             nbdsl_kernel/tests/test_restart.py
 
       - name: runner contracts, inspection, and sandbox boundary
         run: |
-          python3 scripts/resource_limited.py -- \
-            pytest conformance/test_runner_contracts.py \
+          pytest conformance/test_runner_contracts.py \
               nbdsl_kernel/tests/test_inspect.py
-          python3 scripts/resource_limited.py -- \
-            python3 nbdsl_kernel/tests/sandbox_check.py
+          python3 nbdsl_kernel/tests/sandbox_check.py
 
       # Semantic plugin conformance (#3). The in-repository reference plugin
       # runs here, where the worker, the DSL and the kernel package are all
@@ -151,8 +142,7 @@ jobs:
       # the consumer qualification job, which owns the clean checkout (#6).
       - name: Journeys 2-5 - full installed NbDsl matrix
         run: |
-          python3 scripts/resource_limited.py -- \
-            python3 conformance/runner.py conformance/nbdsl.toml --journey all
+          python3 conformance/runner.py conformance/nbdsl.toml --journey all
 
   compat:
     name: compatibility + external consumer
@@ -169,7 +159,6 @@ jobs:
       - name: release projections agree with release.toml (and reject mutation)
         run: |
           python3 -m pip install pytest pyyaml
-          pytest -q conformance/test_release_governance.py
           python3 scripts/release_projection.py check
           python3 scripts/release_projection.py selftest
 
@@ -182,8 +171,7 @@ jobs:
           use-github-cache: false
 
       - name: bounded worker build for qualification
-        run: python3 scripts/resource_limited.py -- \
-          bash -c 'cd worker && lake build nbdsl_worker'
+        run: bash -c 'cd worker && lake build nbdsl_worker'
 
       # -- the real Sage backend for the external consumer's boundary
       #

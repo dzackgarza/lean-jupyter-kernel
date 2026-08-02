@@ -72,8 +72,6 @@ from roundtrip import FrameReader, write_frame  # noqa: E402
 
 from jupyter_client.kernelspec import KernelSpecManager  # noqa: E402
 from jupyter_client.manager import start_new_kernel  # noqa: E402
-from nbdsl_kernel.resource_limits import (ResourceLimitError,
-                                          require_active_resource_scope)  # noqa: E402
 from nbdsl_kernel.worker import find_worker_exe  # noqa: E402
 
 # The first execute of a session waits for the worker's prelude import (all of
@@ -1310,7 +1308,6 @@ def main() -> int:
     parser.add_argument("--output", type=Path, default=None,
                         help="write the result JSON here (default: stdout)")
     args = parser.parse_args()
-    require_active_resource_scope()
 
     profile = load_profile(args.profile)
     source = resolve_checkout(profile, args.source_dir)
@@ -1417,6 +1414,6 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except (ProfileError, ResourceLimitError) as exc:
+    except ProfileError as exc:
         print(f"conformance setup error: {exc}", file=sys.stderr)
         sys.exit(2)

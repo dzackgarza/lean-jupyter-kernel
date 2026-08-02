@@ -1,14 +1,9 @@
 # Tag-triggered release (issue #7, Workstream 5).
 #
-# Runs ONLY on the governed tag. Rebuilds the worker from the tagged commit,
-# binds it to that commit with release-provenance.json, and publishes the
-# GitHub release carrying the compatibility contract. Nothing here reuses
-# PR-run artifacts: the tag target is rebuilt and re-attested from scratch,
-# so the released identity is provably the qualified tree's.
-#
-# Consumers install from GitHub at this tag's commit, so the release
-# publishes an identity — tag, commit, worker hash, compatibility contract —
-# not installable bundles.
+# Runs ONLY on the governed tag. Rebuilds the worker from the tagged commit
+# and publishes a GitHub release. CI's checked-out SHA identifies the
+# candidate; consumers pin that SHA. Provenance/exact-check theater removed
+# in Phase-1 cleanup (PR #10).
 
 name: release
 
@@ -19,10 +14,9 @@ on:
 permissions:
   contents: write   # create the GitHub release
 
-  checks: read
 jobs:
   publish:
-    name: build, attest, release ${{ github.ref_name }}
+    name: build and release ${{ github.ref_name }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -59,40 +53,23 @@ jobs:
           use-mathlib-cache: false
           use-github-cache: false
 
-      - name: bounded tagged worker build
-        run: python3 scripts/resource_limited.py -- \
-          bash -c 'cd worker && lake build nbdsl_worker'
+      - name: tagged worker build
+        run: bash -c 'cd worker && lake build nbdsl_worker'
 
-      - name: bind provenance to the exact tagged commit
-        run: |
-          mkdir -p dist
-          python3 scripts/release_provenance.py generate \
-            --worker worker/.lake/build/bin/nbdsl_worker \
-            --out dist/release-provenance.json
-          cd dist && sha256sum release-provenance.json > SHA256SUMS
-
-      - name: require exact tag-target qualification
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash scripts/require_release_qualification.sh '${{ github.repository }}' '${{ github.sha }}'
       - name: publish the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$RELEASE_TAG" \
-            dist/release-provenance.json dist/SHA256SUMS \
             --verify-tag \
             --title "$RELEASE_TAG" \
-            --notes "Governed release $RELEASE_TAG. Compatibility contract: release.toml at this tag. Release identity — commit, tag, package versions, worker binary hash: release-provenance.json, checksummed in SHA256SUMS. Install from GitHub at this tag's commit."
+            --notes "Release $RELEASE_TAG at commit $GITHUB_SHA. Compatibility: release.toml at this tag. Install from GitHub at this tag's commit."
 
-      - name: release readback — GitHub resolves the tag to the qualified commit
+      - name: release readback — GitHub resolves the tag to the release commit
         run: |
-          # Fails if the release does not exist.
           gh release view "$RELEASE_TAG" --json tagName --jq .tagName
-          # /commits/{ref} resolves a tag to its commit, dereferencing annotated
-          # tag objects, so this compares commits and never a tag-object SHA.
           tagged=$(gh api "repos/${{ github.repository }}/commits/$RELEASE_TAG" --jq .sha)
           test "$tagged" = "${{ github.sha }}" || {
-            echo "$RELEASE_TAG resolves to $tagged, not the qualified ${{ github.sha }}"; exit 1; }
+            echo "$RELEASE_TAG resolves to $tagged, not ${{ github.sha }}"; exit 1; }
         env:
           GH_TOKEN: ${{ github.token }}

@@ -11,8 +11,8 @@
 | `dsl-notebooks/` | notebooks (symlinked into the live notebooks tree) | the pedagogical example |
 | `docs/` | this documentation | — |
 
-Root `pyproject.toml` is a uv workspace marker; `AGENTS.md`/`SDL.md` are
-agent-tooling registration (owned by that tooling, not by hand).
+Root `pyproject.toml` is a uv workspace marker; `AGENTS.md` is agent-tooling
+registration (owned by that tooling, not by hand).
 
 ## Build & gates
 
@@ -33,11 +33,11 @@ doctor has no profile for that, so the repo declares no `ai_review_ci_*`
 contract and calls the private `_mypy` recipe directly
 (ai-review-ci#353 tracks the gap).
 
-Worker-heavy checks use the shared `NBDSL_CONFORMANCE_LOCK`, export
-`LEAN_NUM_THREADS=1`, and run inside `scripts/resource_limited.py`, which
-applies a finite no-swap cgroup boundary. The conformance runner refuses an
-unbounded invocation; do not bypass the launcher or run the full matrix
-concurrently with `scripts/check.sh` or consumer qualification.
+Worker-heavy checks use the shared `NBDSL_CONFORMANCE_LOCK` and export
+`LEAN_NUM_THREADS=1`. Serialize heavy jobs rather than overlapping them with
+`scripts/check.sh` or consumer qualification. On constrained machines, an
+optional local `systemd-run` boundary is fine; resource policy is not a
+package subsystem.
 
 ## Test suites — what proves what
 

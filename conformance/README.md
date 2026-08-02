@@ -36,17 +36,16 @@ focused atomicity run uses only `execute_request` and `interrupt_request`;
 completion, inspection, recovery, and transport are separate journeys. No
 mocks, source-shape checks, or law skips are used.
 
-The runner refuses to start unless it is already inside a finite, no-swap
-resource scope. Use `scripts/resource_limited.py --` (or `just conformance`);
-the launcher applies a 6 GiB hard memory cap, a 5 GiB throttling threshold,
-four-core CPU quota, 128-task cap, and finite runtime limit.
+The runner shares the `NBDSL_CONFORMANCE_LOCK` with other worker-heavy gates,
+sets `LEAN_NUM_THREADS=1`, and waits for free memory before starting a
+mathlib-loaded worker rather than swapping the machine. Serialize heavy jobs;
+do not run the full matrix concurrently with `scripts/check.sh` or consumer
+qualification.
 
 **Resource contract:** at most one mathlib-loaded worker is alive at a time. The
 candidate session is shut down before the independent control session starts —
 the laws compare observations, not simultaneity — and each session kills any
-worker that outlives its kernel. The runner waits for free memory before
-starting one rather than swapping the machine, sets `LEAN_NUM_THREADS=1`, and
-shares the `NBDSL_CONFORMANCE_LOCK` with the worker-heavy shell gates.
+worker that outlives its kernel.
 
 ## The laws
 
