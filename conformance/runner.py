@@ -45,7 +45,7 @@ import subprocess
 import sys
 import time
 import tomllib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -550,6 +550,41 @@ def _route(stream: str) -> str:
     return "unknown"
 
 
+def _recovery_trace(stream: str, reply: dict[str, Any]) -> dict[str, str]:
+    """Separate the opaque execute request into the recovery phases it drove."""
+    return {
+        "cache_restore": (
+            "restored" if "Restored session from cache" in stream
+            else "timed-out" if "session cache restore timed out" in stream
+            else "not-restored"
+        ),
+        "source_replay": (
+            "replayed" if "Replayed" in stream else "not-replayed"
+        ),
+        "observation": str(reply.get("status", "missing-status")),
+    }
+
+
+def _recovery_phase(label: str, action: Callable[[], Any],
+                    timings: dict[str, float]) -> Any:
+    """Give every bounded Jupyter wait a failure message tied to its phase."""
+    started = time.monotonic()
+    try:
+        result = action()
+    except queue.Empty as exc:
+        elapsed = time.monotonic() - started
+        raise ProfileError(
+            f"recovery phase {label} received no Jupyter message after "
+            f"{elapsed:.1f}s") from exc
+    except TimeoutError as exc:
+        elapsed = time.monotonic() - started
+        raise ProfileError(
+            f"recovery phase {label} timed out after {elapsed:.1f}s: {exc}"
+        ) from exc
+    timings[label] = round(time.monotonic() - started, 3)
+    return result
+
+
 def query_answers(session: Session, profile: dict[str, Any]) -> dict[str, Any]:
     """What complete and inspect answer for the three probes the query laws
     need: a name that does not exist, a name the PRELUDE defines, and the name
@@ -623,32 +658,56 @@ def run_recovery(session: Session, profile: dict[str, Any],
                  committed: dict[str, Any]) -> dict[str, Any]:
     """Run only the two worker-death recovery laws for a targeted regression."""
     obs_cfg = profile["observation"]
-    candidate_queries = query_answers(session, profile)
+    timings: dict[str, float] = {}
+    candidate_queries = _recovery_phase(
+        "pre-restart queries", lambda: query_answers(session, profile), timings)
 
-    killed = session.kill_worker()
-    reply, outputs = session.run(obs_cfg["command"])
+    killed = _recovery_phase("first worker kill", session.kill_worker, timings)
+    reply, outputs = _recovery_phase(
+        "first recovery observation",
+        lambda: session.run(obs_cfg["command"]),
+        timings,
+    )
     stream = texts(outputs)
     after_restart = _read(reply, outputs, obs_cfg)
-    queries_after_restart = query_answers(session, profile)
+    queries_after_restart = _recovery_phase(
+        "post-first-recovery queries",
+        lambda: query_answers(session, profile),
+        timings,
+    )
     report.record(
         "restart-reconstructs",
         after_restart == committed and queries_after_restart == candidate_queries,
         {**killed, "recovery_route": _route(stream),
-         "recovery_stream": stream[:400], "observation_after": after_restart,
+         "recovery_trace": _recovery_trace(stream, reply),
+         "recovery_stream": stream[:400], "phase_seconds": dict(timings),
+         "observation_after": after_restart,
          "queries_after_recovery": queries_after_restart},
         "the worker process was SIGKILLed from outside the kernel and the "
         "production restart path reconstructed the committed observation and "
         "the same completion/inspection answers")
 
     for code in profile["replay"]["force"]:
-        reply, _ = session.run(code)
+        reply, _ = _recovery_phase(
+            f"cache invalidation {code!r}",
+            lambda code=code: session.run(code),
+            timings,
+        )
         if reply["status"] != "ok":
             raise ProfileError(f"replay-forcing cell failed: {code!r} -> {reply}")
-    killed = session.kill_worker()
-    reply, outputs = session.run(obs_cfg["command"])
+    killed = _recovery_phase("second worker kill", session.kill_worker, timings)
+    reply, outputs = _recovery_phase(
+        "second recovery observation",
+        lambda: session.run(obs_cfg["command"]),
+        timings,
+    )
     stream = texts(outputs)
     after_replay = _read(reply, outputs, obs_cfg)
-    queries_after_replay = query_answers(session, profile)
+    queries_after_replay = _recovery_phase(
+        "post-second-recovery queries",
+        lambda: query_answers(session, profile),
+        timings,
+    )
     route = _route(stream)
     report.record(
         "replay-reconstructs",
@@ -656,6 +715,8 @@ def run_recovery(session: Session, profile: dict[str, Any],
         and after_replay == committed
         and queries_after_replay == candidate_queries,
         {**killed, "recovery_route": route, "recovery_stream": stream[:400],
+         "recovery_trace": _recovery_trace(stream, reply),
+         "phase_seconds": dict(timings),
          "cache_invalidated_by": profile["replay"]["force"],
          "observation_after": after_replay,
          "queries_after_recovery": queries_after_replay},
@@ -663,7 +724,11 @@ def run_recovery(session: Session, profile: dict[str, Any],
         "the committed sources and reconstructed the same observation and "
         "completion/inspection answers")
     for code in profile["replay"]["restore"]:
-        reply, outputs = session.run(code)
+        reply, outputs = _recovery_phase(
+            f"cache restore {code!r}",
+            lambda code=code: session.run(code),
+            timings,
+        )
         if reply["status"] != "ok":
             raise ProfileError(
                 f"replay restore cell failed: {code!r} -> {reply}\n"
@@ -692,13 +757,21 @@ def run_candidate(session: Session, profile: dict[str, Any],
     reply, _ = session.run(profile["registration"]["command"])
     committed = observe(session, obs_cfg)
     again = observe(session, obs_cfg)
+    success_ok = (reply["status"] == "ok" and not before["present"]
+                  and committed["present"] and committed == again)
+    success_observation = {
+        "before": before, "after": committed, "reobserved": again,
+        "registration_command": profile["registration"]["command"],
+        "registration_status": reply["status"],
+    }
+    if recovery_only:
+        if not success_ok:
+            raise ProfileError(
+                "recovery prerequisite did not establish a committed "
+                f"observation: {success_observation}")
+        return run_recovery(session, profile, report, committed)
     report.record(
-        "success-commits",
-        reply["status"] == "ok" and not before["present"]
-        and committed["present"] and committed == again,
-        {"before": before, "after": committed, "reobserved": again,
-         "registration_command": profile["registration"]["command"],
-         "registration_status": reply["status"]},
+        "success-commits", success_ok, success_observation,
         "the discriminating command commits exactly its observation change: "
         "unobservable before, the canonical projection after, unchanged when "
         "observed again")
@@ -776,9 +849,6 @@ def run_candidate(session: Session, profile: dict[str, Any],
          "pre": committed, "post": after_parse},
         "a malformed tail discards a candidate registration and buffered "
         "output while preserving the committed observation")
-
-    if recovery_only:
-        return run_recovery(session, profile, report, committed)
 
     if not atomicity_only:
         candidate_queries = query_answers(session, profile)

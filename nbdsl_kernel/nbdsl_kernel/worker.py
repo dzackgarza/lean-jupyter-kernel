@@ -46,6 +46,7 @@ RawFrame = dict[str, object]
 
 READY_TIMEOUT = 600.0  # first prelude import loads mathlib oleans
 REPLY_TIMEOUT = 3600.0  # elaboration can legitimately be slow; interrupt kills
+CACHE_RESTORE_TIMEOUT = 30.0  # cache is optional; the canonical ledger replays
 CANCEL_GRACE = 3.0  # cooperative-cancel window before the worker is killed
 
 BUILD_INFO = Path(__file__).parent / "_build_info.json"
@@ -458,6 +459,10 @@ class WorkerClient:
         self.start()
         if self._try_restore_session():
             return -1
+        # A timed-out cache load leaves the worker busy in `load_session`.
+        # Replace it before sending source-replay requests to the main loop.
+        if not self.running():
+            self.start()
         # The ledger is the canonical record of committed state, so a failed
         # replay must not consume it: a worker that dies mid-replay would
         # otherwise truncate it permanently, and the NEXT restart would replay
@@ -536,9 +541,19 @@ class WorkerClient:
         # rather than ordinary uncacheable state: say what, then replay.
         try:
             rep = LOAD_SESSION_REPLY.validate_python(self._request(
-                "load_session", {"path": str(self.cache_dir)}, timeout=120))
-        except (WorkerDied, TimeoutError) as e:
+                "load_session", {"path": str(self.cache_dir)},
+                timeout=CACHE_RESTORE_TIMEOUT))
+        except TimeoutError:
+            self.on_stream(
+                "stderr",
+                "session cache restore timed out after "
+                f"{CACHE_RESTORE_TIMEOUT:g}s; discarding worker before replay\n",
+            )
+            self.kill()
+            return False
+        except WorkerDied as e:
             self.on_stream("stderr", f"session cache not restored: {e}\n")
+            self.kill()
             return False
         if not isinstance(rep, LoadSessionOk):
             self.on_stream("stderr",

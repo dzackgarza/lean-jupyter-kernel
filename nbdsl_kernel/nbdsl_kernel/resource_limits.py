@@ -30,8 +30,8 @@ class ResourceLimitError(RuntimeError):
 class ResourceLimits:
     """Finite defaults chosen to contain one worker-heavy repository gate."""
 
-    memory_high: str = "3584M"
-    memory_max: str = "4G"
+    memory_high: str = "5G"
+    memory_max: str = "6G"
     memory_swap_max: str = "0"
     cpu_quota: str = "400%"
     tasks_max: int = 128

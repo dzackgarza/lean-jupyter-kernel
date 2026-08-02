@@ -33,7 +33,12 @@ import pytest
 from jupyter_client.kernelspec import KernelSpecManager
 from jupyter_client.manager import KernelManager
 from jupyter_client.provisioning import LocalProvisioner
-from nbdsl_kernel.worker import LIVENESS_SLICE, WorkerClient, WorkerDied
+from nbdsl_kernel.worker import (
+    LIVENESS_SLICE,
+    REPLY_TIMEOUT,
+    WorkerClient,
+    WorkerDied,
+)
 from test_e2e import _send_comm, run_cell, texts
 
 REPO = Path(__file__).resolve().parents[2]
@@ -548,6 +553,40 @@ def test_second_recovery_of_a_restored_session(client: WorkerClient) -> None:
     rep = w.execute("#eval delta", cell_id="check")
     assert rep.status == "ok", rep
     assert any("14" in d.message for d in rep.diagnostics), rep
+
+
+def test_cache_restore_timeout_replaces_worker_before_source_replay(
+        client: WorkerClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A live worker stuck loading an optional cache cannot service replay."""
+    w = client
+    w.cache_dir = tempfile.mkdtemp(prefix="nbdsl-test-cache-")
+    commit_cells(w)
+    w.kill()
+
+    request = w._request
+    stale_wrapper_pid: int | None = None
+
+    def timeout_cache_load(
+            op: str, payload: dict[str, object],
+            timeout: float = REPLY_TIMEOUT,
+    ) -> dict[str, object]:
+        nonlocal stale_wrapper_pid
+        if op == "load_session":
+            assert w.running()
+            assert w.proc is not None
+            stale_wrapper_pid = w.proc.pid
+            raise TimeoutError("simulated cache load timeout")
+        return request(op, payload, timeout)
+
+    monkeypatch.setattr(w, "_request", timeout_cache_load)
+    assert w.restart_and_replay() == len(CELLS)
+    assert stale_wrapper_pid is not None
+    assert w.proc is not None
+    assert w.proc.pid != stale_wrapper_pid
+    assert w.running()
+    rep = w.execute("#eval gamma", cell_id="check-timeout-replay")
+    assert rep.status == "ok", rep
+    assert any("13" in d.message for d in rep.diagnostics), rep
 
 
 def test_cache_key_rejects_a_valid_but_stale_head(

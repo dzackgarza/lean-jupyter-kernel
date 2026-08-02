@@ -14,8 +14,8 @@ from nbdsl_kernel.resource_limits import ResourceLimits, systemd_command
 
 def test_systemd_command_has_hard_memory_cpu_and_runtime_bounds() -> None:
     limits = ResourceLimits(
-        memory_high="3584M",
-        memory_max="4G",
+        memory_high="5G",
+        memory_max="6G",
         memory_swap_max="0",
         cpu_quota="400%",
         tasks_max=128,
@@ -28,9 +28,9 @@ def test_systemd_command_has_hard_memory_cpu_and_runtime_bounds() -> None:
         "--scope",
         "--quiet",
         "-p",
-        "MemoryHigh=3584M",
+        "MemoryHigh=5G",
         "-p",
-        "MemoryMax=4G",
+        "MemoryMax=6G",
         "-p",
         "MemorySwapMax=0",
         "-p",
