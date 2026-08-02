@@ -18,8 +18,6 @@ JupyterLab ──ZMQ──▶ nbdsl_kernel (Python adapter)
                               all of mathlib in scope)
 ```
 
-▶ **[View a rendered demo notebook](notebooks/demo.ipynb)** — a self-contained walkthrough with embedded outputs.
-
 ## What it does
 
 - **Cells are ordinary Lean 4** over the full mathlib (`sage.all`-style),
