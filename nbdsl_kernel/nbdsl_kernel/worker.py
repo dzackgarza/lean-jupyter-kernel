@@ -17,7 +17,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from pathlib import Path
 from typing import IO
 
@@ -247,10 +247,9 @@ class WorkerClient:
     def _terminate_process_group(
             proc: subprocess.Popen[bytes],
             pump_threads: list[threading.Thread]) -> None:
-        try:
+        # ProcessLookupError: the group is already gone (expected race).
+        with suppress(ProcessLookupError):
             os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
         proc.wait()
         for thread in pump_threads:
             thread.join()
