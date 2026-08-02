@@ -87,6 +87,22 @@ def test_dsl_structured_output(kernel: Kernel) -> None:
     assert any("application/vnd.nbdsl.path+json" in b for b in bundles)
 
 
+def test_parse_failed_cell_publishes_no_prefix_display(kernel: Kernel) -> None:
+    """Issue #11: a later parse error must not leave rich prefix output."""
+    _, kc = kernel
+    for cell in ("open NbDsl NbDsl.Std",
+                 "prefer groupsToSets",
+                 "let G := GrpCat.of PUnit ∈ Groups"):
+        reply, _ = run_cell(kc, cell)
+        assert reply["status"] == "ok", cell
+    reply, outputs = run_cell(kc, "#via G ∈ Sets\ndef ( := )")
+    assert reply["status"] == "error", reply
+    assert not [m for m in outputs if m["msg_type"] == "display_data"], [
+        m["msg_type"] for m in outputs]
+    assert not [m for m in outputs if m["msg_type"] == "execute_result"], [
+        m["msg_type"] for m in outputs]
+
+
 def test_complete_and_inspect(kernel: Kernel) -> None:
     _, kc = kernel
     # Self-contained: bare-name completion depends on this committed open.
