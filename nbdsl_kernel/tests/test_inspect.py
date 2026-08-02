@@ -18,7 +18,7 @@ from typing import Iterator
 
 import pytest
 
-from nbdsl_kernel.protocol import CompleteOk, InspectOk
+from nbdsl_kernel.protocol import InspectOk
 from nbdsl_kernel.worker import WorkerClient
 
 REPO = Path(__file__).resolve().parents[2]
@@ -29,18 +29,6 @@ syntax (priority := low) term : command
 
 elab_rules : command
   | `(command| $_t:term) => pure ()
-"""
-
-PLUGIN_QUERY = r"""
-open Lean Elab Command
-open Worker (emitOutput)
-syntax (priority := low) ident : command
-elab_rules : command
-  | `(command| $id:ident) => do
-      if id.getId == `pluginName then
-        emitOutput { data := [("text/plain", .str "plugin-value")] }
-      else
-        throwError "unknown plugin name"
 """
 
 
@@ -83,25 +71,3 @@ def test_distinct_inputs_get_distinct_answers(client: WorkerClient) -> None:
     assert a.model_dump(exclude={"request_id"}) != b.model_dump(
         exclude={"request_id"}), (a, b)
 
-
-@pytest.fixture
-def plugin_client() -> Iterator[WorkerClient]:
-    w = WorkerClient(REPO / "worker", prelude="Worker")
-    try:
-        w.start()
-        assert w.execute(PLUGIN_QUERY, cell_id="plugin").status == "ok"
-        yield w
-    finally:
-        w.kill()
-        w.shutdown()
-
-
-def test_extension_expression_is_queryable_without_commit(
-        plugin_client: WorkerClient) -> None:
-    complete = plugin_client.complete("pluginName", len("pluginName"))
-    assert isinstance(complete, CompleteOk), complete
-    assert complete.matches == ["pluginName"], complete
-
-    inspect = plugin_client.inspect("pluginName", 0)
-    assert isinstance(inspect, InspectOk), inspect
-    assert inspect.found and inspect.hover == "plugin-value", inspect

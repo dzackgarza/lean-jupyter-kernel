@@ -8,7 +8,6 @@ Cursor offsets are Unicode code points on both sides of the protocol.
 -/
 import Lean
 import Worker.Frontend
-import Worker.Output
 
 namespace Worker.Query
 
@@ -117,31 +116,6 @@ def completions (cmdState : Elab.Command.State) (code : String) (cursor : Nat)
             return acc.push short.toString
       return acc
   return (pref, start, finishResults found)
-
-/-- Plain text emitted while probing a plugin-owned expression. The probe
-does not commit its candidate state; this is only a query observation. -/
-def plainTextOutput? (outputs : Array Worker.Output) : Option String := Id.run do
-  let mut found : Option String := none
-  for output in outputs do
-    for (mime, value) in output.data do
-      if mime == "text/plain" then
-        match value.getStr? with
-        | .ok text => found := some text
-        | .error _ => pure ()
-  return found
-
-/-- Elaborate an exact query expression through the plugin's real command
-surface. This is the extension-state counterpart to environment-constant
-queries: successful plugin output proves that the requested object exists in
-the current snapshot, while the candidate state and request-local output are
-discarded. -/
-def probeExpression (cmdState : Elab.Command.State) (code : String)
-    : IO (Bool × Option String) := do
-  discard Worker.drainOutputs
-  let result ← Frontend.processCell cmdState code "<query>"
-  let outputs ← Worker.drainOutputs
-  let succeeded := !result.messages.any (·.severity matches .error)
-  return (succeeded, plainTextOutput? outputs)
 
 /-- Resolve `ident` the way a cell would: against the current namespace
 chain, then opens, then the root namespace. -/

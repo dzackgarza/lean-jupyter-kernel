@@ -110,7 +110,7 @@ prelude + ledger hash.
 ## Wire protocol version
 
 `protocol` on `ready` / `describe` is the sole compatibility gate between
-adapter and worker. It must match `Worker.ReleaseInfo.wireProtocol` /
+adapter and worker. It must match `Worker.Protocol.wireProtocol` /
 `release.toml` `compat.wire_protocol` / `nbdsl_kernel.protocol.WIRE_PROTOCOL`.
 A mismatch surfaces as a typed `WireProtocolError` on execute (the kernel
 still answers `kernel_info`). There is no build-identity or provenance

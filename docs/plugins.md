@@ -39,15 +39,11 @@ The invariants the core silently relies on:
 
 The payoff: obey the state law and the core provides cell atomicity,
 document-order semantics, sorry tracking, staleness marking, session
-caching, and crash recovery — with zero plugin code. Completion and inspection
-cover both registration shapes: declarations are resolved from the persistent
-environment, while an exact plugin-owned expression is elaborated through the
-real command surface as a non-committing query and its `text/plain` output is
-returned as the inspection result. The candidate state and request-local output
-from that probe are discarded. A DSL whose registrations are extension-shaped
-(rather than lowering to real declarations) therefore remains queryable without
-adding a plugin-specific metadata table or weakening the independent-session
-absence check.
+caching, and crash recovery — with zero plugin code. Completion and
+inspection resolve Lean-environment names (declarations, opens, namespaces).
+Extension-backed registrations are visible through ordinary execution and
+rich output; a dedicated plugin query contract for completion/inspection is
+future work.
 
 ## Reducibility
 

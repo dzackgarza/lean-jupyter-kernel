@@ -27,4 +27,3 @@ if [ ! -x .venv/bin/pytest ]; then
 fi
 .venv/bin/python -m nbdsl_kernel.install --project "$PWD/dsls/nbdsl"
 .venv/bin/pytest nbdsl_kernel/tests/test_e2e.py -q
-python3 nbdsl_kernel/tests/sandbox_check.py

@@ -155,21 +155,14 @@ def handleRequest (session : IO.Ref Session) (inflight : Inflight)
         | return reply req
             [("status", Json.str "error"), ("message", Json.str "invalid current snapshot")]
       -- Type-aware dot completion first; plain prefix completion otherwise.
+      -- v1 queries Lean-environment names only (no extension-expression probe).
       let (start, results) ←
         match ← Query.dotCompletions parent.cmdState code cursor with
         | some (start, results) => pure (start, results)
         | none =>
-            let (pref, start, results) :=
+            let (_, start, results) :=
               Query.completions parent.cmdState code cursor
-            if results.isEmpty && !pref.isEmpty then
-              let (succeeded, plainText?) ←
-                Query.probeExpression parent.cmdState code
-              if succeeded && plainText?.isSome then
-                pure (start, #[pref])
-              else
-                pure (start, results)
-            else
-              pure (start, results)
+            pure (start, results)
       return reply req
         [("status", Json.str "ok"),
          ("matches", Json.arr (results.map Json.str)),
@@ -188,9 +181,9 @@ def handleRequest (session : IO.Ref Session) (inflight : Inflight)
       -- commit): the InfoTrees give server-grade hover — locals included —
       -- via `Info.fmtHover?`. Note: like the language server, analysis runs
       -- the cell's elaboration, so `#eval` side effects execute.
-      let (hover?, pluginText?) ← do
+      let hover? ← do
         let result ← Frontend.processCell parent.cmdState code "<inspect>"
-        let outputs ← drainOutputs
+        discard drainOutputs
         let pos := Frontend.codepointPos code cursor
         let mut found : Option String := none
         for tree in result.cmdState.infoState.trees do
@@ -206,20 +199,13 @@ def handleRequest (session : IO.Ref Session) (inflight : Inflight)
               if let some f ← Lean.Elab.Info.fmtHover? iwc.ctx iwc.info then
                 found := some (toString f.fmt)
                 break
-        let pluginText? :=
-          if result.messages.any (·.severity matches .error) then
-            none
-          else
-            Query.plainTextOutput? outputs
-        pure (found, pluginText?)
+        pure found
       -- Environment fallback still supplies name/type/doc when it resolves.
       let global? ← Query.inspect parent.cmdState code cursor
-      if hover?.isNone && global?.isNone && pluginText?.isNone then
+      if hover?.isNone && global?.isNone then
         return reply req [("status", Json.str "ok"), ("found", toJson false)]
       let mut fields := [("status", Json.str "ok"), ("found", toJson true)]
-      if let some p := pluginText? then
-        fields := fields ++ [("hover", Json.str p)]
-      else if let some h := hover? then
+      if let some h := hover? then
         fields := fields ++ [("hover", Json.str h)]
       if let some r := global? then
         fields := fields ++
@@ -260,7 +246,7 @@ def handleRequest (session : IO.Ref Session) (inflight : Inflight)
       let s ← session.get
       return reply req
         [("status", Json.str "ok"),
-         ("protocol", toJson ReleaseInfo.wireProtocol),
+         ("protocol", toJson Protocol.wireProtocol),
          ("lean", Json.str Lean.versionString),
          ("release", Json.str ReleaseInfo.version),
          ("snapshot", toJson s.current),
@@ -341,7 +327,7 @@ unsafe def main (argv : List String) : IO UInt32 := do
       let _reader ← IO.asTask (Worker.readerTask ch queue inflight) .dedicated
       writeFrame ch <| Json.mkObj
         [("op", Json.str "ready"),
-         ("protocol", toJson Worker.ReleaseInfo.wireProtocol),
+         ("protocol", toJson Worker.Protocol.wireProtocol),
          ("lean", Json.str Lean.versionString),
          ("release", Json.str Worker.ReleaseInfo.version),
          -- The client probes this pid between reply-read slices: a worker

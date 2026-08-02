@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 PositivePid = Annotated[int, Field(gt=0)]
 
-# Must match Worker.ReleaseInfo.wireProtocol / release.toml compat.wire_protocol.
+# Must match Worker.Protocol.wireProtocol / release.toml compat.wire_protocol.
 WIRE_PROTOCOL = 1
 
 

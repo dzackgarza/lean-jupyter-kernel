@@ -13,7 +13,7 @@ version = "1.1.0"
 [toolchain]
 lean = "leanprover/lean4:v4.32.0"
 mathlib = "v4.32.0"
-mathlib_commit = "81a5d257c8e410db227a6665ed08f64fea08e997"
+# Resolved Mathlib commit lives in lake-manifest.json via `lake update`.
 
 [compat]
 plugin_api = 1

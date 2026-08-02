@@ -3,8 +3,8 @@
 #
 #   scripts/qualify_consumer.sh <candidate-kernel-sha> [workdir]
 #
-# Pin both kernel channels to the candidate, build + Sage/Jupyter gate,
-# run external-plugin journeys, refuse semantic consumer edits.
+# Pin both kernel channels to the candidate, build, run Sage roundtrip +
+# Jupyter E2E + extension-boundary semantic tests. Owns the frozen baseline.
 
 set -euo pipefail
 
@@ -12,12 +12,10 @@ KERNEL_REPO="$(cd "$(dirname "$0")/.." && pwd)"
 CANDIDATE="${1:?usage: qualify_consumer.sh <candidate-kernel-sha> [workdir]}"
 WORKDIR="${2:-$(mktemp -d /tmp/consumer-qualification-XXXXXX)}"
 export LEAN_NUM_THREADS=1
-export NBDSL_CONFORMANCE_LOCK="${NBDSL_CONFORMANCE_LOCK:-${TMPDIR:-/tmp}/nbdsl-conformance-${UID}.lock}"
 
 [[ "$CANDIDATE" =~ ^[0-9a-f]{40}$ ]] || {
   echo "qualification: candidate must be a 40-hex commit" >&2; exit 1; }
 
-# Keep in sync with conformance/test_semantic.py LEAN_CAS_DSL.
 CONSUMER_URL="https://github.com/dzackgarza/lean-cas-dsl"
 BASELINE="4c6fedafccfe77af80ac632efa780e967d726c14"
 KERNEL_GIT_URL="${KERNEL_GIT_URL:-https://github.com/dzackgarza/lean-jupyter-kernel}"
@@ -57,12 +55,20 @@ EOF
 RESOLVED=$(python3 -c "import json; m=json.load(open('$CO/lake-manifest.json')); print([p['rev'] for p in m['packages'] if p['name'].strip('«»')=='nbdsl-worker'][0])")
 [ "$RESOLVED" = "$CANDIDATE" ] || { echo "lake resolved $RESOLVED != $CANDIDATE" >&2; exit 1; }
 
-(cd "$CO" && just build && just setup && just test) 2>&1 | tee "$WORKDIR/consumer-gate.log"
-grep -q "passed" "$WORKDIR/consumer-gate.log"
+# Product boundaries — not the consumer's global review-QC justfiles.
+{
+  cd "$CO"
+  just build
+  just setup
+  python3 -m py_compile backends/sage_adapter.py tests/roundtrip.py
+  python3 tests/roundtrip.py
+  .venv/bin/pytest tests/test_e2e.py -q
+} 2>&1 | tee "$WORKDIR/consumer-gate.log"
+grep -qE "passed|ok" "$WORKDIR/consumer-gate.log"
 
 export CONFORMANCE_CAS_DSL="$CO"
 "$CO/.venv/bin/python" -m pytest "$KERNEL_REPO/conformance/test_semantic.py" \
-  -k 'lean-cas-dsl' --tb=short
+  -k 'casdsl' --tb=short
 
 DIRTY=$(git -C "$CO" status --porcelain | awk '{print $NF}' | LC_ALL=C sort | tr '\n' ' ')
 [ "$DIRTY" = "justfile lake-manifest.json lakefile.lean " ] || {

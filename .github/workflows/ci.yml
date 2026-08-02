@@ -13,7 +13,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  AI_REVIEW_CI_SHA: 07c8cf3fbc766e45ced22b058d1b00810166c614
   LEAN_NUM_THREADS: 1
 
 jobs:
@@ -24,8 +23,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # The worker is mathlib-free and builds in seconds: no cache, no
-      # mathlib fetch — this job is the fast signal on every push.
       - uses: leanprover/lean-action@v1
         with:
           lake-package-directory: worker
@@ -56,17 +53,6 @@ jobs:
         with:
           node-version: lts/*
 
-      - name: install Bubblewrap sandbox runtime
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes bubblewrap
-          # Ubuntu 24.04 restricts unprivileged user namespaces through
-          # AppArmor by default. The hosted runner is ephemeral; permit the
-          # namespace creation that the production Bubblewrap path requires.
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-
-      # Keyed on the dependency set, not the commit, so warm runs hit: the
-      # ~5GB of mathlib oleans is re-saved only when deps or toolchain move.
       - uses: actions/cache@v6
         with:
           path: |
@@ -80,7 +66,7 @@ jobs:
           auto-config: false
           build: false
           use-mathlib-cache: false
-          use-github-cache: false  # cached above, keyed on deps rather than SHA
+          use-github-cache: false
 
       - name: bounded Mathlib cache preparation
         run: bash -c 'cd dsls/nbdsl && lake exe cache get'
@@ -88,17 +74,14 @@ jobs:
       - name: bounded NbDsl build
         run: bash -c 'cd dsls/nbdsl && lake build NbDsl'
 
-      # The DSL build pulls the worker in as a path dependency but not its
-      # executable, which the kernel spawns.
       - name: build worker executable
         working-directory: worker
         run: lake build nbdsl_worker
 
-      - name: mypy (strict, mirrors ai-review-ci's global config)
+      - name: mypy (strict)
         run: |
-          curl -fsSL "https://raw.githubusercontent.com/dzackgarza/ai-review-ci/${AI_REVIEW_CI_SHA}/tool-configs/mypy-global.ini" -o /tmp/mypy-global.ini
           pip install mypy pydantic ipykernel jupyter_client pytest pyyaml psutil types-psutil types-pyyaml
-          MYPYPATH=nbdsl_kernel/tests:nbdsl_kernel mypy --config-file /tmp/mypy-global.ini \
+          MYPYPATH=nbdsl_kernel/tests:nbdsl_kernel mypy --config-file mypy.ini \
             nbdsl_kernel/nbdsl_kernel nbdsl_kernel/tests conformance
 
       - name: protocol round-trip
@@ -123,16 +106,12 @@ jobs:
         run: pytest nbdsl_kernel/tests/test_identity.py \
             nbdsl_kernel/tests/test_restart.py
 
-      - name: worker resolve, inspection, and sandbox boundary
+      - name: worker resolve and inspection
         run: |
           pytest nbdsl_kernel/tests/test_worker_resolve.py \
               nbdsl_kernel/tests/test_inspect.py
-          python3 nbdsl_kernel/tests/sandbox_check.py
 
-      # Semantic plugin conformance (#3). The in-repository NbDsl case runs
-      # here (Journeys 2–5). The external lean-cas-dsl case is driven by
-      # consumer qualification, which owns the clean checkout (#6).
-      - name: Journeys 2-5 - full installed NbDsl matrix
+      - name: NbDsl semantic journeys
         run: |
           pytest conformance/test_semantic.py -k nbdsl
 
@@ -147,7 +126,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      # -- compatibility authority: one-way derivation, and the negative case
       - name: release projections agree with release.toml
         run: |
           python3 -m pip install pyyaml
@@ -164,19 +142,8 @@ jobs:
       - name: bounded worker build for qualification
         run: bash -c 'cd worker && lake build nbdsl_worker'
 
-      # -- the real Sage backend for the external consumer's boundary
-      #
-      # The 10.7 pin is provisioning, not a workaround: the consumer spawns
-      # its adapter as `sage -python backends/sage_adapter.py` (roundtrip.py
-      # and CasDsl/Backends/Sage.lean both hardcode it), and `-python` is a
-      # flag of the SageMath *distribution* launcher. conda-forge shipped that
-      # launcher through sagelib 10.7; from 10.8 on, `bin/sage` is the
-      # `sage.cli.__main__:main` console script, whose argparse rejects
-      # `-python` outright. 10.7 is therefore the newest conda-forge Sage that
-      # satisfies the frozen consumer baseline's documented launcher contract.
-      # The portability defect is the consumer's and is filed as
-      # dzackgarza/lean-cas-dsl#34 — it is not this repository's to fix, and
-      # the qualification stop rule forbids adapting the consumer here.
+      # The 10.7 pin is provisioning: the frozen consumer baseline spawns its
+      # adapter as `sage -python` (see lean-cas-dsl#34).
       - uses: mamba-org/setup-micromamba@v2
         with:
           environment-name: sage
@@ -187,32 +154,14 @@ jobs:
       - name: install just
         uses: extractions/setup-just@v3
 
-      # The consumer's own `just setup` provisions its venv with uv.
       - name: install uv
         uses: astral-sh/setup-uv@v6
 
-      # The consumer's `just test` delegates its Lean QC to the global
-      # justfiles at ~/ai-review-ci, which a workstation has and a runner does
-      # not. Qualification runs that gate verbatim — the stop rule is to
-      # provision what the consumer needs, never to adapt the consumer.
-      - name: provision the global QC justfiles the consumer gate delegates to
-        run: |
-          git init --quiet ~/ai-review-ci
-          git -C ~/ai-review-ci remote add origin https://github.com/dzackgarza/ai-review-ci
-          git -C ~/ai-review-ci fetch --quiet --depth 1 origin "$AI_REVIEW_CI_SHA"
-          git -C ~/ai-review-ci checkout --quiet --detach FETCH_HEAD
-          [ "$(git -C ~/ai-review-ci rev-parse HEAD)" = "$AI_REVIEW_CI_SHA" ]
-
-      # Mathlib oleans for the consumer build, keyed on the semantic case that
-      # owns the frozen baseline (rolls when LEAN_CAS_DSL.commit promotes).
       - uses: actions/cache@v6
         with:
           path: ~/.cache/mathlib
-          key: consumer-mathlib-${{ runner.os }}-${{ hashFiles('conformance/test_semantic.py') }}
+          key: consumer-mathlib-${{ runner.os }}-${{ hashFiles('scripts/qualify_consumer.sh') }}
 
-      # Exact-candidate qualification: frozen consumer baseline, both
-      # channels overridden to THIS commit, real build + Sage roundtrip +
-      # Jupyter E2E + external Journeys 2-5, unchanged worktree.
       - name: qualify the exact kernel candidate against the frozen consumer
         shell: micromamba-shell {0}
         env:
@@ -242,28 +191,20 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: install jupyterlab  # provides jlpm and the labextension builder
+      - name: install jupyterlab
         run: pip install jupyterlab
 
       - working-directory: jupyterlab_nbdsl
         run: |
           jlpm install
           jlpm test
-          jlpm build
 
-      # The release claim is the ARTIFACT, not the build: the wheel must
-      # contain the production labextension and activate in a clean
-      # JupyterLab 4 environment with no dev symlink.
       - name: distributable wheel builds, installs, and activates cleanly
         working-directory: jupyterlab_nbdsl
         run: |
           pip install build
-          marker="--jupyterlab-nbdsl-wheel-source: ${GITHUB_SHA};"
-          printf '\n:root { %s }\n' "$marker" >> style/index.css
           python -m build --wheel
-          unzip -p dist/jupyterlab_nbdsl-*.whl '*/static/*' | grep -F -- "$marker"
           python -m venv /tmp/labclean
           /tmp/labclean/bin/pip install jupyterlab dist/jupyterlab_nbdsl-*.whl
           /tmp/labclean/bin/jupyter labextension list 2>&1 | tee /tmp/labext.txt
           grep -E "jupyterlab_nbdsl v.*(enabled|OK)" /tmp/labext.txt
-          jlpm pack

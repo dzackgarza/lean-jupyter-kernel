@@ -67,7 +67,7 @@ conformance:
 # …and against lean-cas-dsl. Point CONFORMANCE_CAS_DSL at a clean checkout, or
 # use the sibling ../lean-cas-dsl fallback. Skips if neither is present.
 conformance-external:
-    @{{python}} -m pytest conformance/test_semantic.py -k 'lean-cas-dsl'
+    @{{python}} -m pytest conformance/test_semantic.py -k casdsl
 
 [private]
 test-commit: test

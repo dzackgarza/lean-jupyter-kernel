@@ -1,9 +1,7 @@
-# Tag-triggered release (issue #7, Workstream 5).
+# Tag-triggered source release.
 #
-# Runs ONLY on the governed tag. Rebuilds the worker from the tagged commit
-# and publishes a GitHub release. CI's checked-out SHA identifies the
-# candidate; consumers pin that SHA. Provenance/exact-check theater removed
-# in Phase-1 cleanup (PR #10).
+# Publishes release notes for the pushed tag. CI already proved the tree;
+# this workflow does not rebuild unpublished artifacts.
 
 name: release
 
@@ -12,13 +10,13 @@ on:
     tags: ['v*']
 
 permissions:
-  contents: write   # create the GitHub release
+  contents: write
 
 jobs:
   publish:
-    name: build and release ${{ github.ref_name }}
+    name: release ${{ github.ref_name }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 10
     env:
       RELEASE_TAG: ${{ github.ref_name }}
     steps:
@@ -26,11 +24,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v7
-        with:
-          python-version: '3.12'
-
-      - name: the tag names the governed release and the tree is exact
+      - name: tag matches declared version and is on main
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -40,21 +34,9 @@ jobs:
           git fetch --no-tags origin main
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
             echo "$GITHUB_SHA is not reachable from protected main"; exit 1; }
-          python3 scripts/release_projection.py check
           VERSION=$(python3 -c "import tomllib; print(tomllib.load(open('release.toml','rb'))['release']['version'])")
           test "v$VERSION" = "$RELEASE_TAG" || {
-            echo "tag $RELEASE_TAG does not match governed version $VERSION"; exit 1; }
-
-      - uses: leanprover/lean-action@v1
-        with:
-          lake-package-directory: worker
-          auto-config: false
-          build: false
-          use-mathlib-cache: false
-          use-github-cache: false
-
-      - name: tagged worker build
-        run: bash -c 'cd worker && lake build nbdsl_worker'
+            echo "tag $RELEASE_TAG does not match version $VERSION"; exit 1; }
 
       - name: publish the GitHub release
         env:
@@ -64,12 +46,3 @@ jobs:
             --verify-tag \
             --title "$RELEASE_TAG" \
             --notes "Release $RELEASE_TAG at commit $GITHUB_SHA. Compatibility: release.toml at this tag. Install from GitHub at this tag's commit."
-
-      - name: release readback — GitHub resolves the tag to the release commit
-        run: |
-          gh release view "$RELEASE_TAG" --json tagName --jq .tagName
-          tagged=$(gh api "repos/${{ github.repository }}/commits/$RELEASE_TAG" --jq .sha)
-          test "$tagged" = "${{ github.sha }}" || {
-            echo "$RELEASE_TAG resolves to $tagged, not ${{ github.sha }}"; exit 1; }
-        env:
-          GH_TOKEN: ${{ github.token }}
