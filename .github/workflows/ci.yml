@@ -95,8 +95,9 @@ jobs:
         run: pytest nbdsl_kernel/tests/test_clean_install.py
 
       - name: wire protocol + recovery
-        run: pytest nbdsl_kernel/tests/test_identity.py \
-            nbdsl_kernel/tests/test_restart.py
+        run: |
+          pytest nbdsl_kernel/tests/test_identity.py \
+              nbdsl_kernel/tests/test_restart.py
 
       - name: worker resolve and inspection
         run: |
