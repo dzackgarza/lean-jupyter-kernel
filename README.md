@@ -1,86 +1,66 @@
 # lean-jupyter-kernel
 
-Proof of concept: **a Lean 4 elaborated DSL running as a first-class
-Jupyter kernel.** Lean owns syntax, elaboration, semantic state, and proof
-checking; Jupyter owns transport and rendering. Cells reach Lean verbatim —
-no DSL logic exists in Python, and everything semantic (completion, hover,
-completeness, staleness) is asked *of* the Lean worker, never computed
-beside it.
+A Jupyter kernel that runs Lean 4 cells against a persistent worker process.
+Cells are ordinary Lean — the kernel never interprets DSL syntax.
+Completion, hover, diagnostics, and document-order semantics are asked of the
+Lean worker, not computed in Python.
 
-```text
-JupyterLab ──ZMQ──▶ nbdsl_kernel (Python adapter)
-                        │ framed JSON on dedicated fds
-                        ▼
-                 nbdsl_worker (persistent Lean process)
-                        │ importModules, once
-                        ▼
-                 DSL prelude (Lean elaborators + env extensions,
-                              all of mathlib in scope)
-```
+Consumed by:
 
-## What it does
+- [lean-cas-dsl](https://github.com/dzackgarza/lean-cas-dsl) — a
+  categorically organized computer algebra system
+- [lean-lattices](https://github.com/dzackgarza/lean-lattices) — checked
+  categories, structural functors, and operation graphs
 
-- **Cells are ordinary Lean 4** over the full mathlib (`sage.all`-style),
-  elaborated against retained `Command.State` snapshots. Cells are atomic:
-  an erroring cell commits nothing, including DSL registry mutations.
-- **The reference DSL** makes categorical bookkeeping explicit and checked:
-  `let S3 := GrpCat.of (Equiv.Perm (Fin 3)) ∈ Groups` (membership is a type
-  ascription), `prefer` (transport conventions as document state), `#home`,
-  `#via` (functor-path search with structured MIME output), and
-  `predicate P (x ∈ C) := …` / `#methods C` (predicates as methods of a
-  category, decidable on declared objects: `¬ Abelian S3 := by decide`).
-- **Document-order semantics** in JupyterLab: running a cell re-establishes
-  *"cell i's snapshot = elaborating the visible prefix through i"* —
-  edited upstream cells re-run automatically, stale cells are marked in the
-  UI.
-- **Tooling from the environment**: Tab completion (type-aware after a
-  dot), Shift+Tab hover (server-grade, locals included), sorry tracking
-  with goals, syntax highlighting.
-- **Robust interruption**: cooperative cancellation via Lean's own
-  checkpoints (~0.2 s on tactic proofs), kill + recovery otherwise —
-  recovery by olean session cache (env-extension state survives) or source
-  replay.
-- **Opt-in sandboxing** for untrusted notebooks (bubblewrap: read-only
-  project/toolchain, no network).
+## Install
 
-The worked demonstration is `dsl-notebooks/nbdsl-example.ipynb` — a
-pedagogical notebook proving all of the above live, including a
-deliberately failing final cell.
-
-## Quickstart
+Requires [elan](https://github.com/leanprover/elan), `uv`, and `just`.
 
 ```bash
 just cache && just build
 uv venv .venv && uv pip install -p .venv/bin/python -e 'nbdsl_kernel[test]' -e jupyterlab_nbdsl
 .venv/bin/python -m nbdsl_kernel.install --project "$PWD/dsls/nbdsl"
 PATH="$PWD/.venv/bin:$PATH" .venv/bin/jupyter labextension develop --overwrite jupyterlab_nbdsl
+```
+
+## Usage
+
+```bash
 jupyter lab dsl-notebooks/nbdsl-example.ipynb   # kernel: "NbDsl (Lean 4)"
 ```
 
-`scripts/check.sh` runs the full verification (builds, no-sorry, boundary
-grep, strict mypy, protocol roundtrip, Jupyter E2E, sandbox proof).
+The notebook demonstrates the reference DSL: checked categorical membership
+(`let S3 := GrpCat.of (Equiv.Perm (Fin 3)) ∈ Groups`), transport conventions
+(`prefer`), functor-path search (`#via`), and document-order cell semantics.
 
-## Documentation
+## Docs
 
 | Doc | Contents |
 | --- | --- |
-| [docs/architecture.md](docs/architecture.md) | the three processes, worker internals (snapshots, cancellation, session cache), kernel modes, recovery matrix, extension plugins |
-| [docs/protocol.md](docs/protocol.md) | the wire protocol: framing, every op with reply shapes, conventions |
-| [docs/dsl.md](docs/dsl.md) | the NbDsl language reference, the reducibility design, parser lore |
-| [docs/plugins.md](docs/plugins.md) | bring your own DSL: the plugin contract and laws, kernelspec knobs |
-| [docs/deployment.md](docs/deployment.md) | editable install into a live Jupyter service, operational characteristics |
-| [docs/development.md](docs/development.md) | layout, gates, what each test suite proves, CI, deliberate ceilings |
+| [docs/architecture.md](docs/architecture.md) | processes, worker internals, kernel modes, recovery, plugins |
+| [docs/protocol.md](docs/protocol.md) | wire protocol: framing, ops, reply shapes |
+| [docs/dsl.md](docs/dsl.md) | NbDsl language reference |
+| [docs/plugins.md](docs/plugins.md) | plugin contract, laws, kernelspec knobs |
+| [docs/deployment.md](docs/deployment.md) | install into a live Jupyter service |
+| [docs/development.md](docs/development.md) | layout, gates, test suites, CI, ceilings |
 
-## Layout
+## Verify
 
-`worker/` (mathlib-free Lean core, the stable plugin dependency) ·
-`dsls/nbdsl/` (reference DSL plugin) · `nbdsl_kernel/` (Python adapter +
-suites) · `jupyterlab_nbdsl/` (Lab extension) · `dsl-notebooks/` (live
-notebooks) · `docs/`.
+```bash
+scripts/check.sh
+```
 
-## Status
+Runs build, no-sorry scan, mypy, protocol roundtrip, Jupyter E2E, and sandbox
+proof.
 
-Working POC, verified at four levels: bare-worker protocol roundtrip,
-Jupyter-client E2E, live-service execution, and CI on every push. Design
-ceilings are deliberate and listed in
-[docs/development.md](docs/development.md#ceilings--parked-work-deliberate-not-forgotten).
+## Limits
+
+- Cells are trusted — no sandbox certification for hostile notebooks (opt-in
+  bubblewrap available).
+- Snapshot memory grows with committed cells (no GC).
+- Plugin query contract for extension-backed completion/inspection is future
+  work.
+
+## License
+
+MIT
