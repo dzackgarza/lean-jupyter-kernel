@@ -1,0 +1,1401 @@
+{
+ "repo": "dzackgarza/lean-jupyter-kernel",
+ "pr": 10,
+ "counts": {
+  "CLOSED": 62,
+  "NEW": 77
+ },
+ "converged": false,
+ "records": [
+  {
+   "key": "ct:396ead819957b20e",
+   "thread_id": "PRRT_kwDOTnJess6VlQzD",
+   "path": "nbdsl_kernel/nbdsl_kernel/worker.py",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:b03f4a7b2b6759fc",
+   "thread_id": "PRRT_kwDOTnJess6VlQzJ",
+   "path": "jupyterlab_nbdsl/pyproject.toml",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:8b522032b4804d96",
+   "thread_id": "PRRT_kwDOTnJess6VlQzN",
+   "path": "jupyterlab_nbdsl/package.json",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:32dc77895cb100c4",
+   "thread_id": "PRRT_kwDOTnJess6VlRHR",
+   "path": ".github/workflows/release.yml",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:1504731e323a640f",
+   "thread_id": "PRRT_kwDOTnJess6VlRHT",
+   "path": "nbdsl_kernel/nbdsl_kernel/worker.py",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:d13adb24582473ca",
+   "thread_id": "PRRT_kwDOTnJess6VlRHX",
+   "path": "nbdsl_kernel/nbdsl_kernel/worker.py",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:fcc0987a8db4ebf8",
+   "thread_id": "PRRT_kwDOTnJess6VlV5t",
+   "path": "scripts/release_projection.py",
+   "line": 130,
+   "resolved": true,
+   "outdated": false,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:953a825851ef9cfe",
+   "thread_id": "PRRT_kwDOTnJess6VlV5v",
+   "path": "nbdsl_kernel/nbdsl_kernel/kernel.py",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:8c968d35e98dc699",
+   "thread_id": "PRRT_kwDOTnJess6VlV5x",
+   "path": "nbdsl_kernel/nbdsl_kernel/protocol.py",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:a7d62cc8c4bb4f70",
+   "thread_id": "PRRT_kwDOTnJess6VlV5y",
+   "path": "nbdsl_kernel/nbdsl_kernel/worker.py",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:60fb3f10cef23188",
+   "thread_id": "PRRT_kwDOTnJess6VlV53",
+   "path": "nbdsl_kernel/nbdsl_kernel/worker.py",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:a50d4aeaaa81f2f1",
+   "thread_id": "PRRT_kwDOTnJess6VlV55",
+   "path": "conformance/runner.py",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:8fa3c2737b024fb3",
+   "thread_id": "PRRT_kwDOTnJess6VlV57",
+   "path": "conformance/runner.py",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:c00aaa192fd3e037",
+   "thread_id": "PRRT_kwDOTnJess6VlV58",
+   "path": "conformance/runner.py",
+   "line": 360,
+   "resolved": true,
+   "outdated": false,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:28548d0db63f066f",
+   "thread_id": "PRRT_kwDOTnJess6VlV59",
+   "path": "scripts/release_provenance.py",
+   "line": 102,
+   "resolved": true,
+   "outdated": false,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:63d789f71597179a",
+   "thread_id": "PRRT_kwDOTnJess6VlV5-",
+   "path": "scripts/release_provenance.py",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:1d28db96bad0b627",
+   "thread_id": "PRRT_kwDOTnJess6VlV5_",
+   "path": "nbdsl_kernel/_identity.py",
+   "line": 83,
+   "resolved": true,
+   "outdated": false,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:19fd408eda1f6cfa",
+   "thread_id": "PRRT_kwDOTnJess6VlV6A",
+   "path": "scripts/release_projection.py",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:6356a687ca24cb46",
+   "thread_id": "PRRT_kwDOTnJess6VlV6C",
+   "path": "nbdsl_kernel/nbdsl_kernel/protocol.py",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:32c64e0aaa9ae3d8",
+   "thread_id": "PRRT_kwDOTnJess6VlV6F",
+   "path": ".github/workflows/ci.yml",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:0ee38ae070487e54",
+   "thread_id": "PRRT_kwDOTnJess6VlV6G",
+   "path": ".github/workflows/ci.yml",
+   "line": 257,
+   "resolved": true,
+   "outdated": false,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:b0c9d6b6f4475552",
+   "thread_id": "PRRT_kwDOTnJess6VlV6H",
+   "path": ".pr/PR_BODY.md",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:e34bc8c090d94959",
+   "thread_id": "PRRT_kwDOTnJess6VlV6I",
+   "path": ".pr/PR_BODY.md",
+   "line": 225,
+   "resolved": true,
+   "outdated": false,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:bd096e6d432de074",
+   "thread_id": "PRRT_kwDOTnJess6VlV6J",
+   "path": "nbdsl_kernel/nbdsl_kernel/worker.py",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:706678710d231e38",
+   "thread_id": "PRRT_kwDOTnJess6VlV6L",
+   "path": "nbdsl_kernel/nbdsl_kernel/worker.py",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:32063753bd13de35",
+   "thread_id": "PRRT_kwDOTnJess6VlV6P",
+   "path": "conformance/runner.py",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:571eaf9712ef3fe5",
+   "thread_id": "PRRT_kwDOTnJess6VlV6Q",
+   "path": "release.toml",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:cf50a738d7c992e8",
+   "thread_id": "PRRT_kwDOTnJess6VlV6S",
+   "path": "docs/protocol.md",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:387080ea5d861ab1",
+   "thread_id": "PRRT_kwDOTnJess6VlV6U",
+   "path": "scripts/qualify_consumer.sh",
+   "line": 1,
+   "resolved": true,
+   "outdated": false,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:980dab38687f427e",
+   "thread_id": "PRRT_kwDOTnJess6VlV6W",
+   "path": "AGENTS.md",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:6221d3d37e639884",
+   "thread_id": "PRRT_kwDOTnJess6VlV6Y",
+   "path": "jupyterlab_nbdsl/package.json",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:1603f0ff5ced2750",
+   "thread_id": "PRRT_kwDOTnJess6VlV6b",
+   "path": "jupyterlab_nbdsl/pyproject.toml",
+   "line": 2,
+   "resolved": true,
+   "outdated": false,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:a53f196f88a72af8",
+   "thread_id": "PRRT_kwDOTnJess6Vllmu",
+   "path": "conformance/runner.py",
+   "line": 678,
+   "resolved": true,
+   "outdated": false,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:635e984cec326184",
+   "thread_id": "PRRT_kwDOTnJess6Vllmv",
+   "path": ".pr/PR_BODY.md",
+   "line": 71,
+   "resolved": true,
+   "outdated": false,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:b558da349f90742b",
+   "thread_id": "PRRT_kwDOTnJess6Vllmx",
+   "path": ".github/workflows/release.yml",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:ac5289bd8eba3696",
+   "thread_id": "PRRT_kwDOTnJess6Vllmy",
+   "path": "release.toml",
+   "line": 17,
+   "resolved": true,
+   "outdated": false,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:66b91e59e847c1e4",
+   "thread_id": "PRRT_kwDOTnJess6Vllm0",
+   "path": "scripts/release_provenance.py",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:b6c70003523f7539",
+   "thread_id": "PRRT_kwDOTnJess6VlnYT",
+   "path": "nbdsl_kernel/hatch_build.py",
+   "line": 33,
+   "resolved": true,
+   "outdated": false,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:3237cc5e8a423640",
+   "thread_id": "PRRT_kwDOTnJess6VlnYU",
+   "path": "nbdsl_kernel/nbdsl_kernel/kernel.py",
+   "line": 94,
+   "resolved": true,
+   "outdated": false,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:8aac23342c435d00",
+   "thread_id": "PRRT_kwDOTnJess6VlnYV",
+   "path": "nbdsl_kernel/nbdsl_kernel/protocol.py",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:ea1e14b4526f457b",
+   "thread_id": "PRRT_kwDOTnJess6VlnYW",
+   "path": ".github/workflows/release.yml",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:f9a570590bf1aa2d",
+   "thread_id": "PRRT_kwDOTnJess6VlnYX",
+   "path": "conformance/runner.py",
+   "line": 876,
+   "resolved": true,
+   "outdated": false,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:8457006f1479b329",
+   "thread_id": "PRRT_kwDOTnJess6VlnYa",
+   "path": "conformance/runner.py",
+   "line": 413,
+   "resolved": true,
+   "outdated": false,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:17c28d5aa400ba3b",
+   "thread_id": "PRRT_kwDOTnJess6VlnYc",
+   "path": "conformance/runner.py",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:d8ffa91b71ed398d",
+   "thread_id": "PRRT_kwDOTnJess6VlnYe",
+   "path": "scripts/require_release_qualification.sh",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:7f563e12b2a2e9f5",
+   "thread_id": "PRRT_kwDOTnJess6VlnYg",
+   "path": "nbdsl_kernel/nbdsl_kernel/worker.py",
+   "line": 329,
+   "resolved": true,
+   "outdated": false,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:c165bbf66b408f09",
+   "thread_id": "PRRT_kwDOTnJess6VlnYi",
+   "path": "scripts/release_provenance.py",
+   "line": 102,
+   "resolved": true,
+   "outdated": false,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:cc5a9604c4dd928e",
+   "thread_id": "PRRT_kwDOTnJess6VlnYj",
+   "path": "scripts/release_provenance.py",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:9beb4186e795b49a",
+   "thread_id": "PRRT_kwDOTnJess6VlnYk",
+   "path": "worker/Worker/SessionCache.lean",
+   "line": 124,
+   "resolved": true,
+   "outdated": false,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:f74485d1cc4a80ba",
+   "thread_id": "PRRT_kwDOTnJess6VlnYl",
+   "path": "nbdsl_kernel/nbdsl_kernel/kernel.py",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:b663e09f26224bcf",
+   "thread_id": "PRRT_kwDOTnJess6VlnYn",
+   "path": ".github/workflows/ci.yml",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:be0ba5d91239ae98",
+   "thread_id": "PRRT_kwDOTnJess6VlnYp",
+   "path": "jupyterlab_nbdsl/package.json",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:c05f5eeaae57dd27",
+   "thread_id": "PRRT_kwDOTnJess6VlnYq",
+   "path": "conformance/runner.py",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:7f46cd70cafce354",
+   "thread_id": "PRRT_kwDOTnJess6VlnYt",
+   "path": "nbdsl_kernel/nbdsl_kernel/worker.py",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:104a8ddd7b60bc85",
+   "thread_id": "PRRT_kwDOTnJess6VlnYu",
+   "path": "scripts/release_projection.py",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:747e13b7657e340d",
+   "thread_id": "PRRT_kwDOTnJess6VlnYy",
+   "path": "scripts/release_projection.py",
+   "line": 126,
+   "resolved": true,
+   "outdated": false,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:1084281a47a8d5b5",
+   "thread_id": "PRRT_kwDOTnJess6VlnYz",
+   "path": ".pr/PR_BODY.md",
+   "line": 557,
+   "resolved": true,
+   "outdated": false,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:7c2cec7ea69c7694",
+   "thread_id": "PRRT_kwDOTnJess6VlnY0",
+   "path": ".github/workflows/release.yml",
+   "line": 53,
+   "resolved": true,
+   "outdated": false,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:fd738c4ed13deae8",
+   "thread_id": "PRRT_kwDOTnJess6VlnY1",
+   "path": "nbdsl_kernel/pyproject.toml",
+   "line": 3,
+   "resolved": true,
+   "outdated": false,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:d7ed241fc08d1107",
+   "thread_id": "PRRT_kwDOTnJess6VlnY2",
+   "path": "worker/Worker/SessionCache.lean",
+   "line": 117,
+   "resolved": true,
+   "outdated": false,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:2d481a7f9c5ccc9b",
+   "thread_id": "PRRT_kwDOTnJess6VlnY3",
+   "path": "jupyterlab_nbdsl/package.json",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:c073a4b4da17b3d6",
+   "thread_id": "PRRT_kwDOTnJess6VlnY4",
+   "path": ".pr/REVIEW_LOG.md",
+   "line": null,
+   "resolved": true,
+   "outdated": true,
+   "state": "CLOSED",
+   "disp": null
+  },
+  {
+   "key": "ct:c32c085a83267352",
+   "thread_id": "PRRT_kwDOTnJess6Vl_iI",
+   "path": "conformance/runner.py",
+   "line": 529,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:d2716d4ca8bda2bd",
+   "thread_id": "PRRT_kwDOTnJess6Vl_iL",
+   "path": "nbdsl_kernel/nbdsl_kernel/worker.py",
+   "line": 359,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:76f7863b7eab4a55",
+   "thread_id": "PRRT_kwDOTnJess6VmBuj",
+   "path": "justfile",
+   "line": 46,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:d8d4b4f055ec0367",
+   "thread_id": "PRRT_kwDOTnJess6VmBum",
+   "path": "nbdsl_kernel/nbdsl_kernel/worker.py",
+   "line": 329,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:cb521b5dbacffbe4",
+   "thread_id": "PRRT_kwDOTnJess6VmBun",
+   "path": "nbdsl_kernel/_identity.py",
+   "line": 132,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:d3e2cf0f14c7deca",
+   "thread_id": "PRRT_kwDOTnJess6VmBuq",
+   "path": "conformance/runner.py",
+   "line": 876,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:eaac962b9a777805",
+   "thread_id": "PRRT_kwDOTnJess6VmBuu",
+   "path": "nbdsl_kernel/nbdsl_kernel/kernel.py",
+   "line": null,
+   "resolved": false,
+   "outdated": true,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:9ebbce04cf078301",
+   "thread_id": "PRRT_kwDOTnJess6VmBux",
+   "path": "jupyterlab_nbdsl/pyproject.toml",
+   "line": 2,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:e64907091089b046",
+   "thread_id": "PRRT_kwDOTnJess6VmBu0",
+   "path": "worker/Worker/SessionCache.lean",
+   "line": 124,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:16b4c3c09a7a0a56",
+   "thread_id": "PRRT_kwDOTnJess6VmBu4",
+   "path": ".github/workflows/release.yml",
+   "line": null,
+   "resolved": false,
+   "outdated": true,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:27407f633be8ad1d",
+   "thread_id": "PRRT_kwDOTnJess6VmBu6",
+   "path": ".github/workflows/release.yml",
+   "line": 17,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:7ea08e1162b8333a",
+   "thread_id": "PRRT_kwDOTnJess6VmBu7",
+   "path": "scripts/release_projection.py",
+   "line": 72,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:c351a034e937efec",
+   "thread_id": "PRRT_kwDOTnJess6VmBu9",
+   "path": "nbdsl_kernel/nbdsl_kernel/worker.py",
+   "line": 358,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:82a212a390106465",
+   "thread_id": "PRRT_kwDOTnJess6VmBu_",
+   "path": "nbdsl_kernel/tests/test_build_artifacts.py",
+   "line": 35,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:28c46f157952fa82",
+   "thread_id": "PRRT_kwDOTnJess6VmBvC",
+   "path": "nbdsl_kernel/nbdsl_kernel/worker.py",
+   "line": 102,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:3ed4fd089bcb529f",
+   "thread_id": "PRRT_kwDOTnJess6VmBvG",
+   "path": "conformance/lean-cas-dsl.toml",
+   "line": 48,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:4dc803b44fa95366",
+   "thread_id": "PRRT_kwDOTnJess6VmBvJ",
+   "path": "conformance/test_runner_contracts.py",
+   "line": 83,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:7f4a854df6c8331c",
+   "thread_id": "PRRT_kwDOTnJess6VmBvO",
+   "path": "conformance/runner.py",
+   "line": 155,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:af08d08015586349",
+   "thread_id": "PRRT_kwDOTnJess6VmBvQ",
+   "path": "scripts/release_provenance.py",
+   "line": 132,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:f2326943fdf94b8d",
+   "thread_id": "PRRT_kwDOTnJess6VmBvR",
+   "path": "worker/Worker/SessionCache.lean",
+   "line": 38,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:6ec6383865d0a589",
+   "thread_id": "PRRT_kwDOTnJess6VmBvT",
+   "path": "nbdsl_kernel/nbdsl_kernel/worker.py",
+   "line": 358,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:ff44c81cbf650782",
+   "thread_id": "PRRT_kwDOTnJess6VmBvU",
+   "path": "scripts/require_release_qualification.sh",
+   "line": 24,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:d4b2225b473e0f66",
+   "thread_id": "PRRT_kwDOTnJess6VmBvV",
+   "path": "conformance/runner.py",
+   "line": 532,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:9c6143922709755c",
+   "thread_id": "PRRT_kwDOTnJess6VmBvX",
+   "path": "scripts/release_projection.py",
+   "line": 1,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:d895290eeab939f6",
+   "thread_id": "PRRT_kwDOTnJess6VmBvZ",
+   "path": "nbdsl_kernel/nbdsl_kernel/protocol.py",
+   "line": 136,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:095508c9c4dba02f",
+   "thread_id": "PRRT_kwDOTnJess6VmEcu",
+   "path": "scripts/qualify_consumer.sh",
+   "line": null,
+   "resolved": false,
+   "outdated": true,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:1fa504ddace28fe2",
+   "thread_id": "PRRT_kwDOTnJess6VmEcv",
+   "path": "scripts/release_provenance.py",
+   "line": 132,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:a73e98eaadf1fe9f",
+   "thread_id": "PRRT_kwDOTnJess6VmEcw",
+   "path": "justfile",
+   "line": 46,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:3574a504178f0a84",
+   "thread_id": "PRRT_kwDOTnJess6VmEcx",
+   "path": ".github/workflows/release.yml",
+   "line": null,
+   "resolved": false,
+   "outdated": true,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:2c185eb3345c9b62",
+   "thread_id": "PRRT_kwDOTnJess6VmEcy",
+   "path": "scripts/require_release_qualification.sh",
+   "line": null,
+   "resolved": false,
+   "outdated": true,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:ac5a3304c0fb9f16",
+   "thread_id": "PRRT_kwDOTnJess6VmEcz",
+   "path": "scripts/release_projection.py",
+   "line": 81,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:f2a75d5cc5b26f69",
+   "thread_id": "PRRT_kwDOTnJess6VmEc0",
+   "path": "jupyterlab_nbdsl/pyproject.toml",
+   "line": 2,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:5a69ede535376df8",
+   "thread_id": "PRRT_kwDOTnJess6VmEc1",
+   "path": "nbdsl_kernel/nbdsl_kernel/worker.py",
+   "line": 329,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:181993c52bbd2d99",
+   "thread_id": "PRRT_kwDOTnJess6VmEc2",
+   "path": "conformance/runner.py",
+   "line": 566,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:08f7c72b3f616a8f",
+   "thread_id": "PRRT_kwDOTnJess6VmEc3",
+   "path": "conformance/runner.py",
+   "line": 245,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:cb67eb11ccdbdd12",
+   "thread_id": "PRRT_kwDOTnJess6VmEc4",
+   "path": "jupyterlab_nbdsl/pyproject.toml",
+   "line": 38,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:14464eaeb9dc3223",
+   "thread_id": "PRRT_kwDOTnJess6VmEc5",
+   "path": "conformance/test_runner_contracts.py",
+   "line": 1,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:d2a019c0afc7eb12",
+   "thread_id": "PRRT_kwDOTnJess6VmEc6",
+   "path": "scripts/qualify_consumer.sh",
+   "line": 23,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:114112fb74acf9f3",
+   "thread_id": "PRRT_kwDOTnJess6VmEc7",
+   "path": "nbdsl_kernel/tests/test_build_artifacts.py",
+   "line": 35,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:6916d65152d90741",
+   "thread_id": "PRRT_kwDOTnJess6VmEc-",
+   "path": "scripts/release_provenance.py",
+   "line": null,
+   "resolved": false,
+   "outdated": true,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:a08fd509a21635fc",
+   "thread_id": "PRRT_kwDOTnJess6VmEdB",
+   "path": "worker/lakefile.lean",
+   "line": 40,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:f21294075460154a",
+   "thread_id": "PRRT_kwDOTnJess6VmEdF",
+   "path": "nbdsl_kernel/_identity.py",
+   "line": 132,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:5dfb189a61a10ceb",
+   "thread_id": "PRRT_kwDOTnJess6VmEdJ",
+   "path": "scripts/release_projection.py",
+   "line": 56,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:c8a14eaf2ca1d160",
+   "thread_id": "PRRT_kwDOTnJess6VmEdL",
+   "path": "nbdsl_kernel/nbdsl_kernel/worker.py",
+   "line": 360,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:20748efd83e3ccb3",
+   "thread_id": "PRRT_kwDOTnJess6VmEdM",
+   "path": "nbdsl_kernel/nbdsl_kernel/worker.py",
+   "line": 102,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:05c3e2e8f1b702b3",
+   "thread_id": "PRRT_kwDOTnJess6VmEdN",
+   "path": "conformance/runner.py",
+   "line": 154,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:7957d56978c9fc6d",
+   "thread_id": "PRRT_kwDOTnJess6VmEdO",
+   "path": ".pr/PR_BODY.md",
+   "line": 36,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:2cb09ca99d5d9a57",
+   "thread_id": "PRRT_kwDOTnJess6VmEdP",
+   "path": "nbdsl_kernel/nbdsl_kernel/worker.py",
+   "line": 81,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:4feff83e06755b12",
+   "thread_id": "PRRT_kwDOTnJess6VmEdQ",
+   "path": "conformance/lean-cas-dsl.toml",
+   "line": 20,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:21f599967d2f96dc",
+   "thread_id": "PRRT_kwDOTnJess6VmEdR",
+   "path": "worker/Worker/SessionCache.lean",
+   "line": 33,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:a6286eaa222db40f",
+   "thread_id": "PRRT_kwDOTnJess6VmEdS",
+   "path": ".pr/PR_BODY.md",
+   "line": 21,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:6c20ca09d0b33668",
+   "thread_id": "PRRT_kwDOTnJess6VmEdT",
+   "path": "nbdsl_kernel/nbdsl_kernel/protocol.py",
+   "line": 20,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:4587bdebd64541fe",
+   "thread_id": "PRRT_kwDOTnJess6VmEdW",
+   "path": "jupyterlab_nbdsl/package.json",
+   "line": null,
+   "resolved": false,
+   "outdated": true,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:6cde2e3f17dc0f52",
+   "thread_id": "PRRT_kwDOTnJess6VmOFk",
+   "path": "justfile",
+   "line": 46,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:5189212b09d6d094",
+   "thread_id": "PRRT_kwDOTnJess6VmOFr",
+   "path": "scripts/qualify_consumer.sh",
+   "line": null,
+   "resolved": false,
+   "outdated": true,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:27e776468c5e86fe",
+   "thread_id": "PRRT_kwDOTnJess6VmOFu",
+   "path": "jupyterlab_nbdsl/pyproject.toml",
+   "line": 2,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:4f7c4f8d3d924f12",
+   "thread_id": "PRRT_kwDOTnJess6VmOFy",
+   "path": "conformance/nbdsl.toml",
+   "line": 98,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:0bc80d25131c5529",
+   "thread_id": "PRRT_kwDOTnJess6VmOF0",
+   "path": ".github/workflows/release.yml",
+   "line": null,
+   "resolved": false,
+   "outdated": true,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:471dbe401cca11f0",
+   "thread_id": "PRRT_kwDOTnJess6VmOF2",
+   "path": "conformance/runner.py",
+   "line": 296,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:c8f25f627043d3ad",
+   "thread_id": "PRRT_kwDOTnJess6VmOF3",
+   "path": "conformance/runner.py",
+   "line": 789,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:2afd582e3665a75e",
+   "thread_id": "PRRT_kwDOTnJess6VmOF4",
+   "path": "scripts/qualify_consumer.sh",
+   "line": 147,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:686d7acb6fbe5fb6",
+   "thread_id": "PRRT_kwDOTnJess6VmOF5",
+   "path": "nbdsl_kernel/nbdsl_kernel/kernel.py",
+   "line": null,
+   "resolved": false,
+   "outdated": true,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:7b6f59ead8b5c9b3",
+   "thread_id": "PRRT_kwDOTnJess6VmOF7",
+   "path": "conformance/test_runner_contracts.py",
+   "line": 82,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:fda17df95e8357dd",
+   "thread_id": "PRRT_kwDOTnJess6VmOF8",
+   "path": "docs/development.md",
+   "line": 44,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:0b215b76223dfd51",
+   "thread_id": "PRRT_kwDOTnJess6VmOF-",
+   "path": "scripts/release_projection.py",
+   "line": 158,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:a94637e09654942d",
+   "thread_id": "PRRT_kwDOTnJess6VmOF_",
+   "path": "scripts/release_projection.py",
+   "line": 43,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:626e7f36ed2a089e",
+   "thread_id": "PRRT_kwDOTnJess6VmOGC",
+   "path": "scripts/release_projection.py",
+   "line": 82,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:8052e31175d56089",
+   "thread_id": "PRRT_kwDOTnJess6VmOGD",
+   "path": "conformance/runner.py",
+   "line": 157,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:bedf8164319f741d",
+   "thread_id": "PRRT_kwDOTnJess6VmOGF",
+   "path": "nbdsl_kernel/nbdsl_kernel/worker.py",
+   "line": 360,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:4db40cd94d863c99",
+   "thread_id": "PRRT_kwDOTnJess6VmOGG",
+   "path": "nbdsl_kernel/nbdsl_kernel/worker.py",
+   "line": 329,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:d2ffc9ef2551d672",
+   "thread_id": "PRRT_kwDOTnJess6VmOGI",
+   "path": ".github/workflows/ci.yml",
+   "line": 203,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:d7647e8b59a046f1",
+   "thread_id": "PRRT_kwDOTnJess6VmOGJ",
+   "path": ".github/workflows/ci.yml",
+   "line": 105,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:543da50536bf639c",
+   "thread_id": "PRRT_kwDOTnJess6VmOGK",
+   "path": "jupyterlab_nbdsl/package.json",
+   "line": null,
+   "resolved": false,
+   "outdated": true,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:6a396b77a9900212",
+   "thread_id": "PRRT_kwDOTnJess6VmOGM",
+   "path": "nbdsl_kernel/tests/test_build_artifacts.py",
+   "line": 35,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:0ee813ddbe0721fa",
+   "thread_id": "PRRT_kwDOTnJess6VmOGN",
+   "path": "conformance/lean-cas-dsl.toml",
+   "line": 25,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:fb2fbd9763c811a5",
+   "thread_id": "PRRT_kwDOTnJess6VmOGP",
+   "path": "worker/Worker/SessionCache.lean",
+   "line": 33,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  },
+  {
+   "key": "ct:8f26adbd36bce7a1",
+   "thread_id": "PRRT_kwDOTnJess6VmOGR",
+   "path": "conformance/README.md",
+   "line": 105,
+   "resolved": false,
+   "outdated": false,
+   "state": "NEW",
+   "disp": null
+  }
+ ]
+}
