@@ -55,16 +55,11 @@ EOF
 RESOLVED=$(python3 -c "import json; m=json.load(open('$CO/lake-manifest.json')); print([p['rev'] for p in m['packages'] if p['name'].strip('«»')=='nbdsl-worker'][0])")
 [ "$RESOLVED" = "$CANDIDATE" ] || { echo "lake resolved $RESOLVED != $CANDIDATE" >&2; exit 1; }
 
-# Product boundaries — not the consumer's global review-QC justfiles.
-{
-  cd "$CO"
-  just build
-  just setup
-  python3 -m py_compile backends/sage_adapter.py tests/roundtrip.py
-  python3 tests/roundtrip.py
-  .venv/bin/pytest tests/test_e2e.py -q
-} 2>&1 | tee "$WORKDIR/consumer-gate.log"
-grep -qE "passed|ok" "$WORKDIR/consumer-gate.log"
+cd "$CO"
+just build
+just setup
+python3 tests/roundtrip.py
+.venv/bin/pytest tests/test_e2e.py -q
 
 export CONFORMANCE_CAS_DSL="$CO"
 "$CO/.venv/bin/python" -m pytest "$KERNEL_REPO/conformance/test_semantic.py" \

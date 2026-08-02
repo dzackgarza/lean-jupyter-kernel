@@ -16,5 +16,4 @@ mathlib = "v4.32.0"
 # Resolved Mathlib commit lives in lake-manifest.json via `lake update`.
 
 [compat]
-plugin_api = 1
 wire_protocol = 1

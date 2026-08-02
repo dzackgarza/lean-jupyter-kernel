@@ -331,6 +331,14 @@ def test_casdsl_extension_boundaries() -> None:
         assert any(cas_mime in b for b in mime_bundles(outputs))
         committed = _read(reply, outputs, cas_cfg)
         assert committed["present"]
+        # Failing cell must roll back an extension mutation, not only
+        # ordinary Lean declarations.
+        reply, _ = session.run(
+            "let confLeak := 37 in ℤ\n"
+            "assert 2 + 3 = 6")
+        assert reply["status"] == "error"
+        assert session.run("assert confLeak = 37")[0]["status"] == "error"
+        assert _read(*session.run("confN.factor()"), cas_cfg) == committed
         control = Session("casdsl")
         try:
             assert control.run("confN.factor()")[0]["status"] == "error"

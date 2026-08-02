@@ -49,10 +49,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      - uses: actions/setup-node@v7
-        with:
-          node-version: lts/*
-
       - uses: actions/cache@v6
         with:
           path: |
@@ -80,7 +76,7 @@ jobs:
 
       - name: mypy (strict)
         run: |
-          pip install mypy pydantic ipykernel jupyter_client pytest pyyaml psutil types-psutil types-pyyaml
+          pip install mypy pydantic ipykernel jupyter_client pytest psutil types-psutil
           MYPYPATH=nbdsl_kernel/tests:nbdsl_kernel mypy --config-file mypy.ini \
             nbdsl_kernel/nbdsl_kernel nbdsl_kernel/tests conformance
 
@@ -89,12 +85,8 @@ jobs:
 
       - name: install kernel package and kernelspec
         run: |
-          pip install -e './nbdsl_kernel[test]' build
+          pip install -e './nbdsl_kernel[test]'
           python -m nbdsl_kernel.install --project "$PWD/dsls/nbdsl"
-
-      - name: install JupyterLab extension dependencies
-        working-directory: jupyterlab_nbdsl
-        run: jlpm install
 
       - name: end-to-end through the Jupyter protocol
         run: pytest nbdsl_kernel/tests/test_e2e.py
@@ -127,10 +119,10 @@ jobs:
           python-version: '3.12'
 
       - name: release projections agree with release.toml
-        run: |
-          python3 -m pip install pyyaml
-          python3 scripts/release_projection.py check
+        run: python3 scripts/release_projection.py check
 
+      # Toolchain for the consumer's Lake graph (qualification builds the
+      # candidate worker through that graph, not a root rebuild here).
       - uses: leanprover/lean-action@v1
         with:
           lake-package-directory: worker
@@ -138,9 +130,6 @@ jobs:
           build: false
           use-mathlib-cache: false
           use-github-cache: false
-
-      - name: bounded worker build for qualification
-        run: bash -c 'cd worker && lake build nbdsl_worker'
 
       # The 10.7 pin is provisioning: the frozen consumer baseline spawns its
       # adapter as `sage -python` (see lean-cas-dsl#34).
@@ -167,14 +156,6 @@ jobs:
         env:
           KERNEL_GIT_URL: file://${{ github.workspace }}
         run: scripts/qualify_consumer.sh "$(git rev-parse HEAD)" "$RUNNER_TEMP/qualification"
-
-      - name: publish qualification evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: qualification-evidence
-          path: ${{ runner.temp }}/qualification/consumer-gate.log
-          if-no-files-found: warn
 
   frontend:
     name: jupyterlab extension

@@ -44,7 +44,7 @@ RawFrame = dict[str, object]
 
 READY_TIMEOUT = 600.0  # first prelude import loads mathlib oleans
 REPLY_TIMEOUT = 3600.0  # elaboration can legitimately be slow; interrupt kills
-CACHE_RESTORE_TIMEOUT = 30.0  # cache is optional; the canonical ledger replays
+CACHE_RESTORE_TIMEOUT = 120.0  # Mathlib olean restore; product path, not disposable
 CANCEL_GRACE = 3.0  # cooperative-cancel window before the worker is killed
 
 
