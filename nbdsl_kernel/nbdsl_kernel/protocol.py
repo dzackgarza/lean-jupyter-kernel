@@ -16,6 +16,11 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
+PositivePid = Annotated[int, Field(gt=0)]
+
+# Must match Worker.Protocol.wireProtocol / release.toml compat.wire_protocol.
+WIRE_PROTOCOL = 1
+
 
 class _Frame(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
@@ -53,7 +58,11 @@ class ReadyFrame(_Frame):
     op: Literal["ready"]
     protocol: int
     lean: str
+    #: Host PID of the worker. Under Bubblewrap this is rewritten by the
+    #: client from the namespace-local ready value to the host-visible PID.
+    pid: PositivePid
     snapshot: int
+    release: str | None = None
 
 
 class ExecuteReply(_Frame):
@@ -73,14 +82,6 @@ class WorkerError(_Frame):
 
     status: Literal["error"]
     message: str
-
-
-class DescribeReply(_Frame):
-    status: Literal["ok"]
-    protocol: int
-    lean: str
-    snapshot: int
-    snapshot_count: int
 
 
 class CompleteOk(_Frame):

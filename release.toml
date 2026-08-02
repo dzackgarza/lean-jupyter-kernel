@@ -1,0 +1,19 @@
+# The authored static compatibility contract for lean-jupyter-kernel.
+#
+# Package/toolchain/wire versions are projected into packaging files by
+# scripts/release_projection.py. The release tag is "v" + release.version.
+# Runtime compares only the wire protocol; CI's checked-out SHA identifies
+# a candidate — there is no exact-commit identity theater at cell execute.
+
+schema = 1
+
+[release]
+version = "1.1.0"
+
+[toolchain]
+lean = "leanprover/lean4:v4.32.0"
+mathlib = "v4.32.0"
+# Resolved Mathlib commit lives in lake-manifest.json via `lake update`.
+
+[compat]
+wire_protocol = 1

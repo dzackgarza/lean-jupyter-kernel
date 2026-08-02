@@ -25,19 +25,49 @@ default:
 cache:
     @cd dsls/nbdsl && lake exe cache get
 
-# Build the core worker package and the reference DSL plugin
-build:
+# Build the core worker package and the reference DSL plugin.
+build: build-inner
+
+build-inner:
     @cd worker && lake build nbdsl_worker
     @cd dsls/nbdsl && lake build NbDsl
 
 # Run the full repository QC gate
-test: build
+test: test-inner
+
+test-inner:
+    @just build-inner
+    @python3 scripts/release_projection.py check
     @just -f ~/ai-review-ci/justfiles/lean.just -d worker lean-no-sorry
     @just -f ~/ai-review-ci/justfiles/lean.just -d dsls/nbdsl lean-no-sorry
     @! grep -rn '^import NbDsl' worker/ --include='*.lean' || \
         { echo 'BOUNDARY: the core must never import DSL modules'; exit 1; }
     @just -f ~/ai-review-ci/justfiles/python.just -d nbdsl_kernel _mypy
     @python3 nbdsl_kernel/tests/roundtrip.py
+    @JUPYTER_DATA_DIR="$(mktemp -d)"; export JUPYTER_DATA_DIR; \
+      trap 'rm -rf "$JUPYTER_DATA_DIR"' EXIT; \
+      uv run --isolated --no-project --with build --with pyyaml \
+        --with-editable './nbdsl_kernel[test]' sh -c \
+        'python -m nbdsl_kernel.install --project "$PWD/dsls/nbdsl" && \
+         python -m pytest nbdsl_kernel/tests/test_worker_resolve.py \
+           nbdsl_kernel/tests/test_identity.py \
+           nbdsl_kernel/tests/test_restart.py \
+           nbdsl_kernel/tests/test_inspect.py \
+           nbdsl_kernel/tests/test_roundtrip_cleanup.py'
+
+# Interpreter for the recipes needing the kernel package installed. CI
+# installs into the job python; locally: `just python=.venv/bin/python …`.
+python := "python3"
+export LEAN_NUM_THREADS := "1"
+
+# Semantic plugin conformance (#3): Journeys 2–5 against the in-repo NbDsl case.
+conformance:
+    @{{python}} -m pytest conformance/test_semantic.py -k nbdsl
+
+# …and against lean-cas-dsl. Point CONFORMANCE_CAS_DSL at a clean checkout, or
+# use the sibling ../lean-cas-dsl fallback. Skips if neither is present.
+conformance-external:
+    @{{python}} -m pytest conformance/test_semantic.py -k casdsl
 
 [private]
 test-commit: test

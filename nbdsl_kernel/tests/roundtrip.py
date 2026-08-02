@@ -12,6 +12,7 @@ Run: python nbdsl_kernel/tests/roundtrip.py   (after `just build`)
 import json
 import os
 import select
+import signal
 import subprocess
 import sys
 import time
@@ -70,6 +71,7 @@ class Worker:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            start_new_session=True,
         )
         os.close(req_r)
         os.close(rep_w)
@@ -98,6 +100,24 @@ class Worker:
         out, err = self.proc.communicate(timeout=5)
         return rc, out, err
 
+    def close(self) -> None:
+        """Terminate the owned process group after any failed assertion."""
+        try:
+            os.close(self.req_fd)
+        except OSError:
+            pass
+        if self.proc.poll() is None:
+            try:
+                os.killpg(os.getpgid(self.proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            self.proc.wait(timeout=5)
+        out, err = self.proc.communicate(timeout=5)
+        if self.proc.returncode != 0 and err:
+            sys.stderr.buffer.write(err)
+        if self.proc.returncode != 0 and out:
+            sys.stdout.buffer.write(out)
+
 
 def errors(rep: dict) -> list[dict]:
     return [d for d in rep["diagnostics"] if d["severity"] == "error"]
@@ -109,7 +129,12 @@ def infos(rep: dict) -> list[dict]:
 
 def main() -> None:
     w = Worker()
+    try:
+        _run(w)
+    finally:
+        w.close()
 
+def _run(w: Worker) -> None:
     ready = w.replies.read_frame()
     assert ready["op"] == "ready" and ready["protocol"] == 1, ready
     assert ready["lean"].startswith("4.32"), ready
@@ -291,21 +316,22 @@ def main() -> None:
     # --- cooperative cancel -------------------------------------------------
     w._rid += 1
     rid = f"r{w._rid}"
-    # Wide, flat elaboration (~10s): thousands of tactic steps, each passing
-    # cancellation checkpoints — the same mechanism the language server uses.
+    # Bounded flat elaboration: enough tactic steps to remain in flight while
+    # keeping the independent protocol check from becoming a memory stress
+    # test. Each step passes cancellation checkpoints.
     slow = ("set_option maxHeartbeats 0 in\nexample : True := by\n"
-            + "".join(f"  have h{i} : Nat := {i}\n" for i in range(25000))
+            + "".join(f"  have h{i} : Nat := {i}\n" for i in range(5000))
             + "  trivial")
     write_frame(w.req_fd, {
         "op": "execute", "request_id": rid, "cell_id": "slow", "code": slow})
-    time.sleep(1.0)  # let elaboration get going
+    time.sleep(0.5)  # let elaboration get going
     write_frame(w.req_fd, {"op": "cancel", "request_id": rid})
     t0 = time.monotonic()
     rep = w.replies.read_frame()
     took = time.monotonic() - t0
     assert rep["request_id"] == rid, rep
     assert rep["status"] == "cancelled", rep
-    assert took < 15, took
+    assert took < 5, took
     before = w.request("describe")["snapshot"]
     rep = w.execute("#eval x + 1")  # worker fully alive, state unchanged
     assert rep["status"] == "ok" and rep["snapshot"] == before + 1, rep

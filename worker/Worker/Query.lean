@@ -7,6 +7,7 @@ virtual document — that upgrade belongs to the milestone-2 document model.
 Cursor offsets are Unicode code points on both sides of the protocol.
 -/
 import Lean
+import Worker.Frontend
 
 namespace Worker.Query
 
@@ -59,24 +60,60 @@ private def finishResults (found : Array String) : Array String := Id.run do
     results := results.extract 0 100
   return results
 
+private def prefixAtDepth : Name → Nat → Name
+  | _, 0 => .anonymous
+  | .anonymous, _ + 1 => .anonymous
+  | n@(.str p _), depth =>
+      if depth <= p.getNumParts then prefixAtDepth p depth else n
+  | n@(.num p _), depth =>
+      if depth <= p.getNumParts then prefixAtDepth p depth else n
+
+private def firstComponent : Name → Name
+  | .anonymous => .anonymous
+  | n@(.str .anonymous _) => n
+  | n@(.num .anonymous _) => n
+  | .str p _ => firstComponent p
+  | .num p _ => firstComponent p
+
+private def nameStartsWith (pfx candidate : Name) : Bool :=
+  match pfx with
+  | .str .anonymous pfxAtom =>
+      match firstComponent candidate with
+      | .str _ candidateAtom => pfxAtom.isPrefixOf candidateAtom
+      | _ => false
+  | _ =>
+      let pfxDepth := pfx.getNumParts
+      if pfxDepth == 0 || candidate.getNumParts < pfxDepth then
+        false
+      else
+        let parentDepth := pfxDepth - 1
+        let candidateParent := prefixAtDepth candidate parentDepth
+        if candidateParent != pfx.getPrefix then
+          false
+        else
+          let candidatePfx := prefixAtDepth candidate pfxDepth
+          match pfx, candidatePfx with
+          | .str _ pfx, .str _ candidate => pfx.isPrefixOf candidate
+          | _, _ => false
+
 def completions (cmdState : Elab.Command.State) (code : String) (cursor : Nat)
     : String × Nat × Array String := Id.run do
   let (pref, start) := identPrefixAt code cursor
   if pref.isEmpty then
     return (pref, start, #[])
   let scope := cmdState.scopes.head!
-  let nsStrs := (resolutionNamespaces scope).map (·.toString ++ ".")
+  let namespaces := resolutionNamespaces scope
+  let prefName := pref.toName
   let found := cmdState.env.constants.fold (init := #[]) fun acc n _ =>
     if n.isInternal || n.hasMacroScopes then acc
     else Id.run do
-      let full := n.toString
-      if full.startsWith pref then
-        return acc.push full
-      for nsStr in nsStrs do
-        if full.startsWith nsStr then
-          let short := (full.drop nsStr.length).toString
-          if short.startsWith pref then
-            return acc.push short
+      if nameStartsWith prefName n then
+        return acc.push n.toString
+      for ns in namespaces do
+        if ns.isPrefixOf n then
+          let short := n.replacePrefix ns Name.anonymous
+          if nameStartsWith prefName short then
+            return acc.push short.toString
       return acc
   return (pref, start, finishResults found)
 
@@ -126,15 +163,13 @@ def dotCompletions (cmdState : Elab.Command.State) (code : String) (cursor : Nat
     return (← Meta.whnf ci.type).getAppFn
   let .const tyC _ := tyHead
     | return none
-  let nsStr := tyC.toString ++ "."
   let found := cmdState.env.constants.fold (init := #[]) fun acc n _ =>
     if n.isInternal || n.hasMacroScopes then acc
     else Id.run do
-      let full := n.toString
-      if full.startsWith nsStr then
-        let suffix := (full.drop nsStr.length).toString
-        if suffix.startsWith frag && !suffix.isEmpty then
-          return acc.push (headStr ++ "." ++ suffix)
+      if tyC.isPrefixOf n then
+        let suffix := n.replacePrefix tyC Name.anonymous
+        if nameStartsWith frag.toName suffix && !suffix.isAnonymous then
+          return acc.push (headStr ++ "." ++ suffix.toString)
       return acc
   let results := finishResults found
   if results.isEmpty then return none

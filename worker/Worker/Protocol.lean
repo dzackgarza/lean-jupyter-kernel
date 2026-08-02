@@ -17,6 +17,9 @@ namespace Worker.Protocol
 
 open Lean (Json)
 
+/-- Must agree with ``release.toml`` ``compat.wire_protocol`` and the Python adapter. -/
+def wireProtocol : Nat := 1
+
 structure Channel where
   reqH : IO.FS.Handle
   repH : IO.FS.Handle

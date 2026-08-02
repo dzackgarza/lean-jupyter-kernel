@@ -16,6 +16,7 @@ import Worker.Frontend
 import Worker.Query
 import Worker.Output
 import Worker.SessionCache
+import Worker.ReleaseInfo
 
 open Worker.Protocol
 open Lean (Json toJson)
@@ -154,11 +155,13 @@ def handleRequest (session : IO.Ref Session) (inflight : Inflight)
         | return reply req
             [("status", Json.str "error"), ("message", Json.str "invalid current snapshot")]
       -- Type-aware dot completion first; plain prefix completion otherwise.
+      -- v1 queries Lean-environment names only (no extension-expression probe).
       let (start, results) ←
         match ← Query.dotCompletions parent.cmdState code cursor with
         | some (start, results) => pure (start, results)
         | none =>
-            let (_, start, results) := Query.completions parent.cmdState code cursor
+            let (_, start, results) :=
+              Query.completions parent.cmdState code cursor
             pure (start, results)
       return reply req
         [("status", Json.str "ok"),
@@ -180,14 +183,22 @@ def handleRequest (session : IO.Ref Session) (inflight : Inflight)
       -- the cell's elaboration, so `#eval` side effects execute.
       let hover? ← do
         let result ← Frontend.processCell parent.cmdState code "<inspect>"
-        discard drainOutputs   -- analysis must not leak outputs
+        discard drainOutputs
         let pos := Frontend.codepointPos code cursor
         let mut found : Option String := none
         for tree in result.cmdState.infoState.trees do
           if let some iwc := tree.hoverableInfoAtM? (m := Id) pos (includeStop := true) then
-            if let some f ← Lean.Elab.Info.fmtHover? iwc.ctx iwc.info then
-              found := some (toString f.fmt)
-              break
+            -- Only an identifier-anchored info describes what was asked
+            -- about. A plugin's low-priority catch-all production (a bare
+            -- `term : command`) matches ANY cell, and the info covering the
+            -- position is then that syntax declaration — whose hover is its
+            -- own docstring, returned identically for every input. Inspect
+            -- must discriminate, so non-identifier infos fall through to the
+            -- environment lookup below instead of answering for them.
+            if iwc.info.stx.isIdent then
+              if let some f ← Lean.Elab.Info.fmtHover? iwc.ctx iwc.info then
+                found := some (toString f.fmt)
+                break
         pure found
       -- Environment fallback still supplies name/type/doc when it resolves.
       let global? ← Query.inspect parent.cmdState code cursor
@@ -235,8 +246,9 @@ def handleRequest (session : IO.Ref Session) (inflight : Inflight)
       let s ← session.get
       return reply req
         [("status", Json.str "ok"),
-         ("protocol", toJson (1 : Nat)),
+         ("protocol", toJson Protocol.wireProtocol),
          ("lean", Json.str Lean.versionString),
+         ("release", Json.str ReleaseInfo.version),
          ("snapshot", toJson s.current),
          ("snapshot_count", toJson s.snapshots.size)]
   | .ok op =>
@@ -315,8 +327,13 @@ unsafe def main (argv : List String) : IO UInt32 := do
       let _reader ← IO.asTask (Worker.readerTask ch queue inflight) .dedicated
       writeFrame ch <| Json.mkObj
         [("op", Json.str "ready"),
-         ("protocol", toJson (1 : Nat)),
+         ("protocol", toJson Worker.Protocol.wireProtocol),
          ("lean", Json.str Lean.versionString),
+         ("release", Json.str Worker.ReleaseInfo.version),
+         -- The client probes this pid between reply-read slices: a worker
+         -- that dies under a still-live `lake env` wrapper is otherwise
+         -- invisible to `proc.poll()` and would hang the read.
+         ("pid", toJson (← IO.Process.getPID).toNat),
          ("snapshot", toJson (0 : Nat))]
       Worker.mainLoop ch queue session inflight
       return 0

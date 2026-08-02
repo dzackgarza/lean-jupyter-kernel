@@ -11,8 +11,8 @@
 | `dsl-notebooks/` | notebooks (symlinked into the live notebooks tree) | the pedagogical example |
 | `docs/` | this documentation | — |
 
-Root `pyproject.toml` is a uv workspace marker; `AGENTS.md`/`SDL.md` are
-agent-tooling registration (owned by that tooling, not by hand).
+Root `pyproject.toml` is a uv workspace marker; `AGENTS.md` is agent-tooling
+registration (owned by that tooling, not by hand).
 
 ## Build & gates
 
@@ -33,15 +33,30 @@ doctor has no profile for that, so the repo declares no `ai_review_ci_*`
 contract and calls the private `_mypy` recipe directly
 (ai-review-ci#353 tracks the gap).
 
+Worker-heavy checks use the shared `NBDSL_CONFORMANCE_LOCK` and export
+`LEAN_NUM_THREADS=1`. Serialize heavy jobs rather than overlapping them with
+`scripts/check.sh` or consumer qualification. On constrained machines, an
+optional local `systemd-run` boundary is fine; resource policy is not a
+package subsystem.
+
 ## Test suites — what proves what
 
 | Suite | Runs | Proves |
 | --- | --- | --- |
 | `nbdsl_kernel/tests/roundtrip.py` | bare worker, raw JSON (stdlib only) | the wire protocol itself: framing, atomicity/rollback (incl. registry state), cross-cell scope state, Unicode columns, stdout isolation, multi-command message/sorry accumulation, sorries, DSL sequence + structured output, predicates, is_complete, completion (prefix + dot), hover, cooperative cancel timing, clean shutdown. **Independent oracle: keep its codec duplicated, never import the client's.** |
 | `nbdsl_kernel/tests/test_e2e.py` | installed kernelspec via jupyter_client | the full stack: eval/state, failure isolation, DSL output through Jupyter, complete/inspect requests, interrupt → cache restore (and registry surviving the olean round-trip), uncacheable-state → replay fallback, init cell (success and loud failure), document-order semantics incl. the staleness broadcast, driven by raw comm messages exactly as JupyterLab sends them |
-| `nbdsl_kernel/tests/sandbox_check.py` | production WorkerClient under bwrap | read-only project, private tmpfs, elaboration alive; **fails loudly if bwrap is missing** (not in CI — runners lack reliable userns; `scripts/check.sh` covers it locally) |
+| `nbdsl_kernel/tests/test_clean_install.py` | built adapter wheel in a fresh venv | Journey 1: install kernelspec against in-repo `dsls/nbdsl`, run Lean + NbDsl cells, confirm the live worker exe is the project's built binary |
+| `conformance/test_semantic.py` | installed `nbdsl` / `casdsl` kernelspecs | NbDsl: rollback, cancel, output transport, Lean queries, recovery. lean-cas-dsl: extension visibility, rich MIME, recovery, Sage assert (checkout owned by qualification via `CONFORMANCE_CAS_DSL`) |
+| `nbdsl_kernel/tests/test_identity.py` | bare worker | wire-protocol gate: `check_wire_protocol` refuses a mismatched `ready.protocol`; a live worker must speak `WIRE_PROTOCOL` |
+| `nbdsl_kernel/tests/test_restart.py` | production WorkerClient + live kernelspec, mathlib-free (`Init` prelude) | recovery laws: failed mid-replay must not consume the ledger; cache restore then kill again must recover; worker death restarts transparently; external-effect + death does not re-run the cell |
+| `nbdsl_kernel/tests/test_inspect.py` | production WorkerClient, mathlib-free (`Lean` prelude) | inspection discriminates under a plugin catch-all: a low-priority bare-`term` command used to make every `inspect` answer with that syntax declaration's docstring, shadowing real constants. Reproduced in plain Lean, no plugin needed |
+| `nbdsl_kernel/tests/sandbox_check.py` | production WorkerClient under bwrap | optional local sandbox proof (not a PR blocking gate; issue #1 lists hostile-notebook sandbox certification as a non-goal) |
 | `jupyterlab_nbdsl/` `jlpm test` | node, no browser | tokenizer (incl. `:=`, unicode, custom keywords), document message builder, stale-class computation, path-payload validation |
-| `scripts/check.sh` | everything above + e2e + kernelspec install | the full local verification |
+| `scripts/check.sh` | build + roundtrip + e2e | local verification without the optional sandbox proof |
+
+The Journey 1 test installs the adapter wheel against the already-built
+in-repo `dsls/nbdsl` project. Nested Git/Lake consumer resolution is covered
+by `test_worker_resolve.py` and real `lean-cas-dsl` qualification.
 
 Test-harness lore paid for in debugging time: match Jupyter replies by
 `parent_header.msg_id` in a loop (never assert on "the next reply" — stale
@@ -51,11 +66,11 @@ interrupt test must precede the document test).
 
 ## CI (`.github/workflows/ci.yml`)
 
-Three jobs on push/PR: `worker` (mathlib-free build + boundary grep, ~30 s),
-`dsl` (mathlib cache → builds → strict mypy with ai-review-ci's config
-fetched raw → roundtrip → kernelspec + e2e; ~2–4 min warm via
-`actions/cache`), `frontend` (jlpm install/test/build, ~1 min).
-CI green does **not** cover the sandbox claim (documented in the workflow).
+Four jobs on push/PR: `worker` (mathlib-free build + boundary grep),
+`dsl` (mathlib cache → builds → in-repo mypy.ini → roundtrip → E2E,
+Journey 1, recovery, NbDsl semantic journeys), `compat` (release projection
+plus frozen-consumer qualification with concrete Sage/Jupyter gates), and
+`frontend` (jlpm install/test + clean wheel install/activation).
 
 ## Ceilings & parked work (deliberate, not forgotten)
 
@@ -63,8 +78,9 @@ CI green does **not** cover the sandbox claim (documented in the workflow).
 - Prefix completion is an environment scan (dot completion is type-aware);
   full expected-type-aware completion would use `Lean.Server.Completion`.
 - The session cache refuses open scopes / `variable` decls /
-  syntax-valued options (falls back to replay) and is validated by key
-  match + load success, not by replay comparison.
+  syntax-valued options (falls back to replay) and is validated by the ledger
+  key plus the selected module/scope hashes and load success, not by replay
+  comparison.
 - `predicate` records the object part only; the iso-invariance
   (functoriality through `core(C)`) obligation is the designed next step,
   as is a registered free-group functor making `#via B ∈ Groups` resolve.
@@ -80,4 +96,4 @@ CI green does **not** cover the sandbox claim (documented in the workflow).
   distinguish idle-blocked (futex, EOF-recoverable) from spinning
   (interpreted loop, killpg only) from IO-thrashing (`filemap_fault`,
   check disk).
-- `lake env` forks: kill the process group, not the pid.
+- The owned child is `nbdsl_worker` itself (after capturing `lake env`); kill the process group, not a wrapper pid.

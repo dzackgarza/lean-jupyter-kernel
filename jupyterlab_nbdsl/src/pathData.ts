@@ -32,7 +32,12 @@ export function parsePath(data: unknown): IPathData | null {
   ) {
     return null;
   }
-  return d as unknown as IPathData;
+  return {
+    object: d.object,
+    source: d.source,
+    target: d.target,
+    steps: d.steps,
+  };
 }
 
 /** Last dotted component; the whole name when there is no dot. */

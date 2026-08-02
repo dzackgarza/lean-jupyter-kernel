@@ -12,6 +12,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  LEAN_NUM_THREADS: 1
+
 jobs:
   core:
     name: worker (mathlib-free gate)
@@ -20,21 +23,23 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # The worker is mathlib-free and builds in seconds: no cache, no
-      # mathlib fetch — this job is the fast signal on every push.
       - uses: leanprover/lean-action@v1
         with:
           lake-package-directory: worker
-          build-args: nbdsl_worker
+          auto-config: false
+          build: false
           use-mathlib-cache: false
           use-github-cache: false
+
+      - name: bounded core worker build
+        run: bash -c 'cd worker && lake build nbdsl_worker'
 
       - name: boundary — the core must never import DSL modules
         run: |
           ! grep -rn '^import NbDsl' worker/ --include='*.lean'
 
   dsl:
-    name: NbDsl + kernel round-trip + e2e
+    name: NbDsl + installed notebook journeys
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -44,8 +49,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      # Keyed on the dependency set, not the commit, so warm runs hit: the
-      # ~5GB of mathlib oleans is re-saved only when deps or toolchain move.
       - uses: actions/cache@v6
         with:
           path: |
@@ -56,21 +59,26 @@ jobs:
       - uses: leanprover/lean-action@v1
         with:
           lake-package-directory: dsls/nbdsl
-          build-args: NbDsl
-          use-mathlib-cache: true
-          use-github-cache: false  # cached above, keyed on deps rather than SHA
+          auto-config: false
+          build: false
+          use-mathlib-cache: false
+          use-github-cache: false
 
-      # The DSL build pulls the worker in as a path dependency but not its
-      # executable, which the kernel spawns.
+      - name: bounded Mathlib cache preparation
+        run: bash -c 'cd dsls/nbdsl && lake exe cache get'
+
+      - name: bounded NbDsl build
+        run: bash -c 'cd dsls/nbdsl && lake build NbDsl'
+
       - name: build worker executable
         working-directory: worker
         run: lake build nbdsl_worker
 
-      - name: mypy (strict, mirrors ai-review-ci's global config)
+      - name: mypy (strict)
         run: |
-          curl -fsSL https://raw.githubusercontent.com/dzackgarza/ai-review-ci/main/tool-configs/mypy-global.ini -o /tmp/mypy-global.ini
-          pip install mypy pydantic ipykernel jupyter_client pytest
-          mypy --config-file /tmp/mypy-global.ini nbdsl_kernel/nbdsl_kernel nbdsl_kernel/tests
+          pip install mypy pydantic ipykernel jupyter_client pytest psutil types-psutil
+          MYPYPATH=nbdsl_kernel/tests:nbdsl_kernel mypy --config-file mypy.ini \
+            nbdsl_kernel/nbdsl_kernel nbdsl_kernel/tests conformance
 
       - name: protocol round-trip
         run: python3 nbdsl_kernel/tests/roundtrip.py
@@ -83,10 +91,72 @@ jobs:
       - name: end-to-end through the Jupyter protocol
         run: pytest nbdsl_kernel/tests/test_e2e.py
 
-      # NOT run here: nbdsl_kernel/tests/sandbox_check.py. bubblewrap needs
-      # user-namespace privileges that GitHub's ubuntu runners don't reliably
-      # grant, so the sandbox proof runs locally via scripts/check.sh only.
-      # CI green therefore does NOT cover the sandbox claim.
+      - name: Journey 1 — clean installed NbDsl notebook
+        run: pytest nbdsl_kernel/tests/test_clean_install.py
+
+      - name: wire protocol + recovery
+        run: |
+          pytest nbdsl_kernel/tests/test_identity.py \
+              nbdsl_kernel/tests/test_restart.py
+
+      - name: worker resolve and inspection
+        run: |
+          pytest nbdsl_kernel/tests/test_worker_resolve.py \
+              nbdsl_kernel/tests/test_inspect.py
+
+      - name: NbDsl semantic journeys
+        run: |
+          pytest conformance/test_semantic.py -k nbdsl
+
+  compat:
+    name: compatibility + external consumer
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: release projections agree with release.toml
+        run: python3 scripts/release_projection.py check
+
+      # Toolchain for the consumer's Lake graph (qualification builds the
+      # candidate worker through that graph, not a root rebuild here).
+      - uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: worker
+          auto-config: false
+          build: false
+          use-mathlib-cache: false
+          use-github-cache: false
+
+      # The 10.7 pin is provisioning: the frozen consumer baseline spawns its
+      # adapter as `sage -python` (see lean-cas-dsl#34).
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: sage
+          create-args: sage=10.7 python=3.12
+          cache-environment: true
+          generate-run-shell: true
+
+      - name: install just
+        uses: extractions/setup-just@v3
+
+      - name: install uv
+        uses: astral-sh/setup-uv@v6
+
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/mathlib
+          key: consumer-mathlib-${{ runner.os }}-${{ hashFiles('scripts/qualify_consumer.sh') }}
+
+      - name: qualify the exact kernel candidate against the frozen consumer
+        shell: micromamba-shell {0}
+        env:
+          KERNEL_GIT_URL: file://${{ github.workspace }}
+        run: scripts/qualify_consumer.sh "$(git rev-parse HEAD)" "$RUNNER_TEMP/qualification"
 
   frontend:
     name: jupyterlab extension
@@ -103,11 +173,20 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: install jupyterlab  # provides jlpm and the labextension builder
+      - name: install jupyterlab
         run: pip install jupyterlab
 
       - working-directory: jupyterlab_nbdsl
         run: |
           jlpm install
           jlpm test
-          jlpm build
+
+      - name: distributable wheel builds, installs, and activates cleanly
+        working-directory: jupyterlab_nbdsl
+        run: |
+          pip install build
+          python -m build --wheel
+          python -m venv /tmp/labclean
+          /tmp/labclean/bin/pip install jupyterlab dist/jupyterlab_nbdsl-*.whl
+          /tmp/labclean/bin/jupyter labextension list 2>&1 | tee /tmp/labext.txt
+          grep -E "jupyterlab_nbdsl v.*(enabled|OK)" /tmp/labext.txt

@@ -15,7 +15,10 @@ client's). Typed client model: `nbdsl_kernel/nbdsl_kernel/protocol.py`.
   a client-side timeout — clients must match on `request_id` (the shipped
   client stashes strays).
 - On startup the worker emits one unsolicited frame:
-  `{"op":"ready","protocol":1,"lean":"4.32.0","snapshot":0}`.
+  `{"op":"ready","protocol":1,"lean":"4.32.0","snapshot":0,"pid":N}`
+  (`release` may also appear; it is informational). The adapter refuses
+  startup when `protocol` disagrees with its own `WIRE_PROTOCOL`
+  (`WireProtocolError`).
 - EOF on the request fd is a clean shutdown: the worker drains its queue
   and exits 0.
 
@@ -88,8 +91,9 @@ commits nothing and leaks no outputs.
 ### `save_session {path}` / `load_session {path}`
 
 `save_session` → `{status:"ok", saved, reason?}` — writes the current
-snapshot as `NbdslSessionCache.olean` (constants + persistent env-extension
-entries, i.e. DSL registries survive) plus `scope.json`. Refuses
+snapshot as generation-numbered `NbdslSessionCache<Nat>.olean` (constants +
+persistent env-extension entries, i.e. DSL registries survive), plus
+`module.txt` naming the active generation and `scope.json`. Refuses
 (`saved:false` + reason) on open scopes, `variable` declarations, or
 syntax-valued options.
 
@@ -103,10 +107,17 @@ prelude + ledger hash.
 
 `{status:"ok", protocol, lean, snapshot, snapshot_count}`.
 
+## Wire protocol version
+
+`protocol` on `ready` / `describe` is the sole compatibility gate between
+adapter and worker. It must match `Worker.Protocol.wireProtocol` /
+`release.toml` `compat.wire_protocol` / `nbdsl_kernel.protocol.WIRE_PROTOCOL`.
+A mismatch surfaces as a typed `WireProtocolError` on execute (the kernel
+still answers `kernel_info`). There is no build-identity or provenance
+comparison and no `nbdsl_provenance` comm.
+
 ## Client-side contracts (not wire, but load-bearing)
 
 - The replay ledger (committed `(cell_id, code)` pairs in REPL mode) is the
   canonical recovery record; the session cache is a validated shortcut.
-- Killing the worker means `os.killpg` — `lake env` forks the worker, so a
-  plain kill only hits the wrapper and a busy worker survives as a spinning
-  orphan.
+- Killing the worker means `os.killpg` on the worker's process group.

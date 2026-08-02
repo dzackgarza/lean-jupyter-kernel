@@ -38,9 +38,12 @@ The invariants the core silently relies on:
 - Never touch stdout framing or the control fds.
 
 The payoff: obey the state law and the core provides cell atomicity,
-document-order semantics, completion, hover with your docstrings, sorry
-tracking, staleness marking, session caching, and crash recovery — with
-zero plugin code.
+document-order semantics, sorry tracking, staleness marking, session
+caching, and crash recovery — with zero plugin code. Completion and
+inspection resolve Lean-environment names (declarations, opens, namespaces).
+Extension-backed registrations are visible through ordinary execution and
+rich output; a dedicated plugin query contract for completion/inspection is
+future work.
 
 ## Reducibility
 
