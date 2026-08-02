@@ -66,10 +66,12 @@ class WireProtocolError(RuntimeError):
 LIVENESS_SLICE = 5.0  # reply-wait slice between worker liveness probes
 
 
-def expected_wire_protocol() -> int:
-    """Adapter wire expectation. NBDSL_WIRE_PROTOCOL overrides for tests."""
-    raw = os.environ.get("NBDSL_WIRE_PROTOCOL")
-    return int(raw) if raw is not None else WIRE_PROTOCOL
+def check_wire_protocol(ready: ReadyFrame) -> None:
+    """Refuse a worker whose wire protocol the adapter does not speak."""
+    if ready.protocol != WIRE_PROTOCOL:
+        raise WireProtocolError(
+            f"worker wire protocol {ready.protocol} is incompatible "
+            f"with adapter wire protocol {WIRE_PROTOCOL}")
 
 
 def _process_running(pid: int) -> bool:
@@ -319,10 +321,7 @@ class WorkerClient:
                 **ready.model_dump(),
                 "pid": host_worker_pid,
             })
-            if ready.protocol != expected_wire_protocol():
-                raise WireProtocolError(
-                    f"worker wire protocol {ready.protocol} is incompatible "
-                    f"with adapter wire protocol {expected_wire_protocol()}")
+            check_wire_protocol(ready)
 
             self.proc = proc
             self._request_pipe = req_w
