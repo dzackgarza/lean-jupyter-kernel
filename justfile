@@ -30,12 +30,19 @@ cache:
 # refreshed in the same breath: rebuilding one alone is what makes a kernel
 # refuse the pair (editable installs read _build_info.json from the tree).
 build:
+    @python3 scripts/resource_limited.py -- just build-inner
+
+build-inner:
     @cd worker && lake build nbdsl_worker
     @python3 scripts/sync_build_info.py
     @cd dsls/nbdsl && lake build NbDsl
 
 # Run the full repository QC gate
-test: build
+test:
+    @python3 scripts/resource_limited.py -- just test-inner
+
+test-inner:
+    @just build-inner
     @python3 scripts/release_projection.py check
     @just -f ~/ai-review-ci/justfiles/lean.just -d worker lean-no-sorry
     @just -f ~/ai-review-ci/justfiles/lean.just -d dsls/nbdsl lean-no-sorry
@@ -50,10 +57,12 @@ test: build
         'python -m nbdsl_kernel.install --project "$PWD/dsls/nbdsl" && \
          python -m pytest conformance/test_release_governance.py \
            conformance/test_runner_contracts.py \
+           conformance/test_resource_limits.py \
            nbdsl_kernel/tests/test_build_artifacts.py \
            nbdsl_kernel/tests/test_identity.py \
            nbdsl_kernel/tests/test_restart.py \
-           nbdsl_kernel/tests/test_inspect.py'
+           nbdsl_kernel/tests/test_inspect.py \
+           nbdsl_kernel/tests/test_roundtrip_cleanup.py'
 
 # Interpreter for the recipes needing the kernel package installed. CI
 # installs into the job python; locally: `just python=.venv/bin/python …`.
@@ -65,13 +74,15 @@ export LEAN_NUM_THREADS := "1"
 # Journey 2 iteration; this recipe is the closure proof.
 # Needs the kernel package installed (jupyter_client, a kernelspec).
 conformance:
-    @{{python}} conformance/runner.py conformance/nbdsl.toml --journey all
+    @python3 scripts/resource_limited.py -- \
+      {{python}} conformance/runner.py conformance/nbdsl.toml --journey all
 
 # …and against an EXTERNAL plugin. Point CONFORMANCE_CAS_DSL at a clean
 # checkout; the profile falls back to a sibling working tree. The qualification
 # script uses --source-dir for its ephemeral exact-candidate checkout.
 conformance-external:
-    @{{python}} conformance/runner.py conformance/lean-cas-dsl.toml --journey all
+    @python3 scripts/resource_limited.py -- \
+      {{python}} conformance/runner.py conformance/lean-cas-dsl.toml --journey all
 
 [private]
 test-commit: test

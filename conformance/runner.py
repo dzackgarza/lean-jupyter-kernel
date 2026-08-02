@@ -20,6 +20,7 @@ overrides; `load_profile` rejects any key that would.
 
 Usage:
     python3 conformance/runner.py conformance/nbdsl.toml --journey all
+    python3 conformance/runner.py conformance/nbdsl.toml --journey recovery
     python3 conformance/runner.py conformance/lean-cas-dsl.toml \\
         --journey all [--source-dir DIR] [--kernel-name NAME] \\
         [--output result.json]
@@ -71,6 +72,8 @@ from roundtrip import FrameReader, write_frame  # noqa: E402
 
 from jupyter_client.kernelspec import KernelSpecManager  # noqa: E402
 from jupyter_client.manager import start_new_kernel  # noqa: E402
+from nbdsl_kernel.resource_limits import (ResourceLimitError,
+                                          require_active_resource_scope)  # noqa: E402
 from nbdsl_kernel.worker import find_worker_exe  # noqa: E402
 
 # The first execute of a session waits for the worker's prelude import (all of
@@ -84,7 +87,8 @@ LEAN_NUM_THREADS = "1"
 CONFORMANCE_LOCK = Path(
     os.environ.get(
         "NBDSL_CONFORMANCE_LOCK",
-        f"/tmp/nbdsl-conformance-{os.getuid()}.lock"))
+        f"{os.environ.get('TMPDIR') or '/tmp'}"
+        f"/nbdsl-conformance-{os.getuid()}.lock"))
 CONFORMANCE_LOCK_TIMEOUT = 15.0
 
 LAWS = [
@@ -105,6 +109,7 @@ ATOMICITY_LAWS = (
     "parse-error-rolls-back",
     "cancellation-rolls-back",
 )
+RECOVERY_LAWS = ("restart-reconstructs", "replay-reconstructs")
 
 # Keys that would move law authority into the data file. Fixed decision 4:
 # profiles supply inputs and observations, never verdicts.
@@ -613,8 +618,63 @@ class Report:
 # candidate-session laws
 # --------------------------------------------------------------------------
 
+def run_recovery(session: Session, profile: dict[str, Any],
+                 report: Report,
+                 committed: dict[str, Any]) -> dict[str, Any]:
+    """Run only the two worker-death recovery laws for a targeted regression."""
+    obs_cfg = profile["observation"]
+    candidate_queries = query_answers(session, profile)
+
+    killed = session.kill_worker()
+    reply, outputs = session.run(obs_cfg["command"])
+    stream = texts(outputs)
+    after_restart = _read(reply, outputs, obs_cfg)
+    queries_after_restart = query_answers(session, profile)
+    report.record(
+        "restart-reconstructs",
+        after_restart == committed and queries_after_restart == candidate_queries,
+        {**killed, "recovery_route": _route(stream),
+         "recovery_stream": stream[:400], "observation_after": after_restart,
+         "queries_after_recovery": queries_after_restart},
+        "the worker process was SIGKILLed from outside the kernel and the "
+        "production restart path reconstructed the committed observation and "
+        "the same completion/inspection answers")
+
+    for code in profile["replay"]["force"]:
+        reply, _ = session.run(code)
+        if reply["status"] != "ok":
+            raise ProfileError(f"replay-forcing cell failed: {code!r} -> {reply}")
+    killed = session.kill_worker()
+    reply, outputs = session.run(obs_cfg["command"])
+    stream = texts(outputs)
+    after_replay = _read(reply, outputs, obs_cfg)
+    queries_after_replay = query_answers(session, profile)
+    route = _route(stream)
+    report.record(
+        "replay-reconstructs",
+        route == "replay"
+        and after_replay == committed
+        and queries_after_replay == candidate_queries,
+        {**killed, "recovery_route": route, "recovery_stream": stream[:400],
+         "cache_invalidated_by": profile["replay"]["force"],
+         "observation_after": after_replay,
+         "queries_after_recovery": queries_after_replay},
+        "with the session cache invalidated the worker recovered by replaying "
+        "the committed sources and reconstructed the same observation and "
+        "completion/inspection answers")
+    for code in profile["replay"]["restore"]:
+        reply, outputs = session.run(code)
+        if reply["status"] != "ok":
+            raise ProfileError(
+                f"replay restore cell failed: {code!r} -> {reply}\n"
+                f"{texts(outputs)[:800]}")
+
+    return {"committed": committed, "queries": candidate_queries}
+
+
 def run_candidate(session: Session, profile: dict[str, Any],
-                  report: Report, *, atomicity_only: bool = False
+                  report: Report, *, atomicity_only: bool = False,
+                  recovery_only: bool = False
                   ) -> dict[str, Any]:
     """Every law provable inside the registering environment, plus the
     observations the control session will be compared against."""
@@ -716,6 +776,9 @@ def run_candidate(session: Session, profile: dict[str, Any],
          "pre": committed, "post": after_parse},
         "a malformed tail discards a candidate registration and buffered "
         "output while preserving the committed observation")
+
+    if recovery_only:
+        return run_recovery(session, profile, report, committed)
 
     if not atomicity_only:
         candidate_queries = query_answers(session, profile)
@@ -842,54 +905,8 @@ def run_candidate(session: Session, profile: dict[str, Any],
     if atomicity_only:
         return {"committed": committed}
 
-    # -- restart-reconstructs ----------------------------------------------
-    killed = session.kill_worker()
-    reply, outputs = session.run(obs_cfg["command"])
-    stream = texts(outputs)
-    after_restart = _read(reply, outputs, obs_cfg)
-    queries_after_restart = query_answers(session, profile)
-    report.record(
-        "restart-reconstructs",
-        after_restart == committed and queries_after_restart == candidate_queries,
-        {**killed, "recovery_route": _route(stream),
-         "recovery_stream": stream[:400], "observation_after": after_restart,
-         "queries_after_recovery": queries_after_restart},
-        "the worker process was SIGKILLed from outside the kernel and the "
-        "production restart path reconstructed the committed observation and "
-        "the same completion/inspection answers")
-
-    # -- replay-reconstructs -----------------------------------------------
-    for code in profile["replay"]["force"]:
-        reply, _ = session.run(code)
-        if reply["status"] != "ok":
-            raise ProfileError(f"replay-forcing cell failed: {code!r} -> {reply}")
-    killed = session.kill_worker()
-    reply, outputs = session.run(obs_cfg["command"])
-    stream = texts(outputs)
-    after_replay = _read(reply, outputs, obs_cfg)
-    queries_after_replay = query_answers(session, profile)
-    route = _route(stream)
-    report.record(
-        "replay-reconstructs",
-        route == "replay"
-        and after_replay == committed
-        and queries_after_replay == candidate_queries,
-        {**killed, "recovery_route": route, "recovery_stream": stream[:400],
-         "cache_invalidated_by": profile["replay"]["force"],
-         "observation_after": after_replay,
-         "queries_after_recovery": queries_after_replay},
-        "with the session cache invalidated the worker recovered by replaying "
-        "the committed sources and reconstructed the same observation and "
-        "completion/inspection answers")
-    for code in profile["replay"]["restore"]:
-        reply, outputs = session.run(code)
-        if reply["status"] != "ok":
-            raise ProfileError(
-                f"replay restore cell failed: {code!r} -> {reply}\n"
-                f"{texts(outputs)[:800]}")
-
-    return {"committed": committed, "queries": candidate_queries,
-            "jupyter_output_half": jupyter_half}
+    return run_recovery(session, profile, report, committed) | {
+        "jupyter_output_half": jupyter_half}
 
 
 # --------------------------------------------------------------------------
@@ -1145,9 +1162,9 @@ def main() -> int:
     parser.add_argument("profile", type=Path)
     parser.add_argument(
         "--journey",
-        choices=("all", "atomicity"),
+        choices=("all", "atomicity", "recovery"),
         default="all",
-        help="run the full six-journey matrix or focused Journey 2 atomicity laws",
+        help="run the full matrix or focused atomicity/recovery laws",
     )
     parser.add_argument("--source-dir", type=Path, default=None,
                         help="clean checkout of the plugin source; overrides "
@@ -1157,6 +1174,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path, default=None,
                         help="write the result JSON here (default: stdout)")
     args = parser.parse_args()
+    require_active_resource_scope()
 
     profile = load_profile(args.profile)
     source = resolve_checkout(profile, args.source_dir)
@@ -1195,15 +1213,19 @@ def main() -> int:
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
     }
 
-    report = Report(ATOMICITY_LAWS if args.journey == "atomicity"
-                    else tuple(LAWS))
+    expected_laws = (
+        ATOMICITY_LAWS if args.journey == "atomicity"
+        else RECOVERY_LAWS if args.journey == "recovery"
+        else tuple(LAWS))
+    report = Report(expected_laws)
     try:
         with conformance_slot():
             candidate = Session(kernel_name)
             try:
                 outcome = run_candidate(
                     candidate, profile, report,
-                    atomicity_only=args.journey == "atomicity")
+                    atomicity_only=args.journey == "atomicity",
+                    recovery_only=args.journey == "recovery")
                 # Identity readback is metadata for the installed proof, not a
                 # separate law and not a second worker session.
                 result["provenance"] = read_provenance(candidate)
@@ -1259,6 +1281,6 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except ProfileError as exc:
+    except (ProfileError, ResourceLimitError) as exc:
         print(f"conformance setup error: {exc}", file=sys.stderr)
         sys.exit(2)

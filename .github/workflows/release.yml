@@ -54,9 +54,14 @@ jobs:
       - uses: leanprover/lean-action@v1
         with:
           lake-package-directory: worker
-          build-args: nbdsl_worker
+          auto-config: false
+          build: false
           use-mathlib-cache: false
           use-github-cache: false
+
+      - name: bounded tagged worker build
+        run: python3 scripts/resource_limited.py -- \
+          bash -c 'cd worker && lake build nbdsl_worker'
 
       - name: bind provenance to the exact tagged commit
         run: |

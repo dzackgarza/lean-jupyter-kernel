@@ -372,31 +372,39 @@ def test_malformed_observation_projection_fails_loudly() -> None:
         runner._read(reply, [malformed], config)
 
 
-def test_failed_replay_restore_fails_the_real_conformance_run(
-    tmp_path: Path,
+def test_failed_replay_restore_is_reported_by_runner(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    profile = tmp_path / "nbdsl-invalid-restore.toml"
-    profile.write_text(
-        REFERENCE_PROFILE.read_text().replace(
-            'restore = ["end"]',
-            'restore = ["#check nbdslDefinitelyMissing"]',
-            1,
-        )
-    )
+    profile = tomllib.loads(REFERENCE_PROFILE.read_text())
+    committed = {"present": True}
 
-    completed = subprocess.run(
-        [
-            sys.executable,
-            str(RUNNER),
-            str(profile),
-            "--source-dir",
-            str(REPO),
-        ],
-        capture_output=True,
-        check=False,
-        text=True,
-        timeout=600,
-    )
+    class FakeSession:
+        def __init__(self) -> None:
+            self.kills = 0
+            self.calls: list[str] = []
 
-    assert completed.returncode != 0
-    assert "restore" in completed.stderr.lower()
+        def kill_worker(self) -> dict[str, object]:
+            self.kills += 1
+            return {"killed": self.kills}
+
+        def run(self, code: str) -> tuple[dict[str, str], list[object]]:
+            self.calls.append(code)
+            if code in profile["replay"]["restore"]:
+                return {"status": "error", "evalue": "missing restore"}, []
+            return {"status": "ok"}, []
+
+    session = FakeSession()
+    monkeypatch.setattr(
+        runner,
+        "query_answers",
+        lambda _session, _profile: {"queries": "stable"},
+    )
+    monkeypatch.setattr(runner, "_read", lambda _reply, _outputs, _cfg: committed)
+    monkeypatch.setattr(runner, "texts", lambda _outputs: "")
+
+    with pytest.raises(runner.ProfileError, match="restore"):
+        runner.run_recovery(
+            session, profile, runner.Report(runner.RECOVERY_LAWS), committed)
+
+    assert session.kills == 2
+    assert session.calls[-1] == profile["replay"]["restore"][0]

@@ -19,6 +19,12 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ "${NBDSL_RESOURCE_LIMITED:-0}" != 1 ]; then
+  exec python3 "$SCRIPT_DIR/resource_limited.py" --qualification -- \
+    "$SCRIPT_DIR/qualify_consumer.sh" "$@"
+fi
+
 KERNEL_REPO="$(cd "$(dirname "$0")/.." && pwd)"
 CANDIDATE="${1:?usage: qualify_consumer.sh <candidate-kernel-sha> [workdir]}"
 WORKDIR="${2:-$(mktemp -d /tmp/consumer-qualification-XXXXXX)}"

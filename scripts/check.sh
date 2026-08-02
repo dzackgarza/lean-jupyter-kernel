@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # Core verification: Lean build + QC + worker protocol + Jupyter E2E.
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ "${NBDSL_RESOURCE_LIMITED:-0}" != 1 ]; then
+  exec python3 "$SCRIPT_DIR/resource_limited.py" -- "$SCRIPT_DIR/check.sh" "$@"
+fi
+
 cd "$(dirname "$0")/.."
 
 # Fail closed instead of running two full checks concurrently. The installed

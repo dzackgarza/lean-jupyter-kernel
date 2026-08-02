@@ -7,6 +7,7 @@ just conformance             # in-repository NbDsl reference, full matrix
 just conformance-external    # external plugin, full matrix
 
 python3 conformance/runner.py conformance/nbdsl.toml --journey all
+python3 conformance/runner.py conformance/nbdsl.toml --journey recovery
 python3 conformance/runner.py conformance/lean-cas-dsl.toml \
     --journey all [--source-dir DIR] [--kernel-name NAME] \
     [--output result.json]
@@ -23,7 +24,9 @@ queries, repeated recovery, and transport-safe output are all exercised through
 the installed kernelspec. `--journey atomicity` is the targeted Journey 2
 proof for iteration; it runs only the success, elaboration-failure,
 parse-failure, and cooperative-cancellation laws, including candidate-state
-and notebook-output rollback.
+and notebook-output rollback. `--journey recovery` is the targeted recovery
+regression; it runs both worker-death laws and their query-agreement checks
+without repeating the other journeys.
 
 The full matrix runs through the ordinary Jupyter protocol against an installed
 kernelspec: `execute_request`, `complete_request`, `inspect_request`, a real
@@ -31,6 +34,11 @@ kernelspec: `execute_request`, `complete_request`, `inspect_request`, a real
 focused atomicity run uses only `execute_request` and `interrupt_request`;
 completion, inspection, recovery, and transport are separate journeys. No
 mocks, source-shape checks, or law skips are used.
+
+The runner refuses to start unless it is already inside a finite, no-swap
+resource scope. Use `scripts/resource_limited.py --` (or `just conformance`);
+the launcher applies a 4 GiB hard memory cap, 3 GiB throttling threshold,
+four-core CPU quota, 128-task cap, and finite runtime limit.
 
 **Resource contract:** at most one mathlib-loaded worker is alive at a time. The
 candidate session is shut down before the independent control session starts —

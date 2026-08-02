@@ -12,6 +12,7 @@ Run: python nbdsl_kernel/tests/roundtrip.py   (after `just build`)
 import json
 import os
 import select
+import signal
 import subprocess
 import sys
 import time
@@ -70,6 +71,7 @@ class Worker:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            start_new_session=True,
         )
         os.close(req_r)
         os.close(rep_w)
@@ -98,6 +100,24 @@ class Worker:
         out, err = self.proc.communicate(timeout=5)
         return rc, out, err
 
+    def close(self) -> None:
+        """Terminate the owned process group after any failed assertion."""
+        try:
+            os.close(self.req_fd)
+        except OSError:
+            pass
+        if self.proc.poll() is None:
+            try:
+                os.killpg(os.getpgid(self.proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            self.proc.wait(timeout=5)
+        out, err = self.proc.communicate(timeout=5)
+        if self.proc.returncode != 0 and err:
+            sys.stderr.buffer.write(err)
+        if self.proc.returncode != 0 and out:
+            sys.stdout.buffer.write(out)
+
 
 def errors(rep: dict) -> list[dict]:
     return [d for d in rep["diagnostics"] if d["severity"] == "error"]
@@ -109,7 +129,12 @@ def infos(rep: dict) -> list[dict]:
 
 def main() -> None:
     w = Worker()
+    try:
+        _run(w)
+    finally:
+        w.close()
 
+def _run(w: Worker) -> None:
     ready = w.replies.read_frame()
     assert ready["op"] == "ready" and ready["protocol"] == 1, ready
     assert ready["lean"].startswith("4.32"), ready
