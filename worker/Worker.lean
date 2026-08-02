@@ -103,10 +103,16 @@ def handleExecute (session : IO.Ref Session) (cancelTk : IO.CancelToken)
   let outputs ← drainOutputs
   let diags ← result.messages.mapM diagnosticJson
   let hasError := result.messages.any (·.severity matches .error)
+  -- A cell is one unit for publishing: on error or cancel, discard any
+  -- prefix `emitOutput` bundles so notebooks never render rich results under
+  -- a failed cell (issue #11). Snapshot rollback is separate and already
+  -- keeps the parent current below.
+  let published :=
+    if hasError || (← cancelTk.isSet) then #[] else outputs
   let common :=
     [("diagnostics", Json.arr diags.toArray),
      ("sorries", Json.arr (result.sorries.map sorryJson)),
-     ("outputs", Json.arr (outputs.map (·.toJson)))]
+     ("outputs", Json.arr (published.map (·.toJson)))]
   if ← cancelTk.isSet then
     -- Cancelled cooperatively: nothing commits, parent stays current.
     return reply req <| [("status", Json.str "cancelled"), ("snapshot", toJson parentId)] ++ common
