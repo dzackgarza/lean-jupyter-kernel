@@ -41,7 +41,7 @@ class NbDslKernel(Kernel):
     banner = "NbDsl — a Lean 4 elaborated DSL"
 
     @property
-    def language_info(self) -> dict[str, str]:
+    def language_info(self) -> dict[str, object]:
         """The session's language identity, from the kernelspec env.
 
         A DSL project speaks its own surface: the generic adapter defaults to
@@ -54,6 +54,13 @@ class NbDslKernel(Kernel):
             "mimetype": os.environ.get("NBDSL_MIMETYPE", "text/x-lean4"),
             "file_extension": os.environ.get("NBDSL_LANGUAGE_EXT", ".lean"),
         }
+
+    @language_info.setter
+    def language_info(self, value: dict[str, object]) -> None:
+        # Kernel.language_info is declared writeable (kernelbase.py); the
+        # kernelspec env is the source of truth here, so writes are accepted
+        # and discarded.
+        pass
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
