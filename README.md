@@ -5,6 +5,26 @@ Cells are ordinary Lean — the kernel never interprets DSL syntax.
 Completion, hover, diagnostics, and document-order semantics are asked of the
 Lean worker, not computed in Python.
 
+**Document-order semantics is a deliberate philosophy, not an accident.**
+In this kernel the notebook is a document, not a transcript: cell *i*'s
+state is always the state of elaborating the *visible* prefix of the
+notebook through cell *i*. Outputs therefore always correspond to the
+source shown above them. Standard notebooks let a cell's output silently
+diverge from the visible source — the classic stale-state footgun, where
+cell 5's result was computed against a version of cell 2 that no longer
+exists on screen. That divergence is the failure mode this kernel exists
+to exclude. Unchanged prefix cells reuse cached snapshots (editing cell 2
+does not re-run cell 1); edited or moved cells re-run (shown with `↻`
+notes); an upstream failure aborts with `UpstreamError` rather than
+leaving the notebook in an unknown, inconsistent state.
+
+The plain execution-order REPL model remains available — in `jupyter
+console`, or in any client that does not stream the document comm —
+where each cell appends to the current context and `let` re-binding
+shadows, exactly as in a standard notebook kernel. The two modes share
+the same worker, the same snapshot DAG, and the same atomicity: a cell
+commits only if it elaborates with no error-severity diagnostic.
+
 Consumed by:
 
 - [lean-cas-dsl](https://github.com/dzackgarza/lean-cas-dsl) — a

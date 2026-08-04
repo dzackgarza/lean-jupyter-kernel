@@ -60,6 +60,14 @@ test-inner:
 python := "python3"
 export LEAN_NUM_THREADS := "1"
 
+# jupyterlab_nbdsl — the extension's own domain test suite (tsc compile of the
+# two syntax highlighters plus node tests for them and the notebook view
+# models). CI runs the same script (ci.yml: `jlpm test`); yarn is jlpm's
+# underlying runner and reads the same yarn.lock.
+[private]
+_extension-test:
+    @cd jupyterlab_nbdsl && yarn test
+
 # Semantic plugin conformance (#3): Journeys 2–5 against the in-repo NbDsl case.
 conformance:
     @{{python}} -m pytest conformance/test_semantic.py -k nbdsl

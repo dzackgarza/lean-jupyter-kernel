@@ -1,7 +1,7 @@
 {
   "name": "jupyterlab_nbdsl",
   "version": "1.1.0",
-  "description": "CodeMirror 6 syntax highlighting for Lean 4 (text/x-lean4) cells in JupyterLab",
+  "description": "CodeMirror 6 syntax highlighting for Lean 4 (text/x-lean4) and CasDsl (text/x-casdsl) notebook cells",
   "license": "BSD-3-Clause",
   "keywords": [
     "jupyter",
@@ -26,7 +26,7 @@
     "watch": "run-p watch:src watch:labextension",
     "watch:src": "tsc -w --sourceMap",
     "watch:labextension": "jupyter labextension watch .",
-    "test": "tsc src/lean4.ts src/documentMessage.ts src/staleStatus.ts src/pathData.ts --module commonjs --moduleResolution node --target ES2018 --esModuleInterop --skipLibCheck --outDir .test-build && node test/parser.test.cjs && node test/document.test.cjs && node test/stale.test.cjs && node test/path.test.cjs",
+    "test": "tsc src/lean4.ts src/casdsl.ts src/documentMessage.ts src/staleStatus.ts src/pathData.ts --module commonjs --moduleResolution node --target ES2018 --esModuleInterop --skipLibCheck --outDir .test-build && node test/parser.test.cjs && node test/casdsl.test.cjs && node test/document.test.cjs && node test/stale.test.cjs && node test/path.test.cjs",
     "install:extension": "jlpm build"
   },
   "dependencies": {
@@ -42,6 +42,7 @@
   },
   "devDependencies": {
     "@jupyter/builder": "^1.1.1",
+    "jsdom": "^30.0.1",
     "typescript": "~5.5.4"
   },
   "sideEffects": [
