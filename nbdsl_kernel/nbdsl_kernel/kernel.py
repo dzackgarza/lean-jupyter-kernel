@@ -21,10 +21,16 @@ from typing import Any
 from ipykernel.kernelbase import Kernel
 from pydantic import ValidationError
 
-from .protocol import (CellState, CommParent, CompleteOk, DocumentMessage,
-                       ExecuteReply, InspectOk, IsCompleteOk)
-from .worker import (WireProtocolError, WorkerClient, WorkerDied,
-                     WorkerInterrupted)
+from .protocol import (
+    CellState,
+    CommParent,
+    CompleteOk,
+    DocumentMessage,
+    ExecuteReply,
+    InspectOk,
+    IsCompleteOk,
+)
+from .worker import WireProtocolError, WorkerClient, WorkerDied, WorkerInterrupted
 
 JupyterReply = dict[str, object]
 
@@ -33,11 +39,21 @@ class NbDslKernel(Kernel):
     implementation = "nbdsl"
     implementation_version = version("nbdsl-kernel")
     banner = "NbDsl — a Lean 4 elaborated DSL"
-    language_info = {
-        "name": "lean4",
-        "mimetype": "text/x-lean4",
-        "file_extension": ".lean",
-    }
+
+    @property
+    def language_info(self) -> dict[str, str]:
+        """The session's language identity, from the kernelspec env.
+
+        A DSL project speaks its own surface: the generic adapter defaults to
+        Lean 4 (text/x-lean4), while a CasDsl kernelspec is installed with
+        ``--mimetype text/x-casdsl --language-name casdsl`` so JupyterLab's
+        editor routes cells to the registered CasDsl highlighter.
+        """
+        return {
+            "name": os.environ.get("NBDSL_LANGUAGE_NAME", "lean4"),
+            "mimetype": os.environ.get("NBDSL_MIMETYPE", "text/x-lean4"),
+            "file_extension": os.environ.get("NBDSL_LANGUAGE_EXT", ".lean"),
+        }
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -45,11 +61,13 @@ class NbDslKernel(Kernel):
         if not project:
             raise RuntimeError(
                 "NBDSL_PROJECT is not set; install the kernelspec with "
-                "`python -m nbdsl_kernel.install --project <lean project root>`")
+                "`python -m nbdsl_kernel.install --project <lean project root>`"
+            )
         self.worker = WorkerClient(
             project,
             prelude=os.environ.get("NBDSL_PRELUDE", "NbDsl.Notebook"),
-            on_stream=self._stream)
+            on_stream=self._stream,
+        )
         self._started = False
         self._silent = False
         # Session defaults a prelude can't set (set_option doesn't cross
@@ -66,22 +84,20 @@ class NbDslKernel(Kernel):
         # sources over the "nbdsl_document" comm. Without it (jupyter console)
         # execution keeps REPL semantics.
         self._doc_comms: set[str] = set()
-        self.doc_order: list[str] = []   # cell ids, visible order (code cells)
-        self.doc_sources: dict[str, str] = {}   # cell id -> source
+        self.doc_order: list[str] = []  # cell ids, visible order (code cells)
+        self.doc_sources: dict[str, str] = {}  # cell id -> source
         self.cell_state: dict[str, CellState] = {}
         for msg_type in ("comm_open", "comm_msg", "comm_close"):
             self.shell_handlers[msg_type] = getattr(self, msg_type)
 
     # -- document comm -----------------------------------------------------
 
-    async def comm_open(self, stream: object, ident: object,
-                        parent: object) -> None:
+    async def comm_open(self, stream: object, ident: object, parent: object) -> None:
         msg = CommParent.model_validate(parent)
         if msg.content.target_name == "nbdsl_document":
             self._doc_comms.add(msg.content.comm_id)
 
-    async def comm_msg(self, stream: object, ident: object,
-                       parent: object) -> None:
+    async def comm_msg(self, stream: object, ident: object, parent: object) -> None:
         msg = CommParent.model_validate(parent)
         if msg.content.comm_id not in self._doc_comms:
             return
@@ -95,8 +111,7 @@ class NbDslKernel(Kernel):
         self.doc_sources = {c.id: c.source for c in doc.cells}
         self._broadcast_status()
 
-    async def comm_close(self, stream: object, ident: object,
-                         parent: object) -> None:
+    async def comm_close(self, stream: object, ident: object, parent: object) -> None:
         self._doc_comms.discard(CommParent.model_validate(parent).content.comm_id)
 
     def _broadcast_status(self) -> None:
@@ -113,8 +128,12 @@ class NbDslKernel(Kernel):
             if not src.strip():
                 continue
             st = self.cell_state.get(cid)
-            if (not broken and st is not None and st.source == src
-                    and st.parent == parent):
+            if (
+                not broken
+                and st is not None
+                and st.source == src
+                and st.parent == parent
+            ):
                 fresh.append(cid)
                 parent = st.snapshot
             else:
@@ -123,8 +142,9 @@ class NbDslKernel(Kernel):
                     stale.append(cid)
         data = {"type": "status", "fresh": fresh, "stale": stale}
         for comm_id in self._doc_comms:
-            self.session.send(self.iopub_socket, "comm_msg",
-                              {"comm_id": comm_id, "data": data})
+            self.session.send(
+                self.iopub_socket, "comm_msg", {"comm_id": comm_id, "data": data}
+            )
 
     # -- plumbing ----------------------------------------------------------
 
@@ -134,8 +154,9 @@ class NbDslKernel(Kernel):
         # notes) that have no `silent` parameter in scope. Synchronous reply
         # paths thread `silent` explicitly instead of mutating the flag.
         if not self._silent:
-            self.send_response(self.iopub_socket, "stream",
-                               {"name": name, "text": text})
+            self.send_response(
+                self.iopub_socket, "stream", {"name": name, "text": text}
+            )
 
     def _run_init_cell(self) -> None:
         """The kernelspec's init cell becomes the session's base snapshot.
@@ -153,13 +174,13 @@ class NbDslKernel(Kernel):
 
     def _ensure_worker(self) -> None:
         if not self._started:
-            self._stream("stdout",
-                         f"Starting Lean worker ({self.worker.project_root})…\n")
+            self._stream(
+                "stdout", f"Starting Lean worker ({self.worker.project_root})…\n"
+            )
             self.worker.start()
             try:
                 self._run_init_cell()
-            except (WireProtocolError, WorkerDied, WorkerInterrupted,
-                    TimeoutError):
+            except (WireProtocolError, WorkerDied, WorkerInterrupted, TimeoutError):
                 # Bootstrap owns a live worker before `_started` flips. Make
                 # a failed query-first bootstrap retryable without leaving
                 # that process in WorkerClient's ownership slots.
@@ -171,8 +192,10 @@ class NbDslKernel(Kernel):
             if self.doc_sources:
                 # Document mode: snapshots are gone, so drop the cell states;
                 # prefix revalidation rebuilds exactly what the next run needs.
-                self._stream("stderr", "Lean worker died; restarting (cells "
-                                       "will re-run on demand)…\n")
+                self._stream(
+                    "stderr",
+                    "Lean worker died; restarting (cells will re-run on demand)…\n",
+                )
                 self.worker.restart_fresh()
                 self.cell_state.clear()
                 self._run_init_cell()
@@ -186,8 +209,9 @@ class NbDslKernel(Kernel):
                 else:
                     self._stream("stderr", f"Replayed {n} cells.\n")
 
-    def _ensure_prefix(self, cell_id: str,
-                       silent: bool) -> tuple[JupyterReply | None, int]:
+    def _ensure_prefix(
+        self, cell_id: str, silent: bool
+    ) -> tuple[JupyterReply | None, int]:
         """Re-establish the invariant: the snapshot for each cell equals the
         state of elaborating the visible notebook prefix through that cell.
         Returns (error_reply | None, parent_snapshot_for_cell_id)."""
@@ -209,9 +233,11 @@ class NbDslKernel(Kernel):
                 return self._error_reply(
                     "UpstreamError",
                     f"upstream cell {pos} failed: {rep.first_error()}",
-                    silent), parent
+                    silent,
+                ), parent
             self.cell_state[cid] = CellState(
-                source=src, snapshot=rep.snapshot, parent=parent)
+                source=src, snapshot=rep.snapshot, parent=parent
+            )
             parent = rep.snapshot
         # cell not in the document (e.g. brand-new cell the extension hasn't
         # reported yet): fall through with the last prefix state
@@ -221,37 +247,53 @@ class NbDslKernel(Kernel):
         for diag in rep.diagnostics:
             if diag.severity == "error":
                 continue  # errors are published once, as the error output
-            text = f"{diag.start.line}:{diag.start.column}: {diag.message}\n"
-            self._stream(
-                "stdout" if diag.severity == "information" else "stderr", text)
+            # DSL diagnostics ride this channel with their source position
+            # attached — for a notebook cell that position is always the
+            # cell itself, so the `line:col:` prefix is pure noise. Emit the
+            # message bare, whatever it says.
+            text = f"{diag.message}\n"
+            self._stream("stdout" if diag.severity == "information" else "stderr", text)
         for s in rep.sorries:
             self._stream(
-                "stderr",
-                f"⚠ sorry at {s.start.line}:{s.start.column}\n{s.goal}\n")
+                "stderr", f"⚠ sorry at {s.start.line}:{s.start.column}\n{s.goal}\n"
+            )
         for i, out in enumerate(rep.outputs):
             data = dict(out.data)
             data.setdefault("text/plain", "<nbdsl output>")
             last = i == len(rep.outputs) - 1
             if last and rep.status == "ok":
-                self.send_response(self.iopub_socket, "execute_result", {
-                    "execution_count": self.execution_count,
-                    "data": data,
-                    "metadata": out.metadata,
-                })
+                self.send_response(
+                    self.iopub_socket,
+                    "execute_result",
+                    {
+                        "execution_count": self.execution_count,
+                        "data": data,
+                        "metadata": out.metadata,
+                    },
+                )
             else:
-                self.send_response(self.iopub_socket, "display_data", {
-                    "data": data,
-                    "metadata": out.metadata,
-                })
+                self.send_response(
+                    self.iopub_socket,
+                    "display_data",
+                    {
+                        "data": data,
+                        "metadata": out.metadata,
+                    },
+                )
 
     # -- Jupyter entry points ---------------------------------------------
 
-    async def do_execute(self, code: str, silent: bool,
-                         store_history: bool = True,
-                         user_expressions: dict[str, object] | None = None,
-                         allow_stdin: bool = False, *,
-                         cell_meta: dict[str, object] | None = None,
-                         cell_id: str | None = None) -> JupyterReply:
+    async def do_execute(
+        self,
+        code: str,
+        silent: bool,
+        store_history: bool = True,
+        user_expressions: dict[str, object] | None = None,
+        allow_stdin: bool = False,
+        *,
+        cell_meta: dict[str, object] | None = None,
+        cell_id: str | None = None,
+    ) -> JupyterReply:
         self._silent = silent
         try:
             return self._execute_once(code, silent, cell_id)
@@ -260,16 +302,18 @@ class NbDslKernel(Kernel):
             # (being) killed. Kill it outright so no stale elaboration lingers;
             # the next execute restarts and replays the committed prefix.
             self.worker.kill()
-            return self._error_reply("Interrupted", "execution interrupted",
-                                     silent)
+            return self._error_reply("Interrupted", "execution interrupted", silent)
         except WireProtocolError as e:
             # Loud-init-failure pattern: the kernel starts and answers
             # kernel_info, and every execute reports this instead.
             return self._error_reply("WireProtocolError", str(e), silent)
         except WorkerInterrupted:
             return self._error_reply(
-                "Interrupted", "execution interrupted; worker killed after "
-                "the cooperative-cancel window", silent)
+                "Interrupted",
+                "execution interrupted; worker killed after "
+                "the cooperative-cancel window",
+                silent,
+            )
         except WorkerDied as e:
             # A request was sent but no reply arrived. The worker may have
             # committed external effects before dying, so this cell is never
@@ -280,12 +324,12 @@ class NbDslKernel(Kernel):
         finally:
             self._silent = False
 
-    def _execute_once(self, code: str, silent: bool,
-                      cell_id: str | None) -> JupyterReply:
+    def _execute_once(
+        self, code: str, silent: bool, cell_id: str | None
+    ) -> JupyterReply:
         self._ensure_worker()
         if self._init_error:
-            return self._error_reply("InitCellError", self._init_error,
-                                     silent)
+            return self._error_reply("InitCellError", self._init_error, silent)
         if cell_id and cell_id in self.doc_sources:
             # Document mode: make the prefix invariant true, then run this
             # cell against its prefix snapshot. The request's code is the
@@ -297,7 +341,8 @@ class NbDslKernel(Kernel):
             rep = self.worker.execute_at(code, cell_id, parent)
             if rep.status == "ok":
                 self.cell_state[cell_id] = CellState(
-                    source=code, snapshot=rep.snapshot, parent=parent)
+                    source=code, snapshot=rep.snapshot, parent=parent
+                )
             self._broadcast_status()
         else:
             rep = self.worker.execute(code, cell_id=cell_id or "cell")
@@ -306,23 +351,36 @@ class NbDslKernel(Kernel):
         if not silent and rep.status == "ok":
             self._publish_reply(rep)
         if rep.status == "ok":
-            return {"status": "ok", "execution_count": self.execution_count,
-                    "payload": [], "user_expressions": {}}
+            return {
+                "status": "ok",
+                "execution_count": self.execution_count,
+                "payload": [],
+                "user_expressions": {},
+            }
         if rep.status == "cancelled":
             return self._error_reply(
-                "Interrupted", "execution cancelled; state unchanged",
-                silent)
+                "Interrupted", "execution cancelled; state unchanged", silent
+            )
         return self._error_reply("LeanError", rep.first_error(), silent)
 
-    def _error_reply(self, ename: str, evalue: str,
-                     silent: bool) -> JupyterReply:
+    def _error_reply(self, ename: str, evalue: str, silent: bool) -> JupyterReply:
         if not silent:
-            self.send_response(self.iopub_socket, "error", {
-                "ename": ename, "evalue": evalue,
-                "traceback": [evalue],
-            })
-        return {"status": "error", "ename": ename, "evalue": evalue,
-                "traceback": [evalue], "execution_count": self.execution_count}
+            self.send_response(
+                self.iopub_socket,
+                "error",
+                {
+                    "ename": ename,
+                    "evalue": evalue,
+                    "traceback": [evalue],
+                },
+            )
+        return {
+            "status": "error",
+            "ename": ename,
+            "evalue": evalue,
+            "traceback": [evalue],
+            "execution_count": self.execution_count,
+        }
 
     async def do_is_complete(self, code: str) -> JupyterReply:
         # Deciding completeness requires Lean's parser — never guessed in
@@ -344,64 +402,111 @@ class NbDslKernel(Kernel):
 
     async def do_complete(self, code: str, cursor_pos: int) -> JupyterReply:
         # cursor_pos is Unicode code points — the worker's convention too.
-        empty: JupyterReply = {"status": "ok", "matches": [],
-                               "cursor_start": cursor_pos,
-                               "cursor_end": cursor_pos, "metadata": {}}
+        empty: JupyterReply = {
+            "status": "ok",
+            "matches": [],
+            "cursor_start": cursor_pos,
+            "cursor_end": cursor_pos,
+            "metadata": {},
+        }
         try:
             # Query requests are a valid first interaction. Bootstrap the
             # same prelude and init-cell state as execute_request.
             self._ensure_worker()
             if self._init_error:
-                return {**empty, "status": "error",
-                        "ename": "InitCellError",
-                        "evalue": self._init_error,
-                        "traceback": [self._init_error]}
+                return {
+                    **empty,
+                    "status": "error",
+                    "ename": "InitCellError",
+                    "evalue": self._init_error,
+                    "traceback": [self._init_error],
+                }
             rep = self.worker.complete(code, cursor_pos)
         except (WireProtocolError, WorkerDied, TimeoutError) as e:
             # Fail loudly: a dead worker must not masquerade as "no matches".
-            return {**empty, "status": "error", "ename": type(e).__name__,
-                    "evalue": str(e), "traceback": [str(e)]}
+            return {
+                **empty,
+                "status": "error",
+                "ename": type(e).__name__,
+                "evalue": str(e),
+                "traceback": [str(e)],
+            }
         if not isinstance(rep, CompleteOk):
-            return {**empty, "status": "error", "ename": "WorkerError",
-                    "evalue": rep.message, "traceback": []}
-        return {"status": "ok", "matches": rep.matches,
-                "cursor_start": rep.cursor_start,
-                "cursor_end": rep.cursor_end,
-                "metadata": {}}
+            return {
+                **empty,
+                "status": "error",
+                "ename": "WorkerError",
+                "evalue": rep.message,
+                "traceback": [],
+            }
+        return {
+            "status": "ok",
+            "matches": rep.matches,
+            "cursor_start": rep.cursor_start,
+            "cursor_end": rep.cursor_end,
+            "metadata": {},
+        }
 
-    async def do_inspect(self, code: str, cursor_pos: int,
-                         detail_level: int = 0,
-                         omit_sections: tuple[object, ...] = ()) -> JupyterReply:
-        missing: JupyterReply = {"status": "ok", "found": False,
-                                 "data": {}, "metadata": {}}
+    async def do_inspect(
+        self,
+        code: str,
+        cursor_pos: int,
+        detail_level: int = 0,
+        omit_sections: tuple[object, ...] = (),
+    ) -> JupyterReply:
+        missing: JupyterReply = {
+            "status": "ok",
+            "found": False,
+            "data": {},
+            "metadata": {},
+        }
         try:
             # Inspection, like completion, may bootstrap a fresh kernel.
             self._ensure_worker()
             if self._init_error:
-                return {"status": "error", "ename": "InitCellError",
-                        "evalue": self._init_error,
-                        "traceback": [self._init_error]}
+                return {
+                    "status": "error",
+                    "ename": "InitCellError",
+                    "evalue": self._init_error,
+                    "traceback": [self._init_error],
+                }
             rep = self.worker.inspect(code, cursor_pos)
         except (WireProtocolError, WorkerDied, TimeoutError) as e:
             # Fail loudly: a dead worker must not masquerade as "not found".
-            return {**missing, "status": "error", "ename": type(e).__name__,
-                    "evalue": str(e), "traceback": [str(e)]}
+            return {
+                **missing,
+                "status": "error",
+                "ename": type(e).__name__,
+                "evalue": str(e),
+                "traceback": [str(e)],
+            }
         if not isinstance(rep, InspectOk):
-            return {**missing, "status": "error", "ename": "WorkerError",
-                    "evalue": rep.message, "traceback": []}
+            return {
+                **missing,
+                "status": "error",
+                "ename": "WorkerError",
+                "evalue": rep.message,
+                "traceback": [],
+            }
         if not rep.found:
             return missing
         if rep.hover:
             # Server-grade hover (markdown; covers locals and full terms).
-            return {"status": "ok", "found": True,
-                    "data": {"text/plain": rep.hover,
-                             "text/markdown": rep.hover},
-                    "metadata": {}}
+            return {
+                "status": "ok",
+                "found": True,
+                "data": {"text/plain": rep.hover, "text/markdown": rep.hover},
+                "metadata": {},
+            }
         text = f"{rep.name} : {rep.type_}"
         if rep.doc:
             text += f"\n\n{rep.doc}"
-        return {"status": "ok", "found": True,
-                "data": {"text/plain": text}, "metadata": {}}
+        return {
+            "status": "ok",
+            "found": True,
+            "data": {"text/plain": text},
+            "metadata": {},
+        }
 
     async def do_shutdown(self, restart: bool) -> JupyterReply:
         if self._started:

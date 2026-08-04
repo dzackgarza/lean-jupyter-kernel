@@ -1,9 +1,14 @@
 # jupyterlab_nbdsl
 
-JupyterLab 4 federated extension, three DSL-agnostic plugins:
+JupyterLab 4 federated extension, four plugins:
 
 - `jupyterlab_nbdsl:language` — CodeMirror 6 highlighting for
-  `text/x-lean4`; extra DSL keywords via the `dslKeywords` setting.
+  `text/x-lean4` (generic nbdsl surface); extra DSL keywords via the
+  `dslKeywords` setting.
+- `jupyterlab_nbdsl:casdsl-language` — CodeMirror 6 highlighting for
+  `text/x-casdsl`, the lean-cas-dsl surface grammar (its own reserved words,
+  domains, relations and operators — not Lean 4; the word lists mirror
+  `CasDsl/Syntax.lean`).
 - `jupyterlab_nbdsl:document` — streams notebook cell order/sources to the
   kernel over the `nbdsl_document` comm (document-order semantics) and
   applies the kernel's fresh/stale broadcast as the `nbdsl-stale` cell
