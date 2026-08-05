@@ -12,6 +12,11 @@
 
 set dotenv-load := true
 
+# Interpreter for the recipes needing the kernel package installed. CI
+# installs into the job python; locally: `just python=.venv/bin/python …`.
+python := "python3"
+export LEAN_NUM_THREADS := "1"
+
 # No ai_review_ci_* contract stanza: this is a polyglot monorepo (Lean +
 # Python + TS) and doctor's profiles demand exclusive whole-repo delegation
 # (declaring "python" would be a false contract). The Python slice still runs
@@ -26,17 +31,12 @@ cache:
     @cd dsls/nbdsl && lake exe cache get
 
 # Build the core worker package and the reference DSL plugin.
-build: build-inner
-
-build-inner:
+build:
     @cd worker && lake build nbdsl_worker
     @cd dsls/nbdsl && lake build NbDsl
 
 # Run the full repository QC gate
-test: test-inner
-
-test-inner:
-    @just build-inner
+test: build
     @python3 scripts/release_projection.py check
     @just -f ~/ai-review-ci/justfiles/lean.just -d worker lean-no-sorry
     @just -f ~/ai-review-ci/justfiles/lean.just -d dsls/nbdsl lean-no-sorry
@@ -53,27 +53,21 @@ test-inner:
            nbdsl_kernel/tests/test_identity.py \
            nbdsl_kernel/tests/test_restart.py \
            nbdsl_kernel/tests/test_inspect.py \
-           nbdsl_kernel/tests/test_roundtrip_cleanup.py'
+           nbdsl_kernel/tests/test_roundtrip_cleanup.py && \
+         python -m pytest conformance/test_semantic.py -k nbdsl'
 
-# Interpreter for the recipes needing the kernel package installed. CI
-# installs into the job python; locally: `just python=.venv/bin/python …`.
-python := "python3"
-export LEAN_NUM_THREADS := "1"
-
-# jupyterlab_nbdsl — the extension's own domain test suite (tsc compile of the
-# two syntax highlighters plus node tests for them and the notebook view
-# models). CI runs the same script (ci.yml: `jlpm test`); yarn is jlpm's
-# underlying runner and reads the same yarn.lock.
+# Semantic plugin conformance (#3): Journeys 2–5 against the in-repo NbDsl
+# case. The `test` gate runs the same pytest target inside its hermetic uv
+# env above; this recipe is the entry for CI's "NbDsl semantic journeys"
+# step and for manual runs, where {{python}} already has the kernel package.
 [private]
-_extension-test:
-    @cd jupyterlab_nbdsl && yarn test
-
-# Semantic plugin conformance (#3): Journeys 2–5 against the in-repo NbDsl case.
-conformance:
+_conformance:
     @{{python}} -m pytest conformance/test_semantic.py -k nbdsl
 
-# …and against lean-cas-dsl. Point CONFORMANCE_CAS_DSL at a clean checkout, or
-# use the sibling ../lean-cas-dsl fallback. Skips if neither is present.
+# The same journeys against lean-cas-dsl: point CONFORMANCE_CAS_DSL at a
+# clean checkout, or the sibling ../lean-cas-dsl is used; skips if neither
+# is present. Not part of any gate — it needs the external repo.
+# Run the semantic journeys against a lean-cas-dsl checkout (skips if absent)
 conformance-external:
     @{{python}} -m pytest conformance/test_semantic.py -k casdsl
 
