@@ -104,9 +104,11 @@ jobs:
           pytest nbdsl_kernel/tests/test_worker_resolve.py \
               nbdsl_kernel/tests/test_inspect.py
 
+      - name: install just
+        uses: extractions/setup-just@v3
       - name: NbDsl semantic journeys
         run: |
-          pytest conformance/test_semantic.py -k nbdsl
+          just _conformance
 
   compat:
     name: compatibility + external consumer
