@@ -1,0 +1,93 @@
+{
+  "name": "jupyterlab_nbdsl",
+  "version": "1.1.0",
+  "description": "CodeMirror 6 syntax highlighting for Lean 4 (text/x-lean4) and CasDsl (text/x-casdsl) notebook cells",
+  "license": "BSD-3-Clause",
+  "keywords": [
+    "jupyter",
+    "jupyterlab",
+    "jupyterlab-extension",
+    "lean4"
+  ],
+  "files": [
+    "lib/**/*.{js,js.map,d.ts}",
+    "style/**/*",
+    "schema/*.json"
+  ],
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "scripts": {
+    "build": "jlpm build:lib && jlpm build:labextension:dev",
+    "build:prod": "jlpm build:lib && jlpm build:labextension",
+    "build:lib": "tsc --sourceMap",
+    "build:labextension": "jupyter labextension build .",
+    "build:labextension:dev": "jupyter labextension build --development True .",
+    "clean": "rm -rf lib tsconfig.tsbuildinfo .test-build jupyterlab_nbdsl/labextension",
+    "watch": "run-p watch:src watch:labextension",
+    "watch:src": "tsc -w --sourceMap",
+    "watch:labextension": "jupyter labextension watch .",
+    "test": "tsc src/lean4.ts src/casdsl.ts src/documentMessage.ts src/staleStatus.ts src/pathData.ts --module commonjs --moduleResolution node --target ES2018 --esModuleInterop --skipLibCheck --outDir .test-build && node test/parser.test.cjs && node test/casdsl.test.cjs && node test/document.test.cjs && node test/stale.test.cjs && node test/path.test.cjs",
+    "install:extension": "jlpm build"
+  },
+  "dependencies": {
+    "@codemirror/language": "^6.0.0",
+    "@jupyterlab/application": "^4.6.2",
+    "@jupyterlab/codemirror": "^4.6.2",
+    "@jupyterlab/notebook": "^4.6.2",
+    "@jupyterlab/rendermime": "^4.6.2",
+    "@jupyterlab/rendermime-interfaces": "^3.14.2",
+    "@jupyterlab/settingregistry": "^4.6.2",
+    "@lezer/highlight": "^1.0.0",
+    "@lumino/widgets": "^2.0.0"
+  },
+  "devDependencies": {
+    "@jupyter/builder": "^1.1.1",
+    "jsdom": "^30.0.1",
+    "typescript": "~5.5.4"
+  },
+  "sideEffects": [
+    "style/*.css"
+  ],
+  "jupyterlab": {
+    "extension": true,
+    "outputDir": "jupyterlab_nbdsl/labextension",
+    "sharedPackages": {
+      "@codemirror/language": {
+        "bundled": false,
+        "singleton": true
+      },
+      "@codemirror/state": {
+        "bundled": false,
+        "singleton": true
+      },
+      "@codemirror/view": {
+        "bundled": false,
+        "singleton": true
+      },
+      "@lezer/common": {
+        "bundled": false,
+        "singleton": true
+      },
+      "@lezer/highlight": {
+        "bundled": false,
+        "singleton": true
+      }
+    },
+    "schemaDir": "schema"
+  },
+  "style": "style/index.css",
+  "styleModule": "style/index.js",
+  "author": {
+    "name": "Zack Garza",
+    "email": "dzackgarza@gmail.com"
+  },
+  "homepage": "https://github.com/dzackgarza/lean-jupyter-kernel",
+  "bugs": {
+    "url": "https://github.com/dzackgarza/lean-jupyter-kernel/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dzackgarza/lean-jupyter-kernel.git",
+    "directory": "jupyterlab_nbdsl"
+  }
+}
