@@ -192,3 +192,6 @@ jobs:
           /tmp/labclean/bin/pip install jupyterlab dist/jupyterlab_nbdsl-*.whl
           /tmp/labclean/bin/jupyter labextension list 2>&1 | tee /tmp/labext.txt
           grep -E "jupyterlab_nbdsl v.*(enabled|OK)" /tmp/labext.txt
+      - name: committed bundle is fresh — rebuild must produce no diff
+        working-directory: jupyterlab_nbdsl
+        run: "jlpm build:prod\ngit status --porcelain -- jupyterlab_nbdsl/labextension | tee /tmp/drift.txt\ntest ! -s /tmp/drift.txt\n"

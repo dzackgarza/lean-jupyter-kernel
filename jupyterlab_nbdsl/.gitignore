@@ -5,7 +5,9 @@ lib/
 .pnp.*
 tsconfig.tsbuildinfo
 jupyterlab-debug.log
-jupyterlab_nbdsl/labextension/
+# the built federated bundle is TRACKED: main is the distribution channel
+# consumers converge on (cas-dsl's sync-kernel copies it from the Lake
+# checkout); CI's freshness gate rebuilds and diffs it, so it cannot lag src/
 jupyterlab_nbdsl/_version.py
 dist/
 *.egg-info/

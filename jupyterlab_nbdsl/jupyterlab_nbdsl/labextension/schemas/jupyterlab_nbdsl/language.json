@@ -1,0 +1,33 @@
+{
+  "title": "nbdsl Language",
+  "description": "Syntax highlighting for text/x-lean4 notebook cells.",
+  "jupyter.lab.setting-icon-label": "nbdsl Language",
+  "type": "object",
+  "properties": {
+    "dslKeywords": {
+      "title": "DSL keywords",
+      "description": "Extra words highlighted as keywords, on top of the core Lean 4 keyword set. The default mirrors src/lean4.ts DEFAULT_DSL_KEYWORDS (the CasDsl surface plus legacy NbDsl `prefer`). Takes effect after a page reload.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [
+        "dx",
+        "Spec",
+        "lim_",
+        "map",
+        "to",
+        "is",
+        "and",
+        "O",
+        "dt",
+        "span_QQ",
+        "let",
+        "assert",
+        "in",
+        "prefer"
+      ]
+    }
+  },
+  "additionalProperties": false
+}
