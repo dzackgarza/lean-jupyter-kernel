@@ -304,15 +304,18 @@ def test_nbdsl_journeys() -> None:
         _output(session, committed)
         _cancel(session, committed)
         _recover(session, committed)
-        control = Session("nbdsl")
-        try:
-            _setup(control, ("open NbDsl NbDsl.Std",))
-            assert not observe(control)["present"]
-            _lean_queries(control, registered=False)
-        finally:
-            control.close()
     finally:
         session.close()
+    # The fresh-kernel isolation check boots AFTER the journey worker is
+    # gone: a full-prelude worker is multi-GB resident, and this suite may
+    # never hold two alive at once — one instance at a time, by design.
+    control = Session("nbdsl")
+    try:
+        _setup(control, ("open NbDsl NbDsl.Std",))
+        assert not observe(control)["present"]
+        _lean_queries(control, registered=False)
+    finally:
+        control.close()
 
 
 def test_casdsl_extension_boundaries() -> None:
@@ -339,11 +342,6 @@ def test_casdsl_extension_boundaries() -> None:
         assert reply["status"] == "error"
         assert session.run("assert confLeak = 37")[0]["status"] == "error"
         assert _read(*session.run("confN.factor()"), cas_cfg) == committed
-        control = Session("casdsl")
-        try:
-            assert control.run("confN.factor()")[0]["status"] == "error"
-        finally:
-            control.close()
         session.kill_worker()
         assert _read(*session.run("confN.factor()"), cas_cfg) == committed
         assert session.run("assert confN = 360")[0]["status"] == "ok"
@@ -351,3 +349,10 @@ def test_casdsl_extension_boundaries() -> None:
             "CasDsl.Std.poly", 15).get("matches", [])
     finally:
         session.close()
+    # Fresh-kernel isolation, booted after the journey worker is gone —
+    # same one-instance-at-a-time rule as the nbdsl journey above.
+    control = Session("casdsl")
+    try:
+        assert control.run("confN.factor()")[0]["status"] == "error"
+    finally:
+        control.close()
