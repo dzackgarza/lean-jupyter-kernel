@@ -170,7 +170,6 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: lts/*
-
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
@@ -194,4 +193,4 @@ jobs:
           grep -E "jupyterlab_nbdsl v.*(enabled|OK)" /tmp/labext.txt
       - name: committed bundle is fresh — rebuild must produce no diff
         working-directory: jupyterlab_nbdsl
-        run: "jlpm build:prod\ngit status --porcelain -- jupyterlab_nbdsl/labextension | tee /tmp/drift.txt\ntest ! -s /tmp/drift.txt\n"
+        run: "jlpm build:prod\n# remoteEntry.<hash>.js and the package.json line naming it embed\n# build-dir-derived module ids; every other byte must match exactly\ngit status --porcelain -- jupyterlab_nbdsl/labextension | awk '!/remoteEntry\\./ && !/labextension\\/package\\.json$/' | tee /tmp/drift.txt\ntest ! -s /tmp/drift.txt\ngit diff -I 'remoteEntry\\.[0-9a-f]+\\.js' --exit-code -- jupyterlab_nbdsl/labextension/package.json\n"
