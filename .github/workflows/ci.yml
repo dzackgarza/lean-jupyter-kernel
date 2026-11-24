@@ -34,6 +34,9 @@ jobs:
       - name: bounded core worker build
         run: bash -c 'cd worker && lake build nbdsl_worker'
 
+      - name: trivia-only cell regression (mathlib-free protocol)
+        run: python3 nbdsl_kernel/tests/roundtrip.py --core-only
+
       - name: boundary — the core must never import DSL modules
         run: |
           ! grep -rn '^import NbDsl' worker/ --include='*.lean'

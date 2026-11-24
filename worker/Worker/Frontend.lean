@@ -38,6 +38,21 @@ private def mkErrorMessage (ictx : Parser.InputContext) (stx : Syntax)
     severity := .error
     data }
 
+/-- Lean's module parser checks for EOF before consuming leading whitespace.
+A file's header parser normally consumes that trivia; cells have no header.
+Recognize trivia reaching EOF with Lean's own lexer, without skipping imports,
+doc comments, or malformed trivia and without changing ordinary command ranges. -/
+private def parseCellCommand (ictx : Parser.InputContext) (pmctx : Parser.ParserModuleContext)
+    (pstate : Parser.ModuleParserState) (messages : MessageLog)
+    : Syntax × Parser.ModuleParserState × MessageLog :=
+  let trivia := Parser.whitespace.run ictx pmctx (Parser.getTokenTable pmctx.env)
+    { cache := Parser.initCacheForInput ictx.inputString, pos := pstate.pos }
+  let pstate :=
+    if trivia.errorMsg.isNone && trivia.recoveredErrors.isEmpty && ictx.atEnd trivia.pos then
+      { pstate with pos := trivia.pos }
+    else pstate
+  Parser.parseCommand ictx pmctx pstate messages
+
 /--
 One parse-elaborate step per command until end of input. Mirrors
 `Lean.Elab.Frontend.processCommand` (parser context rebuilt from
@@ -53,7 +68,7 @@ private partial def loop (ictx : Parser.InputContext)
     { env := cmdState.env, options := scope.opts,
       currNamespace := scope.currNamespace, openDecls := scope.openDecls }
   let (cmd, ps, messages) :=
-    Parser.parseCommand ictx pmctx pstate cmdState.messages
+    parseCellCommand ictx pmctx pstate cmdState.messages
   let cmdState := { cmdState with messages := messages }
   if Parser.isTerminalCommand cmd then
     if cmd.isOfKind ``Parser.Command.eoi then
@@ -149,7 +164,7 @@ where
       { env := cmdState.env, options := scope.opts,
         currNamespace := scope.currNamespace, openDecls := scope.openDecls }
     let (cmd, ps, messages) :=
-      Parser.parseCommand ictx pmctx pstate cmdState.messages
+      parseCellCommand ictx pmctx pstate cmdState.messages
     let errs := messages.toList.filter (·.severity matches .error)
     if errs.isEmpty then
       if Parser.isTerminalCommand cmd then "complete"
