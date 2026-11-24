@@ -13,6 +13,7 @@ import signal
 import subprocess
 import time
 from contextlib import contextmanager
+from functools import lru_cache
 from pathlib import Path
 from typing import Iterator
 
@@ -26,16 +27,32 @@ FEATURES = {
 }
 
 
+@lru_cache(maxsize=1)
+def project_environment() -> dict[str, str]:
+    """Capture the fixed build environment, not any worker/session state.
+
+    The raw-wire deadline measures the actual worker, not repeated Lake
+    workspace discovery. Each test starts an independently negotiated
+    process and retains its original deadline.
+    """
+    raw = subprocess.check_output(["lake", "env", "env", "-0"], cwd=ROOT)
+    return dict(
+        os.fsdecode(item).split("=", 1)
+        for item in raw.split(bytes([0])) if b"=" in item
+    )
+
+
 class Wire:
     def __init__(self) -> None:
+        env = project_environment()
         req_r, self.req = os.pipe()
         self.rep, rep_w = os.pipe()
         try:
             self.proc = subprocess.Popen(
-                ["lake", "env", str(ROOT / ".lake/build/bin/nbdsl_worker"),
+                [str(ROOT / ".lake/build/bin/nbdsl_worker"),
                  "--req-fd", str(req_r), "--rep-fd", str(rep_w),
                  "--prelude-module", "Worker.Cell"],
-                cwd=ROOT, pass_fds=(req_r, rep_w),
+                cwd=ROOT, env=env, pass_fds=(req_r, rep_w),
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 start_new_session=True,
             )
