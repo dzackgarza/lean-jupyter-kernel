@@ -51,6 +51,8 @@ test: build
         'python -m nbdsl_kernel.install --project "$PWD/dsls/nbdsl" && \
          python -m pytest nbdsl_kernel/tests/test_worker_resolve.py \
            nbdsl_kernel/tests/test_identity.py \
+           nbdsl_kernel/tests/test_native_v2.py \
+           nbdsl_kernel/tests/test_request_controls.py \
            nbdsl_kernel/tests/test_restart.py \
            nbdsl_kernel/tests/test_inspect.py \
            nbdsl_kernel/tests/test_roundtrip_cleanup.py && \

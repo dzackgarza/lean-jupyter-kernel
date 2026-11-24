@@ -162,6 +162,16 @@ private def finishPending (gate : Gate) (rid : String) (active : Option Cell.Act
       if ← handle.draining then draining := draining.insert rid handle
     set { state with pending := state.pending.erase rid, draining }
 
+/-- End-of-stream closes admission and cancels queued/active evaluation before the main
+loop waits for it. Resource drainers remain owned by the actual lifecycle handle. -/
+private def cancelPending (gate : Gate) : BaseIO Unit := do
+  let active ← gate.atomically do
+    let state ← get
+    for (_, pending) in state.pending.toArray do
+      pending.token.set
+    return state.pending.toArray.filterMap (fun (_, pending) => pending.active)
+  for handle in active do handle.cancel
+
 private def outputJson (batch : String) (index : Nat) (output : Output) : Json :=
   obj [("result_id", toJson s!"{batch}:{index}"), ("mime", obj output.data),
     ("metadata", output.metadata), ("display_id", output.displayId?.elim .null .str)]
@@ -171,19 +181,21 @@ private def validOutput (output : Output) : Bool :=
   | some (Json.str text) => !text.isEmpty
   | _ => false
 
+private def executePayload (req : Json) : Option (String × String × Nat) := do
+  let names := headerFields ++ #["cell_id", "parent_snapshot", "session_policy", "code"]
+  if !exactFields req names || (req.getObjValAs? String "session_policy").toOption !=
+      some sessionPolicy then none else do
+    let code ← (req.getObjValAs? String "code").toOption
+    let cellId ← (req.getObjValAs? String "cell_id").toOption
+    let parent ← serial? req "parent_snapshot"
+    some (code, cellId, parent)
+
 private def execute (sessionRef : IO.Ref Session) (gate : Gate)
     (rid : String) (req : Json) : IO Json := do
   let session ← sessionRef.get
   let pending ← gate.atomically do return (← get).pending[rid]?
   let some pending := pending | return protocolError session.nonce (some rid) "missing_execute_claim"
-  let names := headerFields ++ #["cell_id", "parent_snapshot", "session_policy", "code"]
-  let some (code, cellId, parentId) := do
-      if !exactFields req names || (req.getObjValAs? String "session_policy").toOption !=
-          some sessionPolicy then none else do
-        let code ← (req.getObjValAs? String "code").toOption
-        let cellId ← (req.getObjValAs? String "cell_id").toOption
-        let parent ← serial? req "parent_snapshot"
-        some (code, cellId, parent)
+  let some (code, cellId, parentId) := executePayload req
     | do
       finishPending gate rid none
       return protocolError session.nonce (some rid) "invalid_execute"
@@ -230,6 +242,12 @@ private def execute (sessionRef : IO.Ref Session) (gate : Gate)
           match failure.stratum with
           | some stratum => response.setObjVal! "stratum" (toJson stratum)
           | none => response
+    let preparedState ← match active with
+      | none => pure result.cmdState
+      | some handle => do
+        let (_, candidate) ← Cell.run result.cmdState fileName (handle.prepare outputs)
+          (some pending.token)
+        pure candidate
     -- The only commit/cancel linearization point. All source evaluation and
     -- output preparation above are outside the gate. The plugin's commit
     -- callback performs only the native transaction publication, never dispatch.
@@ -238,9 +256,9 @@ private def execute (sessionRef : IO.Ref Session) (gate : Gate)
         return failedExecution session rid parentId "cancelled"
       let id := session.snapshots.size
       let (receipt, cmdState) ← match active with
-        | some handle => Cell.run result.cmdState fileName (handle.commit outputs)
+        | some handle => Cell.run preparedState fileName handle.commit
         | none => pure (⟨s!"{session.nonce}:transaction:{id}",
-            s!"{session.nonce}:output:{id}", #[]⟩, result.cmdState)
+            s!"{session.nonce}:output:{id}", #[]⟩, preparedState)
       let snapshot : Snapshot := {
         id, parent? := some parentId, cmdState, cellId, requestId := some rid,
         receipt := some receipt }
@@ -330,7 +348,8 @@ private def query (session : Session) (rid op : String) (req : Json) : IO Json :
   match Query.inspect snapshot.cmdState code cursor with
   | none => return reply session.nonce rid [("status", "ok"), ("found", toJson false)]
   | some result => return reply session.nonce rid [("status", "ok"), ("found", toJson true),
-      ("name", toJson result.name), ("type", toJson result.type), ("doc", toJson result.doc?)]
+      ("name", toJson result.name), ("type", toJson result.type), ("doc", toJson result.doc?),
+      ("details", result.details)]
 
 private def commitStatus (sessionRef : IO.Ref Session) (gate : Gate)
     (rid : String) (req : Json) : IO Json := do
@@ -348,7 +367,9 @@ private def commitStatus (sessionRef : IO.Ref Session) (gate : Gate)
     if let some (id, receipt) := visibleReceipt session snapshot target then
       return reply session.nonce rid [("status", "committed"),
         ("snapshot", toJson (toString id)), ("commit", receiptJson session.profile receipt)]
-    if (← get).pending.contains target then return reply session.nonce rid [("status", "pending")]
+    if let some pending := (← get).pending[target]? then
+      unless ← pending.token.isSet do
+        return reply session.nonce rid [("status", "pending")]
     return reply session.nonce rid [("status", "unavailable"), ("reason", "receipt_unavailable")]
 
 private def handle (sessionRef : IO.Ref Session) (gate : Gate) (req : Json) : IO Json := do
@@ -381,10 +402,11 @@ private def admit (gate : Gate) (nonce : String) (req : Json) : BaseIO Admission
     if state.used.contains rid then
       return .rejected (protocolError nonce (some rid) "duplicate_request_id")
     -- Claim the transport ID before validating operation-specific fields.
-    let mut pending := state.pending
-    if (req.getObjValAs? String "op").toOption == some "execute" then
-      pending := pending.insert rid { token := ← IO.CancelToken.new }
-    set { state with used := state.used.insert rid, pending }
+    -- A malformed payload consumes the ID but creates no pending work.
+    let mut draining := state.draining
+    for (id, active) in state.draining.toArray do
+      unless ← active.draining do draining := draining.erase id
+    set { state with used := state.used.insert rid, draining }
     return .accepted rid
 
 private partial def readerLoop (ch : Channel) (queue : Std.CloseableChannel.Sync Json)
@@ -394,8 +416,28 @@ private partial def readerLoop (ch : Channel) (queue : Std.CloseableChannel.Sync
   | .rejected diagnostic => writeFrame ch diagnostic
   | .accepted rid =>
     match req.getObjValAs? String "op" with
+    | .ok "execute" =>
+      match executePayload req with
+      | none => writeFrame ch (protocolError nonce (some rid) "invalid_execute")
+      | some (_, _, parentId) =>
+        let committed ← session.get
+        if committed.snapshots[parentId]?.isNone then
+          writeFrame ch (failedExecution committed rid parentId "error" (some "snapshot_unavailable"))
+        else
+          gate.atomically do
+            let token ← IO.CancelToken.new
+            modify fun state => { state with pending := state.pending.insert rid { token } }
+          if let .error _ ← (queue.send req).toBaseIO then
+            finishPending gate rid none
+            return ()
     | .ok "cancel" => writeFrame ch (← cancel session gate rid req)
     | .ok "commit_status" => writeFrame ch (← commitStatus session gate rid req)
+    | .ok "shutdown" =>
+      if exactFields req headerFields then
+        writeFrame ch (reply nonce rid [("status", "ok")])
+        return ()
+      else
+        writeFrame ch (protocolError nonce (some rid) "invalid_shutdown")
     | .ok op =>
       if #["inspect", "complete", "is_complete"].contains op then
         writeFrame ch (← query (← session.get) rid op req)
@@ -407,7 +449,9 @@ private partial def readerLoop (ch : Channel) (queue : Std.CloseableChannel.Sync
 private def readerTask (ch : Channel) (queue : Std.CloseableChannel.Sync Json)
     (session : IO.Ref Session) (gate : Gate) (nonce : String) : IO Unit := do
   try readerLoop ch queue session gate nonce
-  finally discard (queue.close).toBaseIO
+  finally
+    try cancelPending gate
+    finally discard (queue.close).toBaseIO
 
 private partial def mainLoop (ch : Channel) (queue : Std.CloseableChannel.Sync Json)
     (session : IO.Ref Session) (gate : Gate) : IO Unit := do

@@ -29,7 +29,9 @@ TIMEOUT = 300.0  # first prelude import loads mathlib oleans; give it room
 # "deduplicate" this into an import.
 def write_frame(fd: int, obj: dict) -> None:
     payload = json.dumps(obj).encode()
-    os.write(fd, str(len(payload)).encode() + b"\n" + payload)
+    frame = memoryview(str(len(payload)).encode() + b"\n" + payload)
+    while frame:
+        frame = frame[os.write(fd, frame):]
 
 
 class FrameReader:
@@ -78,21 +80,38 @@ class Worker:
         self.req_fd = req_w
         self.replies = FrameReader(rep_r)
         self._rid = 0
+        self.snapshot = "0"
+        self.nonce = ""
+
+    def header(self, rid: str, op: str) -> dict:
+        return {"op": op, "protocol": 2, "worker_nonce": self.nonce, "request_id": rid}
 
     def request(self, op: str, **fields: object) -> dict:
         self._rid += 1
         rid = f"r{self._rid}"
-        write_frame(self.req_fd, {"op": op, "request_id": rid, **fields})
+        if op in ("inspect", "complete", "is_complete"):
+            fields = {"snapshot": self.snapshot,
+                      "mode": "syntax" if op == "is_complete" else "environment", **fields}
+            if op == "inspect":
+                fields.setdefault("detail_level", 0)
+        write_frame(self.req_fd, {**self.header(rid, op), **fields})
         rep = self.replies.read_frame()
-        assert rep.get("request_id") == rid, rep
+        assert rep.get("request_id", rep.get("offending_request_id")) == rid, rep
+        assert rep["worker_nonce"] == self.nonce, rep
         return rep
 
-    def execute(self, code: str, parent: int | None = None) -> dict:
-        fields: dict[str, object] = {"code": code,
-                                     "cell_id": f"cell{self._rid}"}
-        if parent is not None:
-            fields["parent_snapshot"] = parent
-        return self.request("execute", **fields)
+    def execute(self, code: str, parent: str | None = None) -> dict:
+        actual = self.snapshot if parent is None else parent
+        rep = self.request("execute", code=code, cell_id=f"cell{self._rid}",
+                           parent_snapshot=actual, session_policy="cas_no_replay")
+        assert rep["parent_snapshot"] == actual, rep
+        if rep["status"] == "ok":
+            assert rep["commit"]["profile_sha256"] == self.profile_sha256, rep
+            assert rep["snapshot"] != actual, rep
+            self.snapshot = rep["snapshot"]
+        else:
+            assert rep["snapshot"] == actual and rep["outputs"] == [] and "commit" not in rep, rep
+        return rep
 
     def shutdown(self) -> tuple[int, bytes, bytes]:
         os.close(self.req_fd)
@@ -136,21 +155,28 @@ def main() -> None:
 
 def _run(w: Worker) -> None:
     ready = w.replies.read_frame()
-    assert ready["op"] == "ready" and ready["protocol"] == 1, ready
+    assert ready["op"] == "ready" and ready["protocol"] == 2, ready
     assert ready["lean"].startswith("4.32"), ready
+    w.nonce = ready["worker_nonce"]
+    w.profile_sha256 = ready["realization_profile"]["sha256"]
+    assert ready["snapshot"] == "0", ready
+    hello = {"op": "hello", "protocol": 2, "worker_nonce": w.nonce,
+             "session_policy": "cas_no_replay"}
+    write_frame(w.req_fd, hello)
+    assert w.replies.read_frame() == {**hello, "status": "ok"}
     print(f"ok: ready handshake (lean {ready['lean']})")
 
     rep = w.request("describe")
-    assert rep["status"] == "ok" and rep["snapshot"] == 0, rep
+    assert rep["status"] == "ok" and rep["snapshot"] == "0", rep
     print("ok: describe round-trip, request_id echoed")
 
     rep = w.request("flux-capacitate")
-    assert rep["status"] == "unsupported", rep
-    print("ok: unknown op reported unsupported (forward-compat seam)")
+    assert rep["op"] == "protocol_error" and rep["reason"] == "unknown_operation", rep
+    print("ok: unknown op rejected without evaluation")
 
     # --- elaboration basics -------------------------------------------------
     rep = w.execute("#eval 1+1")
-    assert rep["status"] == "ok" and rep["snapshot"] == 1, rep
+    assert rep["status"] == "ok" and rep["snapshot"] == "1", rep
     assert any("2" in d["message"] for d in infos(rep)), rep
     print("ok: #eval cell commits a snapshot and reports its info message")
 
@@ -243,14 +269,14 @@ def _run(w: Worker) -> None:
     rep = w.execute("#home G")
     assert rep["status"] == "ok", rep
     assert any("Groups" in d["message"] for d in infos(rep)), rep
-    # Dot completion through the DSL's transparent Object def: whnf reduces
-    # Object Groups to GrpCat, so G. offers GrpCat members.
+    # The declaration prepares its native type-head members at execution,
+    # so G. offers GrpCat members without query-time whnf.
     rep = w.request("complete", code="G.o", cursor=3)
     assert rep["status"] == "ok" and "G.of" in rep["matches"], rep
-    print("ok: dot completion unfolds Object to the bundled category")
+    print("ok: dot completion reads the committed bundled-category members")
     rep = w.execute("#via G ∈ Sets")
     assert rep["status"] == "ok", rep
-    bundles = [o["data"] for o in rep["outputs"]]
+    bundles = [o["mime"] for o in rep["outputs"]]
     path = next((b for b in bundles if "application/vnd.nbdsl.path+json" in b), None)
     assert path is not None and "text/plain" in path, rep
     print("ok: DSL sequence (prefer / let / #home / #via) with structured output")
@@ -279,17 +305,17 @@ def _run(w: Worker) -> None:
     assert rep["status"] == "error", rep
     print("ok: registry mutation in a failed cell rolled back with it")
 
-    # --- is_complete (parse-only, Lean's parser decides) --------------------
+    # --- is_complete (fixed inert lexical classification) --------------------
     for code, expected in [
         ("def foo : Nat := 4", "complete"),
         ("def foo : Nat :=", "incomplete"),
-        # `by` + EOF parses (empty tactic block); failing it is elaboration's job
-        ("example : True := by", "complete"),
-        ("def ( := )", "invalid"),
+        # Arbitrary parser extensions are not executed by completeness.
+        ("example : True := by", "unknown"),
+        ("def ( := )", "unknown"),
     ]:
         rep = w.request("is_complete", code=code)
         assert rep["status"] == "ok" and rep["result"] == expected, (code, rep)
-    print("ok: is_complete classifies via Lean's parser")
+    print("ok: syntax classification does not run the environment parser")
 
     # --- complete / inspect (env + open-namespace aware) --------------------
     code = "prefer groupsToS"
@@ -313,13 +339,13 @@ def _run(w: Worker) -> None:
     assert rep["status"] == "ok" and "x.succ" in rep["matches"], rep
     print("ok: dot completion via the head of the resolved type")
 
-    # InfoTree hover: a LOCAL variable (invisible to the environment scan).
+    # The unexecuted local is not present in the committed environment.
     code = "def flocal (nlocal : Nat) : Nat := nlocal + 1"
     rep = w.request("inspect", code=code, cursor=code.rindex("nlocal"))
-    assert rep["status"] == "ok" and rep["found"], rep
-    hover = rep.get("hover", "")
-    assert "nlocal" in hover and ("ℕ" in hover or "Nat" in hover), rep
-    print("ok: inspect hovers locals via InfoTrees")
+    assert rep["status"] == "ok" and not rep["found"], rep
+    rep = w.request("inspect", code="flocal", cursor=0)
+    assert rep["status"] == "ok" and not rep["found"], rep
+    print("ok: inspect does not elaborate a candidate buffer")
 
     # --- cooperative cancel -------------------------------------------------
     w._rid += 1
@@ -330,19 +356,25 @@ def _run(w: Worker) -> None:
     slow = ("set_option maxHeartbeats 0 in\nexample : True := by\n"
             + "".join(f"  have h{i} : Nat := {i}\n" for i in range(5000))
             + "  trivial")
-    write_frame(w.req_fd, {
-        "op": "execute", "request_id": rid, "cell_id": "slow", "code": slow})
-    time.sleep(0.5)  # let elaboration get going
-    write_frame(w.req_fd, {"op": "cancel", "request_id": rid})
+    write_frame(w.req_fd, {**w.header(rid, "execute"), "cell_id": "slow",
+        "parent_snapshot": w.snapshot, "session_policy": "cas_no_replay", "code": slow})
+    time.sleep(0.5)
+    w._rid += 1
+    cancel_id = f"r{w._rid}"
+    write_frame(w.req_fd, {**w.header(cancel_id, "cancel"),
+        "target_request_id": rid, "mode": "cooperative"})
     t0 = time.monotonic()
-    rep = w.replies.read_frame()
+    replies = {rep["request_id"]: rep for rep in
+               (w.replies.read_frame(), w.replies.read_frame())}
     took = time.monotonic() - t0
-    assert rep["request_id"] == rid, rep
-    assert rep["status"] == "cancelled", rep
+    rep = replies[rid]
+    assert rep["status"] == "cancelled", replies
+    assert rep["snapshot"] == w.snapshot and "commit" not in rep and rep["outputs"] == [], rep
+    assert replies[cancel_id]["status"] == "cancelled", replies
     assert took < 5, took
     before = w.request("describe")["snapshot"]
-    rep = w.execute("#eval x + 1")  # worker fully alive, state unchanged
-    assert rep["status"] == "ok" and rep["snapshot"] == before + 1, rep
+    rep = w.execute("#eval x + 1")
+    assert rep["status"] == "ok" and rep["snapshot"] == str(int(before) + 1), rep
     print(f"ok: cooperative cancel ({took:.2f}s), state intact, worker alive")
 
     # --- shutdown -----------------------------------------------------------

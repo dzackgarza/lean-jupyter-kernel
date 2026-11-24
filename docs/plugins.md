@@ -23,27 +23,24 @@ DSL is flows through what importing its prelude does to the environment.
 
 ## The plugin laws
 
-The invariants the core silently relies on:
+The core retains committed native environments, not replayable source:
 
-- **All semantic state lives in the `Environment`** (persistent env
-  extensions), never in module-level `IO.Ref`s. This is the load-bearing
-  law: snapshots, cell atomicity/rollback, restart replay, the olean
-  session cache, and staleness all derive from it — and all silently break
-  without it. (The output sink is exempt: it is rendering, request-local,
-  and core-owned.)
-- **Commands are deterministically replayable** — replaying the committed
-  cell sources must reconstruct the same state (the restart invariant).
-- Long computations should pass elaboration checkpoints so cooperative
-  cancellation works; pure interpreted loops fall back to kill+replay.
-- Never touch stdout framing or the control fds.
+- Committed mathematical state and observations belong to the environment.
+  Pending transport identities, actual live owners and consumed rights
+  belong to the resource supervisor and must not be rolled back.
+- Plugins with external resources register the optional lifecycle in
+  `Worker.Cell`. Prepare complete output and inert query descriptors
+  during authorized execution; publish them with the native transaction
+  only at the final commit gate. Abort must discard staged data.
+- Long computations must support cooperative cancellation or report their
+  actual unavailability. No automatic force, retry, source replay or
+  cache restoration.
+- Never touch control framing or invoke a provider, proof search or
+  dynamic formatter from a query.
 
-The payoff: obey the state law and the core provides cell atomicity,
-document-order semantics, sorry tracking, staleness marking, session
-caching, and crash recovery — with zero plugin code. Completion and
-inspection resolve Lean-environment names (declarations, opens, namespaces).
-Extension-backed registrations are visible through ordinary execution and
-rich output; a dedicated plugin query contract for completion/inspection is
-future work.
+The core supplies explicit-parent execution, atomic publication, diagnostics,
+and document staleness. Inspect/complete only consult committed descriptors
+and native names; a query cannot run a predecessor.
 
 ## Reducibility
 
@@ -74,7 +71,7 @@ Kernelspec knobs (all in `nbdsl_kernel/nbdsl_kernel/install.py`):
 | `--prelude-module` | the plugin manifest (env `NBDSL_PRELUDE`) |
 | `--name` / `--display-name` | kernelspec identity |
 | `--init-cell` | commands run once after worker start, becoming the session's base snapshot — the only way to set `set_option` defaults (they don't cross module import). Failure is loud, per execute. |
-| `--sandbox` | run the worker under bubblewrap: project + toolchain read-only, private `/tmp`, no network, dies with the kernel (env `NBDSL_SANDBOX=1`; disables the session cache) |
+| `--sandbox` | run the worker under bubblewrap: project + toolchain read-only, private `/tmp`, no network, dies with the kernel (env `NBDSL_SANDBOX=1`) |
 
 The worker binary is resolved from the project's own build tree, a git
 dependency under `.lake/packages/`, or a path dependency at the directory

@@ -61,23 +61,16 @@ Mathlib-free; builds in seconds. Modules:
     `status:"cancelled"` with no commit. The reader closes its queue in a
     `finally` — a reader death without that closes left workers orphaned
     (observed; see git history).
-  - *Session cache*: `save_session` writes the committed environment with
-    `Lean.writeModule` — the compiler's own olean serializer, so constants
-    **and persistent env-extension entries** (DSL registries) round-trip —
-    plus the scope stack as JSON. `load_session` re-imports it as a module.
-    Honest refusals fall back to source replay: open `namespace`/`section`
-    scopes, `variable` declarations, syntax-valued options. Gotcha encoded
-    in `SessionCache.loadUnsafe`: `withImporting` resets the
-    initializer-execution flag on *every* import, so it must be re-enabled
-    before each `importModules (loadExts := true)`.
-- **`Worker/Query.lean`** — identifier services against the current
-  snapshot: type-aware dot completion (resolve the head, `whnf` its type,
-  offer members of the head constant), open-aware prefix completion over
-  the environment, and inspect resolution. Hover goes further: the
-  `inspect` op elaborates the cell as *pure analysis* (candidate state
-  discarded, output sink drained) and answers from the info trees via
-  `Info.fmtHover?` — server-grade hover including locals. Like the language
-  server, analysis executes elaboration, so `#eval` side effects run.
+  - *Resource identity*: nonce-scoped transport IDs and provider lifetime
+    controls are not part of rollbackable snapshots. Duplicate requests
+    cannot execute or settle a prior request.
+- **`Worker/Cell.lean`** — optional DSL lifecycle. A candidate owns a native
+  transaction, prepares inert observations and its complete output batch
+  outside the publication gate, then commits atomically with the worker's
+  snapshot. Cancellation aborts its staged payloads.
+- **`Worker/Query.lean`** — inert lookup of committed names, lexical scope,
+  type expressions, plain stored documentation and prepared members. No
+  candidate elaboration, dynamic printer or provider invocation.
 - **`Worker/Output.lean`** — the output sink, the single API a DSL may call
   (`Worker.emitOutput`): request-local MIME bundles the kernel republishes.
   Rendering, never semantics — nothing here enters the environment.
@@ -100,27 +93,16 @@ handler boundary).
 
 Two execution modes:
 
-- **REPL mode** (no frontend extension, e.g. `jupyter console`): parent =
-  the client's current snapshot; committed cells join a replay ledger.
-- **Document mode** (JupyterLab with `jupyterlab_nbdsl`): the frontend
-  streams `{type:"document", cells:[{id,source}]}` over the
-  `nbdsl_document` comm on load, cell-list/text changes (`sharedModel`
-  subscription — list-change signals miss typing), and before each
-  scheduled execution. Executing cell *i* first re-establishes the
-  invariant *"cell i's snapshot equals elaborating the visible prefix
-  through i"*: unchanged prefix cells reuse cached snapshots, edited or
-  moved ones re-run (visible `↻` notes), an upstream failure aborts with
-  `UpstreamError`. After each execution/document change the kernel
-  broadcasts `{type:"status", fresh, stale}` back on the comm; the
-  extension marks stale cells.
+- **REPL mode**: explicit execution against the current committed snapshot.
+- **Document mode**: the document comm tracks source and parent identities.
+  An absent or stale predecessor prevents execution; the user must execute
+  it explicitly. The adapter broadcasts fresh/stale status.
 
-Recovery matrix on worker death (normally interrupt escalation):
-
-| Mode | Recovery |
-| --- | --- |
-| REPL, cache key matches ledger | `load_session` (olean restore) |
-| REPL, cache invalid/uncacheable | source replay of the ledger |
-| Document | fresh worker; prefix revalidation rebuilds on demand |
+Loss of the worker invalidates its session. There is no cache restoration
+or source replay. Cooperative cancellation preserves the parent; an
+unacknowledged cancellation is not permission to kill/restart the worker.
+Explicit force invalidates the actual affected resource generations.
+Queries do not start a worker.
 
 The kernelspec init cell (`install.py --init-cell` → `NBDSL_INIT`) runs
 once after worker start and becomes the session's base snapshot — the only

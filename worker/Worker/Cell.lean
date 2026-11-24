@@ -24,6 +24,8 @@ structure Observation where
   name : String
   type : String
   doc : Option String := none
+  details : Lean.Json := .null
+  members : Array String := #[]
 
 private initialize observations : EnvExtension (Array Observation) ←
   registerEnvExtension (pure #[])
@@ -54,7 +56,8 @@ def drainFailure : IO (Option Failure) :=
 /-- The callbacks retain only an active transaction. After settlement, the owning
 implementation must drop its staged payloads; its resource cleanup may still drain. -/
 structure Active where
-  commit : Array Worker.Output → CommandElabM Receipt
+  prepare : Array Worker.Output → CommandElabM Unit
+  commit : CommandElabM Receipt
   cancel : BaseIO Unit
   force : IO (Array String)
   draining : BaseIO Bool
@@ -77,10 +80,10 @@ def plugin? : IO (Option Plugin) := registered.get
 
 /-- Run a lifecycle command in the same native candidate Environment as the cell.
 It is not a user-source elaboration or a second evaluation of any expression. -/
-def run (state : Command.State) (fileName : String) (action : CommandElabM α) :
-    IO (α × Command.State) := do
+def run (state : Command.State) (fileName : String) (action : CommandElabM α)
+    (cancelTk? : Option IO.CancelToken := none) : IO (α × Command.State) := do
   let context : Command.Context := {
-    cmdPos := 0, fileName, fileMap := FileMap.ofString "", snap? := none, cancelTk? := none }
+    cmdPos := 0, fileName, fileMap := FileMap.ofString "", snap? := none, cancelTk? }
   match ← EIO.toIO' ((action context).run state) with
   | .ok result => return result
   | .error error => throw (IO.userError (← error.toMessageData.toString))

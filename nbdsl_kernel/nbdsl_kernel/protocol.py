@@ -12,7 +12,7 @@ models: they read raw JSON as an independent oracle for the protocol itself.
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
@@ -114,9 +114,9 @@ class ReadyFrame(_Frame):
 
 
 class ExecuteReply(_Frame):
-    status: Literal["ok", "error", "cancelled"]
-    snapshot: int
-    parent_snapshot: int
+    status: Literal["ok", "error", "cancelled", "unavailable"]
+    snapshot: int | None = None
+    parent_snapshot: int | None = None
     commit: CommitReceipt | None = None
     reason: str | None = None
     stratum: str | None = None
@@ -127,18 +127,25 @@ class ExecuteReply(_Frame):
 
     @field_validator("snapshot", "parent_snapshot", mode="before")
     @classmethod
-    def validate_serial(cls, value: object) -> int:
+    def validate_serial(cls, value: object) -> int | None:
+        if value is None:
+            return None
         return snapshot_serial(value)
 
     @model_validator(mode="after")
     def publication(self) -> ExecuteReply:
         if self.status == "ok":
-            if self.commit is None or self.snapshot == self.parent_snapshot:
+            if (self.commit is None or self.snapshot is None or self.parent_snapshot is None
+                    or self.snapshot == self.parent_snapshot):
                 raise ValueError("success requires a new committed snapshot and receipt")
             if len({out.result_id for out in self.outputs}) != len(self.outputs):
                 raise ValueError("duplicate committed result identity")
-        elif self.commit is not None or self.outputs or self.snapshot != self.parent_snapshot:
-            raise ValueError("failed/cancelled execution cannot publish a delta")
+        elif self.status in {"error", "cancelled"}:
+            if (self.parent_snapshot is None or self.snapshot != self.parent_snapshot
+                    or self.commit is not None or self.outputs):
+                raise ValueError("failed/cancelled execution cannot publish a delta")
+        elif not self.reason or self.commit is not None or self.outputs:
+            raise ValueError("unavailable execution requires its resource reason and no publication")
         return self
 
     def first_error(self, fallback: str = "execution failed") -> str:
@@ -155,6 +162,63 @@ class WorkerError(_Frame):
     reason: str | None = None
 
 
+class CancelReply(_Frame):
+    """A control acknowledgement; the transport ID identifies its exact target request."""
+
+    status: Literal["cancelled", "already_committed", "not_found", "forced", "unavailable"]
+    target_request_id: str | None = None
+    snapshot: int | None = None
+    commit: CommitReceipt | None = None
+    invalidated_owners: list[str] = Field(default_factory=list)
+    reason: str | None = None
+
+    @field_validator("snapshot", mode="before")
+    @classmethod
+    def validate_serial(cls, value: object) -> int | None:
+        return None if value is None else snapshot_serial(value)
+
+    @model_validator(mode="after")
+    def publication(self) -> Self:
+        if self.status == "already_committed":
+            if self.snapshot is None or self.commit is None:
+                raise ValueError("already_committed requires the actual snapshot and receipt")
+        elif self.commit is not None or self.snapshot is not None:
+            raise ValueError("an uncommitted cancellation cannot publish a receipt or snapshot")
+        if self.status != "forced" and self.invalidated_owners:
+            raise ValueError("only explicit force may invalidate owners")
+        if any(not owner for owner in self.invalidated_owners):
+            raise ValueError("invalidated owners require their actual identities")
+        if self.status == "unavailable" and not self.reason:
+            raise ValueError("unavailable cancellation requires its resource reason")
+        return self
+
+
+class CommitStatusReply(_Frame):
+    """An inert observation of a receipt visible in the requested committed snapshot."""
+
+    status: Literal["committed", "pending", "unavailable"]
+    target_request_id: str | None = None
+    snapshot: int | None = None
+    commit: CommitReceipt | None = None
+    reason: str | None = None
+
+    @field_validator("snapshot", mode="before")
+    @classmethod
+    def validate_serial(cls, value: object) -> int | None:
+        return None if value is None else snapshot_serial(value)
+
+    @model_validator(mode="after")
+    def publication(self) -> Self:
+        if self.status == "committed":
+            if self.snapshot is None or self.commit is None:
+                raise ValueError("committed status requires its actual snapshot and receipt")
+        elif self.snapshot is not None or self.commit is not None:
+            raise ValueError("uncommitted status cannot publish a receipt or snapshot")
+        if self.status == "unavailable" and not self.reason:
+            raise ValueError("unavailable commit status requires its resource reason")
+        return self
+
+
 class CompleteOk(_Frame):
     status: Literal["ok"]
     matches: list[str]
@@ -169,22 +233,12 @@ class InspectOk(_Frame):
     name: str | None = None
     type_: str | None = Field(default=None, alias="type")
     doc: str | None = None
+    details: dict[str, object] | None = None
 
 
 class IsCompleteOk(_Frame):
     status: Literal["ok"]
     result: Literal["complete", "incomplete", "invalid", "unknown"]
-
-
-class SaveSessionOk(_Frame):
-    status: Literal["ok"]
-    saved: bool
-    reason: str | None = None
-
-
-class LoadSessionOk(_Frame):
-    status: Literal["ok"]
-    snapshot: int
 
 
 COMPLETE_REPLY: TypeAdapter[CompleteOk | WorkerError] = TypeAdapter(
@@ -193,12 +247,6 @@ INSPECT_REPLY: TypeAdapter[InspectOk | WorkerError] = TypeAdapter(
     Annotated[InspectOk | WorkerError, Field(discriminator="status")])
 IS_COMPLETE_REPLY: TypeAdapter[IsCompleteOk | WorkerError] = TypeAdapter(
     Annotated[IsCompleteOk | WorkerError, Field(discriminator="status")])
-SAVE_SESSION_REPLY: TypeAdapter[SaveSessionOk | WorkerError] = TypeAdapter(
-    Annotated[SaveSessionOk | WorkerError, Field(discriminator="status")])
-LOAD_SESSION_REPLY: TypeAdapter[LoadSessionOk | WorkerError] = TypeAdapter(
-    Annotated[LoadSessionOk | WorkerError, Field(discriminator="status")])
-
-
 # -- ipykernel ingestion boundary -------------------------------------------
 # ipykernel hands handlers untyped message dicts; these models re-type that
 # dependency at the door (POLICY.NO_UNTYPED_IMPORT_LEAK). Only the fields the

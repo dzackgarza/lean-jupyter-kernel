@@ -131,29 +131,76 @@ def resolve? (cmdState : Elab.Command.State) (ident : String) : Option Name := I
     return some name
   return none
 
+/-- Direct type-head completion is a structural read of a committed declaration.
+A reducible or user-defined type head is not unfolded by a query. The owning
+DSL may publish further member names for its complete selected interface. -/
+private def directMembers (cmdState : Elab.Command.State) (stem : String) :
+    Array String := Id.run do
+  let components := stem.splitOn "."
+  if components.length < 2 then return #[]
+  let head := String.intercalate "." components.dropLast
+  let tail := components.getLast!
+  let some name := resolve? cmdState head | return #[]
+  let some declaration := cmdState.env.find? name | return #[]
+  let .const owner _ := declaration.type.consumeMData.getAppFn | return #[]
+  return cmdState.env.constants.fold (init := #[]) fun found candidate _ =>
+    if candidate.isInternal || candidate.hasMacroScopes || !owner.isPrefixOf candidate then found
+    else
+      let suffix := candidate.replacePrefix owner Name.anonymous
+      if suffix.isAnonymous then found
+      else if tail.isPrefixOf suffix.toString then
+        found.push (head ++ "." ++ suffix.toString)
+      else found
+
+/-- The fixed native expression printer is non-extensible. Preserve the
+Unicode arrow on independent explicit function types without rewriting the
+contents of names, literals, or dependent binder annotations. -/
+private partial def inertType (type : Expr) : String :=
+  match type with
+  | .forallE _ domain body .default =>
+    if body.hasLooseBVars then toString type
+    else
+      let lhs := inertType domain
+      let lhs := if domain.isForall then "(" ++ lhs ++ ")" else lhs
+      lhs ++ " → " ++ inertType body
+  | _ => toString type
+
 /-- Purely syntactic completion and lookup in the committed environment.
 Neither candidate elaboration, native reduction, extensible pretty-printers nor
 documentation callbacks occur at this boundary. -/
 def retainedCompletions (cmdState : Elab.Command.State) (code : String) (cursor : Nat) :
     Nat × Array String := Id.run do
   let (stem, start, names) := completions cmdState code cursor
-  let supplied := (Cell.getObservations cmdState.env).filterMap fun item =>
-    if stem.isPrefixOf item.name then some item.name else none
-  return (start, finishResults (names ++ supplied))
+  let mut supplied := #[]
+  let mut seen : Std.HashSet String := {}
+  for item in (Cell.getObservations cmdState.env).reverse do
+    if seen.contains item.name then continue
+    seen := seen.insert item.name
+    if stem.isPrefixOf item.name then supplied := supplied.push item.name
+    for member in item.members do
+      let qualified := item.name ++ "." ++ member
+      if stem.isPrefixOf qualified then supplied := supplied.push qualified
+  return (start, finishResults (names ++ supplied ++ directMembers cmdState stem))
 
 structure InspectResult where
   name : String
   type : String
   doc? : Option String
+  details : Lean.Json := .null
 
 def inspect (cmdState : Elab.Command.State) (code : String) (cursor : Nat) :
     Option InspectResult := do
   let ident := identAt code cursor
-  if let some entry := (Cell.getObservations cmdState.env).find? (·.name == ident) then
-    return { name := entry.name, type := entry.type, doc? := entry.doc }
+  -- Source contexts retain declarations in lexical order, including shadowed names.
+  -- Only the latest visible declaration owns an unqualified occurrence here.
+  if let some entry := (Cell.getObservations cmdState.env).reverse.find? (·.name == ident) then
+    return { name := entry.name, type := entry.type, doc? := entry.doc, details := entry.details }
   let name ← resolve? cmdState ident
   let ci ← cmdState.env.find? name
   -- Expr's structural representation is pure and cannot run a delaborator.
-  return { name := name.toString, type := toString ci.type, doc? := none }
+  -- Read only the retained plain Markdown extension. The general docstring
+  -- API may invoke Verso renderers and documentation extensions.
+  let doc := docStringExt.find? (level := .server) cmdState.env name
+  return { name := name.toString, type := inertType ci.type, doc? := doc }
 
 end Worker.Query

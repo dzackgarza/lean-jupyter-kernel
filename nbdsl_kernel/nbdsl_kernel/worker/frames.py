@@ -9,7 +9,7 @@ import time
 
 import psutil
 
-from .errors import WorkerDied
+from .errors import WireProtocolError, WorkerDied
 
 RawFrame = dict[str, object]
 
@@ -43,13 +43,20 @@ class FrameReader:
         while True:
             if self.frame_length is None and b"\n" in self.buf:
                 line, self.buf = self.buf.split(b"\n", 1)
+                if not line or not line.isdigit() or line.startswith(b"0"):
+                    raise WireProtocolError("invalid frame length")
                 self.frame_length = int(line)
             if (self.frame_length is not None
                     and len(self.buf) >= self.frame_length):
                 length = self.frame_length
                 payload, self.buf = self.buf[:length], self.buf[length:]
                 self.frame_length = None
-                frame: RawFrame = json.loads(payload)
+                try:
+                    frame = json.loads(payload.decode("utf-8"))
+                except (UnicodeError, ValueError) as e:
+                    raise WireProtocolError("invalid framed JSON") from e
+                if not isinstance(frame, dict):
+                    raise WireProtocolError("framed JSON is not an object")
                 return frame
             self._fill(deadline, process_pid)
 

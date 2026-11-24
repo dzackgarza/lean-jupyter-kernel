@@ -8,7 +8,6 @@ import os
 import signal
 import subprocess
 import threading
-import time
 from collections.abc import Callable
 from contextlib import ExitStack, suppress
 from pathlib import Path
@@ -17,38 +16,25 @@ from typing import IO
 import psutil
 from pydantic import ValidationError
 
-from ..protocol import (
-    COMPLETE_REPLY,
-    SESSION_POLICY,
-    WIRE_PROTOCOL,
-    INSPECT_REPLY,
-    IS_COMPLETE_REPLY,
-    CompleteOk,
-    ExecuteReply,
-    InspectOk,
-    IsCompleteOk,
-    ReadyFrame,
-    WorkerError,
-)
+from ..protocol import SESSION_POLICY, WIRE_PROTOCOL, ReadyFrame
 from .errors import (
-    CANCEL_GRACE,
     READY_TIMEOUT,
-    REPLY_TIMEOUT,
     WorkerDied,
     WireProtocolError,
-    WorkerInterrupted,
     check_wire_protocol,
 )
 from .frames import FrameReader, RawFrame, process_running
 from .resolve import find_worker_exe, lake_env
+from .requests import SessionRequests
 
 
-class WorkerClient:
+class WorkerClient(SessionRequests):
     """One negotiated process. Snapshots are scoped to its fresh nonce."""
 
     def __init__(self, project_root: str | Path,
                  prelude: str = "NbDsl.Notebook",
                  on_stream: Callable[[str, str], None] | None = None) -> None:
+        super().__init__()
         self.project_root = Path(project_root)
         self.prelude = prelude
         self.on_stream: Callable[[str, str], None] = \
@@ -62,23 +48,16 @@ class WorkerClient:
         #: Host PID of the worker process (equal to `self.proc.pid` except
         #: under Bubblewrap's PID namespace).
         self.worker_pid: int | None = None
-        self.snapshot = 0
-        self.worker_nonce: str | None = None
-        self.profile_sha256: str | None = None
         self._seen_nonces: set[str] = set()
-        self._rid = 0
-        self._pending: dict[str, RawFrame] = {}
-        self._outstanding: set[str] = set()
-        self._uncertain: set[str] = set()
 
     def require_session(self) -> None:
         if not self.running():
             raise WorkerDied("unavailable/worker_absent")
-        if self.worker_nonce is None or self.profile_sha256 is None:
+        if not self._protocol_ok or self.worker_nonce is None or self.profile_sha256 is None:
             raise WireProtocolError("unavailable/incompatible_protocol: no acknowledged session")
 
     @staticmethod
-    def _expected_profile(env: dict[str, str]) -> str:
+    def _expected_profile(env: dict[str, str], project_root: Path = Path.cwd()) -> str:
         """Normalize the configured availability sets, without selecting any operation."""
         explicit = env.get("NBDSL_REALIZATION_PROFILE_SHA256")
         if explicit is not None:
@@ -94,7 +73,7 @@ class WorkerClient:
         else:
             # The worker separately checks the complete profile against published declarations.
             # This calculation only verifies the byte identity of its normalized configuration.
-            with Path(path).open(encoding="utf-8") as stream:
+            with (project_root / path).open(encoding="utf-8") as stream:
                 normalized = json.load(stream)
             for rule in normalized["rules"]:
                 primitives = rule["primitive_registrations"]
@@ -236,7 +215,7 @@ class WorkerClient:
                 raise WorkerDied(
                     f"worker ready PID {ready.pid} does not match owned "
                     f"process {proc.pid}")
-            check_wire_protocol(ready, self._expected_profile(env))
+            check_wire_protocol(ready, self._expected_profile(env, self.project_root))
             assert ready.worker_nonce is not None and ready.realization_profile is not None
             if ready.worker_nonce in self._seen_nonces:
                 raise WireProtocolError("unavailable/incompatible_protocol: reused worker nonce")
@@ -250,10 +229,7 @@ class WorkerClient:
             self.worker_nonce = ready.worker_nonce
             self.profile_sha256 = ready.realization_profile.sha256
             self._seen_nonces.add(ready.worker_nonce)
-            self._rid = 0
-            self._pending.clear()
-            self._outstanding.clear()
-            self._uncertain.clear()
+            self._reset_requests(acknowledged=True)
 
             self.proc = proc
             self._request_pipe = req_w
@@ -282,9 +258,7 @@ class WorkerClient:
         self.replies = None
         self.worker_nonce = None
         self.profile_sha256 = None
-        self._pending.clear()
-        self._outstanding.clear()
-        self._uncertain.clear()
+        self._reset_requests(acknowledged=False)
 
     def kill(self) -> None:
         if self.proc is not None:
@@ -344,100 +318,6 @@ class WorkerClient:
         self.require_session()
         assert self.req_fd is not None
         self._write_to(self.req_fd, obj)
-
-    def _send(self, op: str, payload: RawFrame) -> str:
-        self.require_session()
-        self._rid += 1
-        rid = f"r{self._rid}"
-        self._outstanding.add(rid)
-        self._write_frame({"op": op, "protocol": WIRE_PROTOCOL,
-                           "worker_nonce": self.worker_nonce, "request_id": rid, **payload})
-        return rid
-
-    def _request(self, op: str, payload: RawFrame,
-                 timeout: float = REPLY_TIMEOUT) -> RawFrame:
-        rid = self._send(op, payload)
-        try:
-            return self._await(rid, timeout)
-        except KeyboardInterrupt:
-            if op != "execute":
-                raise
-            try:
-                cancel = self._send("cancel", {"target_request_id": rid, "mode": "cooperative"})
-                ack = self._await(cancel, CANCEL_GRACE)
-                if ack.get("status") not in {"cancelled", "already_committed"}:
-                    raise WorkerInterrupted(f"unavailable/cancel_unacknowledged: {ack}")
-                return self._await(rid, CANCEL_GRACE)
-            except (TimeoutError, KeyboardInterrupt) as e:
-                self._uncertain.add(rid)
-                raise WorkerInterrupted("unavailable/cancel_unacknowledged: execution indeterminate") from e
-        except TimeoutError as e:
-            self._uncertain.add(rid)
-            raise WorkerInterrupted("unavailable/connection_lost_after_send: reply timeout; execution indeterminate") from e
-
-    def _await(self, rid: str, timeout: float) -> RawFrame:
-        if rid in self._pending:
-            self._outstanding.discard(rid)
-            return self._pending.pop(rid)
-        assert self.replies is not None
-        deadline = time.monotonic() + timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError("timed out waiting for worker reply")
-            assert self.worker_pid is not None
-            rep = self.replies.read_frame(remaining, self.worker_pid)
-            if rep.get("worker_nonce") != self.worker_nonce:
-                raise WireProtocolError("unavailable/incompatible_protocol: reply has another worker nonce")
-            if rep.get("op") == "protocol_error" and rep.get("reason") == "duplicate_request_id":
-                # This source-free diagnostic is not the original request's reply.
-                self.on_stream("stderr", f"duplicate request id: {rep.get('offending_request_id')}" + chr(10))
-                continue
-            key = rep.get("request_id")
-            if not isinstance(key, str) or key not in self._outstanding or key in self._pending:
-                raise WireProtocolError("worker returned an unknown or repeated response")
-            if key == rid:
-                self._outstanding.discard(rid)
-                return rep
-            self._pending[key] = rep
-
-    def execute(self, code: str, cell_id: str = "cell") -> ExecuteReply:
-        return self.execute_at(code, cell_id, self.snapshot)
-
-    def execute_at(self, code: str, cell_id: str, parent: int) -> ExecuteReply:
-        self.require_session()
-        if self._uncertain:
-            raise WorkerInterrupted("unavailable/indeterminate_execution: previous request must be resolved")
-        try:
-            rep = ExecuteReply.model_validate(self._request(
-                "execute", {"code": code, "cell_id": cell_id,
-                            "session_policy": SESSION_POLICY,
-                            "parent_snapshot": str(parent)}))
-        except ValidationError as e:
-            raise WireProtocolError("malformed execution reply") from e
-        if rep.parent_snapshot != parent:
-            raise WireProtocolError("execution reply has a different parent")
-        if rep.status == "ok":
-            assert rep.commit is not None
-            if rep.commit.profile_sha256 != self.profile_sha256:
-                raise WireProtocolError("execution reply has a different frozen profile")
-            self.snapshot = rep.snapshot
-        return rep
-
-    def complete(self, code: str, cursor: int) -> CompleteOk | WorkerError:
-        return COMPLETE_REPLY.validate_python(self._request(
-            "complete", {"mode": "environment", "snapshot": str(self.snapshot),
-                         "code": code, "cursor": cursor}, timeout=30))
-
-    def inspect(self, code: str, cursor: int, detail_level: int = 0) -> InspectOk | WorkerError:
-        return INSPECT_REPLY.validate_python(self._request(
-            "inspect", {"mode": "environment", "snapshot": str(self.snapshot),
-                        "code": code, "cursor": cursor, "detail_level": detail_level}, timeout=30))
-
-    def is_complete(self, code: str) -> IsCompleteOk | WorkerError:
-        return IS_COMPLETE_REPLY.validate_python(self._request(
-            "is_complete", {"mode": "syntax", "snapshot": str(self.snapshot),
-                            "code": code}, timeout=30))
 
     def restart_fresh(self) -> None:
         """An explicit new session has no relationship to the previous snapshot IDs."""

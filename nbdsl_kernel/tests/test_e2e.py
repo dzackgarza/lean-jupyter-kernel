@@ -161,17 +161,20 @@ def _exec_cell(kc: Any, code: str, cell_id: str,
             return content, outputs
 
 
-def test_interrupt_restart_replay(kernel: Kernel) -> None:
+def test_interrupt_preserves_committed_state_without_replay(kernel: Kernel) -> None:
     km, kc = kernel
-    msg_id = kc.execute("def spin : IO Unit := do while true do pure ()\n#eval spin")
+    slow = ("example : True := by\n"
+            + "".join(f"  have h{i} : Nat := {i}\n" for i in range(5000))
+            + "  trivial")
+    msg_id = kc.execute("set_option maxHeartbeats 0 in\n" + slow)
     # Give elaboration a moment to be genuinely stuck, then interrupt.
     try:
-        kc.get_shell_msg(timeout=5)
-        pytest.fail("infinite cell returned unexpectedly")
+        kc.get_shell_msg(timeout=0.5)
+        pytest.fail("cancellation control returned before interruption")
     except queue.Empty:
         pass
     km.interrupt_kernel()
-    reply = kc.get_shell_msg(timeout=STARTUP)  # restart + replay happens here
+    reply = kc.get_shell_msg(timeout=STARTUP)
     assert reply["parent_header"]["msg_id"] == msg_id
     # Drain iopub to idle before the next cell.
     while True:
@@ -180,14 +183,15 @@ def test_interrupt_restart_replay(kernel: Kernel) -> None:
                 and msg["msg_type"] == "status"
                 and msg["content"]["execution_state"] == "idle"):
             break
-    # Recovery must reconstruct committed state — via the session cache
-    # (olean round-trip), not replay.
+    assert reply["content"]["status"] == "error", reply
+    assert reply["content"]["ename"] == "Interrupted", reply
+    # The previously committed state survives in the same worker.
     reply, outputs = run_cell(kc, "#eval x + 1")
     assert reply["status"] == "ok"
     text = texts(outputs)
     assert "42" in text
-    assert "Restored session from cache" in text, text
-    # Registry (env-extension) state survived the olean round-trip.
+    assert "Replayed" not in text and "Restored session" not in text, text
+    # The original committed registry remains available.
     reply, outputs = run_cell(kc, "#via G ∈ Sets")
     assert reply["status"] == "ok"
     assert any("application/vnd.nbdsl.path+json" in m["content"].get("data", {})
@@ -196,18 +200,18 @@ def test_interrupt_restart_replay(kernel: Kernel) -> None:
         [m["msg_type"] for m in outputs]
 
 
-def test_uncacheable_state_falls_back_to_replay(kernel: Kernel) -> None:
+def test_open_scope_survives_cooperative_cancel(kernel: Kernel) -> None:
     km, kc = kernel
-    # An open `section` makes the state uncacheable (the worker refuses to
-    # save and the cache key is dropped), so the next worker death must
-    # recover by source replay — the validated-cache miss path.
+    # Preserve the original open scope in its live committed snapshot.
     reply, _ = run_cell(kc, "section")
     assert reply["status"] == "ok"
-    msg_id = kc.execute(
-        "def spin2 : IO Unit := do while true do pure ()\n#eval spin2")
+    slow = ("set_option maxHeartbeats 0 in\nexample : True := by\n"
+            + "".join(f"  have h{i} : Nat := {i}\n" for i in range(5000))
+            + "  trivial")
+    msg_id = kc.execute(slow)
     try:
-        kc.get_shell_msg(timeout=5)
-        pytest.fail("infinite cell returned unexpectedly")
+        kc.get_shell_msg(timeout=0.5)
+        pytest.fail("cancellation control returned before interruption")
     except queue.Empty:
         pass
     km.interrupt_kernel()
@@ -223,7 +227,7 @@ def test_uncacheable_state_falls_back_to_replay(kernel: Kernel) -> None:
     assert reply["status"] == "ok"
     text = texts(outputs)
     assert "42" in text
-    assert "Replayed" in text and "Restored session" not in text, text
+    assert "Replayed" not in text and "Restored session" not in text, text
     reply, _ = run_cell(kc, "end")  # close the section again
     assert reply["status"] == "ok"
 
@@ -280,21 +284,27 @@ def test_document_order_semantics(kernel: Kernel) -> None:
     comm_id = "doc-comm-1"
     _send_comm(kc, "comm_open", {"comm_id": comm_id,
                                  "target_name": "nbdsl_document", "data": {}})
-    # Two cells; running the SECOND must auto-run the first (prefix invariant).
+    # Running the second before its predecessor must not execute the predecessor.
     _send_document(kc, comm_id, [("cellA", "def base : Nat := 1"),
                                  ("cellB", "#eval base + 1")])
     reply, outputs = _exec_cell(kc, "#eval base + 1", "cellB")
+    assert reply["status"] == "error" and reply["ename"] == "SnapshotUnavailable", reply
+    assert "re-running" not in texts(outputs), outputs
+    reply, _ = _exec_cell(kc, "def base : Nat := 1", "cellA")
     assert reply["status"] == "ok", reply
-    text = texts(outputs)
-    assert "re-running upstream cell 1" in text, text
-    assert "2" in text, text
+    reply, outputs = _exec_cell(kc, "#eval base + 1", "cellB")
+    assert reply["status"] == "ok" and "2" in texts(outputs), reply
 
-    # Editing the upstream cell invalidates downstream: same run now sees 5.
+    # Editing the predecessor invalidates the retained parent. Only explicit
+    # execution of that predecessor makes the new value available.
     _send_document(kc, comm_id, [("cellA", "def base : Nat := 5"),
                                  ("cellB", "#eval base + 1")])
     reply, outputs = _exec_cell(kc, "#eval base + 1", "cellB")
+    assert reply["status"] == "error" and reply["ename"] == "SnapshotUnavailable", reply
+    reply, _ = _exec_cell(kc, "def base : Nat := 5", "cellA")
     assert reply["status"] == "ok", reply
-    assert "6" in texts(outputs), texts(outputs)
+    reply, outputs = _exec_cell(kc, "#eval base + 1", "cellB")
+    assert reply["status"] == "ok" and "6" in texts(outputs), reply
 
     # Unchanged prefix is NOT re-run.
     reply, outputs = _exec_cell(kc, "#eval base + 1", "cellB")
@@ -309,6 +319,10 @@ def test_document_order_semantics(kernel: Kernel) -> None:
     status = _await_status(kc)
     assert status["stale"] == ["cellA", "cellB"], status
     assert status["fresh"] == [], status
+    reply, _ = _exec_cell(kc, "#eval base + 1", "cellB")
+    assert reply["status"] == "error" and reply["ename"] == "SnapshotUnavailable", reply
+    reply, _ = _exec_cell(kc, "def base : Nat := 7", "cellA")
+    assert reply["status"] == "ok", reply
     reply, outputs = _exec_cell(kc, "#eval base + 1", "cellB")
     assert reply["status"] == "ok"
     assert "8" in texts(outputs)
@@ -319,12 +333,15 @@ def test_document_order_semantics(kernel: Kernel) -> None:
     assert status["fresh"] == ["cellA", "cellB"], status
     assert status["stale"] == [], status
 
-    # A broken upstream cell surfaces as this cell's failure, atomically —
-    # typed as UpstreamError, naming the offending cell.
+    # A broken predecessor is not executed by a dependent cell. Its explicit
+    # execution fails atomically and the dependent still has no parent.
     _send_document(kc, comm_id, [("cellA", 'def base : Nat := "no"'),
                                  ("cellB", "#eval base + 1")])
     reply, outputs = _exec_cell(kc, "#eval base + 1", "cellB")
     assert reply["status"] == "error", reply
-    assert reply["ename"] == "UpstreamError", reply
-    assert "upstream cell 1" in reply["evalue"], reply
+    assert reply["ename"] == "SnapshotUnavailable", reply
+    reply, _ = _exec_cell(kc, 'def base : Nat := "no"', "cellA")
+    assert reply["status"] == "error", reply
+    reply, _ = _exec_cell(kc, "#eval base + 1", "cellB")
+    assert reply["status"] == "error" and reply["ename"] == "SnapshotUnavailable", reply
 

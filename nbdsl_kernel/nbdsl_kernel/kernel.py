@@ -119,6 +119,7 @@ class NbDslKernel(Kernel):
             return
         rep = self.worker.execute(self.init_cell, cell_id="<init>")
         if rep.status == "ok":
+            assert rep.snapshot is not None
             self.base_snapshot = rep.snapshot
         else:
             self._init_error = f"init cell failed: {rep.first_error()}"
@@ -129,15 +130,14 @@ class NbDslKernel(Kernel):
                 "stdout", f"Starting Lean worker ({self.worker.project_root})…\n"
             )
             self.worker.start()
+            # From this point the worker owns a real live session. Failure
+            # during initialization does not authorize implicit force/recovery.
+            self._started = True
             try:
                 self._run_init_cell()
-            except (WireProtocolError, WorkerDied, WorkerInterrupted, TimeoutError):
-                # Bootstrap owns a live worker before `_started` flips. Make
-                # a failed query-first bootstrap retryable without leaving
-                # that process in WorkerClient's ownership slots.
-                self.worker.kill()
+            except (WireProtocolError, WorkerDied, WorkerInterrupted, TimeoutError) as e:
+                self._init_error = str(e)
                 raise
-            self._started = True
         else:
             self.worker.require_session()
 
@@ -205,6 +205,7 @@ class NbDslKernel(Kernel):
             parent = int(selected)
             rep = self.worker.execute_at(code, cell_id or "cell", parent)
             if rep.status == "ok" and cell_id:
+                assert rep.snapshot is not None
                 self.doc.cell_state[cell_id] = CellState(
                     source=code, snapshot=rep.snapshot, parent=parent)
                 self.doc.broadcast_status(self)
@@ -215,6 +216,7 @@ class NbDslKernel(Kernel):
                 return err
             rep = self.worker.execute_at(code, cell_id, parent)
             if rep.status == "ok":
+                assert rep.snapshot is not None
                 self.doc.cell_state[cell_id] = CellState(
                     source=code, snapshot=rep.snapshot, parent=parent
                 )
@@ -234,6 +236,8 @@ class NbDslKernel(Kernel):
             return self._error_reply(
                 "Interrupted", "execution cancelled; state unchanged", silent
             )
+        if rep.status == "unavailable":
+            return self._error_reply("WorkerUnavailable", rep.first_error(), silent)
         return self._error_reply("LeanError", rep.first_error(), silent)
 
     def _error_reply(self, ename: str, evalue: str, silent: bool) -> JupyterReply:

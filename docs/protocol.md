@@ -1,123 +1,98 @@
-# The worker wire protocol
+# Worker wire protocol 2
 
-Executable spec: `nbdsl_kernel/tests/roundtrip.py` (deliberately raw JSON —
-an independent oracle whose frame codec must NOT be deduplicated with the
-client's). Typed client model: `nbdsl_kernel/nbdsl_kernel/protocol.py`.
+The independent raw-wire tests are `nbdsl_kernel/tests/test_native_v2.py`
+and `nbdsl_kernel/tests/roundtrip.py`. The typed adapter lives in
+`nbdsl_kernel/nbdsl_kernel/protocol.py`.
 
-## Transport
+## Transport and negotiation
 
-- Two pipes, passed as inherited fds (`--req-fd N`, `--rep-fd M`); the
-  worker reopens them via `/dev/fd/N`. stdout/stderr are ordinary user
-  streams and can never corrupt control traffic.
-- Frame = ASCII byte length, `\n`, then that many bytes of UTF-8 JSON.
-- Requests carry `request_id`; the matching reply echoes it. Replies to
-  different requests never interleave frames, but a reply may arrive after
-  a client-side timeout — clients must match on `request_id` (the shipped
-  client stashes strays).
-- On startup the worker emits one unsolicited frame:
-  `{"op":"ready","protocol":1,"lean":"4.32.0","snapshot":0,"pid":N}`
-  (`release` may also appear; it is informational). The adapter refuses
-  startup when `protocol` disagrees with its own `WIRE_PROTOCOL`
-  (`WireProtocolError`).
-- EOF on the request fd is a clean shutdown: the worker drains its queue
-  and exits 0.
+Two inherited pipes carry requests and replies, separate from user stdout and
+stderr. A frame is its ASCII byte length, a newline, and that many bytes of
+UTF-8 JSON. Each worker has a fresh nonce and one frozen realization profile.
+Its unsolicited `ready` frame contains protocol 2, worker_nonce, snapshot
+`"0"`, realization_profile (id and sha256), Lean version, PID, release, and
+these required features:
 
-## Conventions
+- cas-session/2, explicit-parent/2, atomic-cell/2
+- inspect-environment/2, complete-environment/2, cancel-by-request/2
+- no-replay/2, no-session-cache/2
 
-- All cursor and position **columns are Unicode code points** (Lean
-  `FileMap` ↔ Jupyter `cursor_pos`); no byte/code-point conversion exists
-  anywhere. Lines are 1-based, columns 0-based.
-- Unknown ops answer `{"status":"unsupported","op":...}` — the
-  forward-compatibility seam.
-- Extra reply fields must be ignored by clients (the typed client does).
+Before sending any candidate source, the client verifies the version,
+features and configured profile digest, then exchanges
 
-## Ops
+```json
+{"op":"hello","protocol":2,"worker_nonce":"actual nonce","session_policy":"cas_no_replay"}
+```
 
-### `execute {code, cell_id, parent_snapshot}`
+with an identical acknowledgement plus `"status":"ok"`. Incompatible or
+unacknowledged sessions do not receive source. EOF cancels queued and active
+work and closes the session; it does not replay the queue into another worker.
 
-Elaborates one cell (any number of commands) against the parent snapshot.
+All post-handshake operations carry protocol 2, the actual worker_nonce, a
+fresh string request_id and op. Snapshot serials are canonical decimal
+strings, scoped to the nonce. The worker consumes each request ID once,
+before operation-specific validation. A duplicate yields
+`{op:"protocol_error",worker_nonce,offending_request_id,reason:"duplicate_request_id"}`;
+it is not a result of the original request. Unknown operations or malformed
+fields are protocol errors. A foreign nonce does not claim an ID.
 
-Reply: `{status, snapshot, diagnostics, sorries, outputs}` with
-`status ∈ {"ok","error","cancelled"}`.
+## Execution and settlement
 
-- `ok`: a new snapshot was committed; `snapshot` is its id.
-- `error`: nothing committed; `snapshot` echoes the parent. Atomicity is
-  per cell: a cell whose second command fails discards its first command's
-  declarations too.
-- `cancelled`: a `cancel` frame landed and elaboration reached a
-  checkpoint; nothing committed.
-- `diagnostics`: `{severity: information|warning|error, message,
-  start:{line,column}, end?}` — accumulated across all commands of the
-  cell.
-- `sorries`: `{start, end?, goal}` collected from the cell's info trees
-  (tactic and term sorries, deduplicated by position).
-- `outputs`: MIME bundles emitted by the DSL through `Worker.emitOutput`:
-  `{data: {mime: payload,...}, metadata, display_id?}`. Request-local; the
-  sink is cleared before and drained after each cell.
+`execute` takes code, cell_id, parent_snapshot and
+session_policy="cas_no_replay". It executes one explicitly submitted cell
+against that committed parent. No automatic execution of predecessors,
+cache restoration, restart/replay, retry or migration is authorized.
 
-### `cancel {request_id}`
+An ok reply names parent_snapshot, a new snapshot, diagnostics, sorries,
+outputs and commit. The latter contains transaction_id, output_batch_id,
+profile_sha256 and result_refs. Each output contains result_id, mime,
+metadata and optional display_id. MIME bundles must have usable text/plain;
+text/latex and other representations may be included in the same event.
+Output delivery is deduplicated by worker nonce, batch and result identity.
 
-Out-of-band (handled by the reader task, not queued). Sets the in-flight
-execute's cancellation token if the id matches. **No reply of its own** —
-the cancelled execute replies `status:"cancelled"`. Code that never reaches
-an elaboration checkpoint (e.g. an interpreted `#eval` loop) cannot be
-cancelled cooperatively; clients escalate by killing the worker's process
-group after a grace window.
+Error and cancelled replies retain the parent snapshot and publish no
+commit or outputs. Failure strata and resource reasons are not interchangeable.
+An unavailable execution after communication loss may be indeterminate;
+this is neither a guarantee of rollback nor permission to resend.
 
-### `is_complete {code}`
+`cancel` takes target_request_id and mode ("cooperative" or "force") and
+has its own fresh request ID. The reader handles it out of band. Cancellation
+and commit share one linearization gate. Reply status is cancelled, forced
+(with invalidated_owners), already_committed (with actual snapshot and
+receipt), or not_found. An unacknowledged cooperative cancellation does not
+authorize force or retry. The original execute request has its own settlement.
 
-Parse-only classification against the current snapshot's scopes (syntax
-tables, opens): `{status:"ok", result: complete|incomplete|invalid}`.
-`incomplete` = every parse error sits at end of input. Note that Lean's
-grammar accepts some prefixes you might not expect (`example : True := by`
-parses — the empty tactic block fails at elaboration, not parse).
+`commit_status` takes snapshot and target_request_id. It reads a visible
+committed ancestor's receipt, reports active pending work or unavailable.
+It does not retrieve a cached execution result, start a worker or dispatch.
 
-### `complete {code, cursor}`
+## Inert queries
 
-`{status:"ok", matches, cursor_start, cursor_end}`. Type-aware dot
-completion first (resolve the head identifier, `whnf` its type, offer the
-head constant's namespace members — `Object` unfolding included), falling
-back to open-aware prefix completion over the environment. Results are
-sorted, deduplicated, capped at 100.
+All queries name a committed snapshot and carry candidate code solely for
+lexical selection. They never elaborate it or invoke a user extension,
+provider, lazy field, pretty-printer or documentation callback.
 
-### `inspect {code, cursor}`
+- `inspect`: mode="environment", code, cursor, detail_level. Returns found,
+  name, type, doc and optional immutable details. Unexecuted locals need
+  not be present. A DSL can prepare exact selected mathematical descriptors
+  at its authorized cell boundary.
+- `complete`: mode="environment", code, cursor. Returns matches,
+  cursor_start, cursor_end. Reads committed names and prepared members,
+  including lexical shadowing.
+- `is_complete`: mode="syntax", code. Returns complete, incomplete,
+  invalid or unknown using fixed lexical classification. Unknown grammar
+  is not passed to an executable environment parser.
 
-`{status:"ok", found, hover?, name?, type?, doc?}`. `hover` is the
-server-grade markdown (locals included) from analysis-elaborating the cell;
-`name`/`type`/`doc` come from environment resolution when the identifier is
-global. Analysis executes the cell's elaboration (side effects run), but
-commits nothing and leaks no outputs.
+Cursor positions and columns are Unicode code points; lines are 1-based,
+columns 0-based. An absent or incompatible worker yields an unavailable
+reply, rather than being bootstrapped by a query.
 
-### `save_session {path}` / `load_session {path}`
+## Other operations
 
-`save_session` → `{status:"ok", saved, reason?}` — writes the current
-snapshot as generation-numbered `NbdslSessionCache<Nat>.olean` (constants +
-persistent env-extension entries, i.e. DSL registries survive), plus
-`module.txt` naming the active generation and `scope.json`. Refuses
-(`saved:false` + reason) on open scopes, `variable` declarations, or
-syntax-valued options.
+`describe` returns protocol, current committed snapshot and frozen profile.
+`shutdown` cancels pending work and closes the owned session. Neither
+`save_session` nor `load_session` is a protocol-2 operation.
 
-`load_session` → `{status:"ok", snapshot}` or `{status:"error", message}` —
-imports the cache module and pushes the rebuilt state as a new snapshot.
-Any failure is a cache miss; clients fall back to replay. The cache is
-toolchain-bound like any olean; the shipped client keys it by
-prelude + ledger hash.
-
-### `describe {}`
-
-`{status:"ok", protocol, lean, snapshot, snapshot_count}`.
-
-## Wire protocol version
-
-`protocol` on `ready` / `describe` is the sole compatibility gate between
-adapter and worker. It must match `Worker.Protocol.wireProtocol` /
-`release.toml` `compat.wire_protocol` / `nbdsl_kernel.protocol.WIRE_PROTOCOL`.
-A mismatch surfaces as a typed `WireProtocolError` on execute (the kernel
-still answers `kernel_info`). There is no build-identity or provenance
-comparison and no `nbdsl_provenance` comm.
-
-## Client-side contracts (not wire, but load-bearing)
-
-- The replay ledger (committed `(cell_id, code)` pairs in REPL mode) is the
-  canonical recovery record; the session cache is a validated shortcut.
-- Killing the worker means `os.killpg` on the worker's process group.
+Protocol 2 does not offer durable exactly-once external effects. Retained
+snapshots do not resurrect provider connections or restore consumed rights.
+The CAS provider protocol is independently negotiated.

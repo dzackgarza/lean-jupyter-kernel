@@ -12,6 +12,7 @@ Parser notes (hard-won, load-bearing):
 import Lean
 import NbDsl.Registry
 import Worker.Output
+import Worker.Cell
 
 namespace NbDsl.DSL
 
@@ -118,5 +119,25 @@ def elabLetDef : CommandElab := fun stx => do
   -- statements and `decide` work on declared objects directly.
   elabCommand
     (← `(command| noncomputable abbrev $name : NbDsl.Object $category := $value))
+  -- Prepare dot members on the actual declared object's reduced type during
+  -- its authorized command. Querying the committed extension will not reduce
+  -- the Object definition or run the elaborator.
+  let full ← liftCoreM <| realizeGlobalConstNoOverload name
+  let env ← getEnv
+  let some ci := env.find? full | throwError "the declared object is absent"
+  let members ← liftTermElabM do
+    let type ← Meta.whnf ci.type
+    let .const owner _ := type.getAppFn | return #[]
+    return (← getEnv).constants.fold (init := #[]) fun found candidate _ =>
+      if candidate.isInternal || candidate.hasMacroScopes || !owner.isPrefixOf candidate then found
+      else
+        let suffix := candidate.replacePrefix owner Name.anonymous
+        if suffix.isAnonymous then found else found.push suffix.toString
+  let retained := Worker.Cell.getObservations env
+  liftCoreM <| Worker.Cell.setObservations (retained.push {
+    name := full.toString
+    type := toString ci.type
+    members := members })
+
 
 end NbDsl.DSL

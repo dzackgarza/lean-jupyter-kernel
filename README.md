@@ -5,25 +5,19 @@ Cells are ordinary Lean — the kernel never interprets DSL syntax.
 Completion, hover, diagnostics, and document-order semantics are asked of the
 Lean worker, not computed in Python.
 
-**Document-order semantics is a deliberate philosophy, not an accident.**
-In this kernel the notebook is a document, not a transcript: cell *i*'s
-state is always the state of elaborating the *visible* prefix of the
-notebook through cell *i*. Outputs therefore always correspond to the
-source shown above them. Standard notebooks let a cell's output silently
-diverge from the visible source — the classic stale-state footgun, where
-cell 5's result was computed against a version of cell 2 that no longer
-exists on screen. That divergence is the failure mode this kernel exists
-to exclude. Unchanged prefix cells reuse cached snapshots (editing cell 2
-does not re-run cell 1); edited or moved cells re-run (shown with `↻`
-notes); an upstream failure aborts with `UpstreamError` rather than
-leaving the notebook in an unknown, inconsistent state.
+**Document-order semantics uses explicit committed parents.**
+The notebook tracks whether a cell still has a committed snapshot for its
+visible predecessors. Editing or moving a predecessor marks dependent cells
+stale. Executing a dependent cell with a missing parent fails with
+`SnapshotUnavailable`; it never executes another cell implicitly.
+Users explicitly execute the changed predecessors. Unchanged committed
+prefixes can be reused without rerunning them.
 
-The plain execution-order REPL model remains available — in `jupyter
-console`, or in any client that does not stream the document comm —
-where each cell appends to the current context and `let` re-binding
-shadows, exactly as in a standard notebook kernel. The two modes share
-the same worker, the same snapshot DAG, and the same atomicity: a cell
-commits only if it elaborates with no error-severity diagnostic.
+The execution-order REPL model remains available for clients without the
+document comm. Each submitted cell names its current parent. Both modes use
+the same snapshot DAG and atomic cell publication. Worker loss is a resource
+failure, not authorization to recreate the session by replay or an olean
+cache. Queries are inert and do not start a worker.
 
 Consumed by:
 
@@ -78,8 +72,8 @@ proof.
 - Cells are trusted — no sandbox certification for hostile notebooks (opt-in
   bubblewrap available).
 - Snapshot memory grows with committed cells (no GC).
-- Plugin query contract for extension-backed completion/inspection is future
-  work.
+- Plugins prepare immutable extension-backed observation descriptors during
+  authorized execution; the worker reads only committed descriptors.
 
 ## License
 
