@@ -225,8 +225,11 @@ private def execute (sessionRef : IO.Ref Session) (gate : Gate)
       let response := failedExecution session rid parentId "error" none diagnostics
       return match failure with
         | none => response
-        | some failure => (response.setObjVal! "stratum" (toJson failure.stratum)).setObjVal!
-            "reason" (toJson failure.reason)
+        | some failure =>
+          let response := response.setObjVal! "reason" (toJson failure.reason)
+          match failure.stratum with
+          | some stratum => response.setObjVal! "stratum" (toJson stratum)
+          | none => response
     -- The only commit/cancel linearization point. All source evaluation and
     -- output preparation above are outside the gate. The plugin's commit
     -- callback performs only the native transaction publication, never dispatch.
@@ -235,7 +238,7 @@ private def execute (sessionRef : IO.Ref Session) (gate : Gate)
         return failedExecution session rid parentId "cancelled"
       let id := session.snapshots.size
       let (receipt, cmdState) ← match active with
-        | some handle => Cell.run result.cmdState fileName handle.commit
+        | some handle => Cell.run result.cmdState fileName (handle.commit outputs)
         | none => pure (⟨s!"{session.nonce}:transaction:{id}",
             s!"{session.nonce}:output:{id}", #[]⟩, result.cmdState)
       let snapshot : Snapshot := {
@@ -314,7 +317,7 @@ private def query (session : Session) (rid op : String) (req : Json) : IO Json :
     | return reply session.nonce rid [("status", "unavailable"),
         ("reason", "snapshot_unavailable"), ("message", "snapshot_unavailable")]
   if op == "is_complete" then
-    return reply session.nonce rid [("status", "ok"), ("result", "unknown")]
+    return reply session.nonce rid [("status", "ok"), ("result", toJson (Frontend.classifyInput code))]
   let .ok cursor := req.getObjValAs? Nat "cursor"
     | return protocolError session.nonce (some rid) "invalid_cursor"
   if cursor > code.length then return protocolError session.nonce (some rid) "invalid_cursor"

@@ -5,6 +5,7 @@ Only immutable observations enter committed Environment snapshots.
 -/
 import Lean
 import Std.Sync.Mutex
+import Worker.Output
 
 namespace Worker.Cell
 
@@ -39,7 +40,7 @@ def getObservations (env : Environment) : Array Observation :=
 A DSL can preserve its original failure classification at the outer cell
 boundary without inspecting printed diagnostic strings. -/
 structure Failure where
-  stratum : String
+  stratum : Option String
   reason : String
 
 private initialize failureSink : IO.Ref (Option Failure) ← IO.mkRef none
@@ -53,7 +54,7 @@ def drainFailure : IO (Option Failure) :=
 /-- The callbacks retain only an active transaction. After settlement, the owning
 implementation must drop its staged payloads; its resource cleanup may still drain. -/
 structure Active where
-  commit : CommandElabM Receipt
+  commit : Array Worker.Output → CommandElabM Receipt
   cancel : BaseIO Unit
   force : IO (Array String)
   draining : BaseIO Bool

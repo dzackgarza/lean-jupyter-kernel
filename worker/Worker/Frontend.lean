@@ -57,6 +57,7 @@ private partial def loop (ictx : Parser.InputContext)
   let (cmd, ps, messages) :=
     Parser.parseCommand ictx pmctx pstate cmdState.messages
   let cmdState := { cmdState with messages := messages }
+  if messages.hasErrors then return cmdState
   if Parser.isTerminalCommand cmd then
     if cmd.isOfKind ``Parser.Command.eoi then
       return cmdState
@@ -133,33 +134,72 @@ where
       endPos? := stx.getTailPos?.map ictx.fileMap.toPosition
       goal }
 
-/--
-Parse (without elaborating) to classify a cell for Jupyter's `is_complete`:
-`"complete"` when Lean's parser accepts every command, `"incomplete"` when
-the only failure is at end of input (an unclosed construct), `"invalid"` on a
-definite syntax error. Python never guesses at Lean syntax.
--/
-partial def classifyInput (parent : Command.State) (code : String) : String :=
-  let ictx := Parser.mkInputContext code "<is_complete>"
-  let endPos := ictx.fileMap.toPosition ⟨code.utf8ByteSize⟩
-  go ictx endPos {} { parent with messages := {} }
-where
-  go (ictx : Parser.InputContext) (endPos : Position)
-      (pstate : Parser.ModuleParserState) (cmdState : Command.State) : String :=
-    let scope := cmdState.scopes.head!
-    let pmctx : Parser.ParserModuleContext :=
-      { env := cmdState.env, options := scope.opts,
-        currNamespace := scope.currNamespace, openDecls := scope.openDecls }
-    let (cmd, ps, messages) :=
-      Parser.parseCommand ictx pmctx pstate cmdState.messages
-    let errs := messages.toList.filter (·.severity matches .error)
-    if errs.isEmpty then
-      if Parser.isTerminalCommand cmd then "complete"
-      else go ictx endPos ps { cmdState with messages := messages }
-    else if errs.all fun m => m.pos.line == endPos.line && m.pos.column == endPos.column then
-      "incomplete"
+/-- A conservative fixed lexical classifier. Unlike the environment parser, this
+does not run registered syntax parsers, macros, elaborators or user code. Balanced
+delimiters alone are not a proof of grammatical completeness. Unknown forms stay
+unknown rather than invoking a user-defined parser. -/
+def classifyInput (code : String) : String := Id.run do
+  let chars := code.toList.toArray
+  let mut i := 0
+  let mut stack : Array Char := #[]
+  let mut depth := 0
+  let mut lineComment := false
+  let mut quoted := false
+  let mut escaped := false
+  let mut visible := ""
+  while i < chars.size do
+    let c := chars[i]!
+    let next := chars[i+1]?
+    i := i+1
+    if lineComment then
+      if c == '\n' then
+        lineComment := false
+        visible := visible.push ' '
+    else if depth > 0 then
+      if c == '/' && next == some '-' then
+        depth := depth+1
+        i := i+1
+      else if c == '-' && next == some '/' then
+        depth := depth-1
+        i := i+1
+    else if quoted then
+      if escaped then escaped := false
+      else if c == '\\' then escaped := true
+      else if c == '"' then quoted := false
+    else if c == '-' && next == some '-' then
+      lineComment := true
+      i := i+1
+    else if c == '/' && next == some '-' then
+      depth := 1
+      i := i+1
+      visible := visible.push ' '
+    else if c == '"' then
+      quoted := true
+      visible := visible ++ " string_literal "
+    else if c == '(' || c == '[' || c == '{' then
+      stack := stack.push c
+      visible := visible.push c
+    else if c == ')' || c == ']' || c == '}' then
+      let expected := if c == ')' then '(' else if c == ']' then '[' else '{'
+      if stack.back? != some expected then return "invalid"
+      stack := stack.pop
+      visible := visible.push c
     else
-      "invalid"
+      visible := visible.push c
+  if depth > 0 || quoted || !stack.isEmpty then return "incomplete"
+  let source := visible.trimAscii.toString
+  if source.isEmpty then return "complete"
+  if source.endsWith ":=" || source.endsWith "=>" then return "incomplete"
+  -- Only classify fixed, simple commands whose entire lexical shape we know.
+  let words := (source.splitOn " ").filter (fun w => !w.isEmpty)
+  match words with
+  | ["#cas", "string_literal"] => return "complete"
+  | [kind, name, ":", type, ":=", value] =>
+    if (kind == "def" || kind == "abbrev") && name.toList.all Char.isAlphanum &&
+      type == "Nat" && !value.isEmpty && value.toList.all Char.isDigit then
+      return "complete"
+    return "unknown"
+  | _ => return "unknown"
 
 /-- Byte position of a code-point offset (protocol cursors are code points). -/
 def codepointPos (s : String) (cp : Nat) : String.Pos.Raw := Id.run do
