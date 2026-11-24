@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import signal
@@ -14,9 +15,12 @@ from pathlib import Path
 from typing import IO
 
 import psutil
+from pydantic import ValidationError
 
 from ..protocol import (
     COMPLETE_REPLY,
+    SESSION_POLICY,
+    WIRE_PROTOCOL,
     INSPECT_REPLY,
     IS_COMPLETE_REPLY,
     CompleteOk,
@@ -26,12 +30,12 @@ from ..protocol import (
     ReadyFrame,
     WorkerError,
 )
-from .cache import SessionCacheMixin
 from .errors import (
     CANCEL_GRACE,
     READY_TIMEOUT,
     REPLY_TIMEOUT,
     WorkerDied,
+    WireProtocolError,
     WorkerInterrupted,
     check_wire_protocol,
 )
@@ -39,8 +43,8 @@ from .frames import FrameReader, RawFrame, process_running
 from .resolve import find_worker_exe, lake_env
 
 
-class WorkerClient(SessionCacheMixin):
-    """One persistent nbdsl_worker process plus its replay ledger."""
+class WorkerClient:
+    """One negotiated process. Snapshots are scoped to its fresh nonce."""
 
     def __init__(self, project_root: str | Path,
                  prelude: str = "NbDsl.Notebook",
@@ -59,15 +63,51 @@ class WorkerClient(SessionCacheMixin):
         #: under Bubblewrap's PID namespace).
         self.worker_pid: int | None = None
         self.snapshot = 0
-        # Committed (cell_id, code) pairs, for restart replay.
-        self.ledger: list[tuple[str, str]] = []
-        # Optional session cache dir (kernel-owned): committed state is saved
-        # as an olean after each REPL commit, keyed by the ledger, and loaded
-        # instead of replaying on restart. Validation = key match + load
-        # success; any failure is a cache miss and replay runs.
-        self.cache_dir: str | None = None
+        self.worker_nonce: str | None = None
+        self.profile_sha256: str | None = None
+        self._seen_nonces: set[str] = set()
         self._rid = 0
-        self._pending: dict[object, RawFrame] = {}
+        self._pending: dict[str, RawFrame] = {}
+        self._outstanding: set[str] = set()
+        self._uncertain: set[str] = set()
+
+    def require_session(self) -> None:
+        if not self.running():
+            raise WorkerDied("unavailable/worker_absent")
+        if self.worker_nonce is None or self.profile_sha256 is None:
+            raise WireProtocolError("unavailable/incompatible_protocol: no acknowledged session")
+
+    @staticmethod
+    def _expected_profile(env: dict[str, str]) -> str:
+        """Normalize the configured availability sets, without selecting any operation."""
+        explicit = env.get("NBDSL_REALIZATION_PROFILE_SHA256")
+        if explicit is not None:
+            if len(explicit) != 64 or any(c not in "0123456789abcdef" for c in explicit):
+                raise WireProtocolError("unavailable/incompatible_protocol: invalid configured profile hash")
+            return explicit
+        def compact(value: object) -> str:
+            return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+        path = env.get("CAS_REALIZATION_PROFILE")
+        if path is None:
+            normalized = {"format": "cas-realization-profile/1", "id": "all",
+                          "default": "all", "rules": []}
+        else:
+            # The worker separately checks the complete profile against published declarations.
+            # This calculation only verifies the byte identity of its normalized configuration.
+            with Path(path).open(encoding="utf-8") as stream:
+                normalized = json.load(stream)
+            for rule in normalized["rules"]:
+                primitives = rule["primitive_registrations"]
+                if primitives["mode"] == "only":
+                    for entry in primitives["entries"]:
+                        if entry.get("preferredRoutes") == []:
+                            del entry["preferredRoutes"]
+                    primitives["entries"].sort(key=compact)
+                derivations = rule["derivations"]
+                if derivations["mode"] == "only":
+                    derivations["ids"].sort(key=compact)
+            normalized["rules"].sort(key=lambda rule: compact(rule["target"]))
+        return hashlib.sha256(compact(normalized).encode()).hexdigest()
 
     def _maybe_sandbox(self, cmd: list[str], worker_exe: Path) -> list[str]:
         """NBDSL_SANDBOX=1: run the worker under bubblewrap — project and
@@ -185,19 +225,35 @@ class WorkerClient(SessionCacheMixin):
                 thread.start()
 
             replies = FrameReader(rep_r.fileno())
-            ready = ReadyFrame.model_validate(
-                replies.read_frame(READY_TIMEOUT, proc.pid))
+            try:
+                ready = ReadyFrame.model_validate(replies.read_frame(READY_TIMEOUT, proc.pid))
+            except ValidationError as e:
+                raise WireProtocolError("unavailable/incompatible_protocol: malformed ready frame") from e
             if os.environ.get("NBDSL_SANDBOX") == "1":
                 host_worker_pid = self._host_worker_pid(proc)
-                ready = ReadyFrame.model_validate({
-                    **ready.model_dump(),
-                    "pid": host_worker_pid,
-                })
+                ready = ready.model_copy(update={"pid": host_worker_pid})
             elif ready.pid != proc.pid:
                 raise WorkerDied(
                     f"worker ready PID {ready.pid} does not match owned "
                     f"process {proc.pid}")
-            check_wire_protocol(ready)
+            check_wire_protocol(ready, self._expected_profile(env))
+            assert ready.worker_nonce is not None and ready.realization_profile is not None
+            if ready.worker_nonce in self._seen_nonces:
+                raise WireProtocolError("unavailable/incompatible_protocol: reused worker nonce")
+            hello: RawFrame = {"op": "hello", "protocol": WIRE_PROTOCOL,
+                               "worker_nonce": ready.worker_nonce,
+                               "session_policy": SESSION_POLICY}
+            self._write_to(req_w.fileno(), hello)
+            ack = replies.read_frame(READY_TIMEOUT, proc.pid)
+            if ack != {**hello, "status": "ok"}:
+                raise WireProtocolError("unavailable/incompatible_protocol: hello was not acknowledged")
+            self.worker_nonce = ready.worker_nonce
+            self.profile_sha256 = ready.realization_profile.sha256
+            self._seen_nonces.add(ready.worker_nonce)
+            self._rid = 0
+            self._pending.clear()
+            self._outstanding.clear()
+            self._uncertain.clear()
 
             self.proc = proc
             self._request_pipe = req_w
@@ -224,6 +280,11 @@ class WorkerClient(SessionCacheMixin):
         self._reply_pipe = None
         self.req_fd = None
         self.replies = None
+        self.worker_nonce = None
+        self.profile_sha256 = None
+        self._pending.clear()
+        self._outstanding.clear()
+        self._uncertain.clear()
 
     def kill(self) -> None:
         if self.proc is not None:
@@ -252,7 +313,7 @@ class WorkerClient(SessionCacheMixin):
         if self._reply_pipe is not None:
             self._reply_pipe.close()
             self._reply_pipe = None
-        self.replies = None
+        self._close_channels()
 
     def running(self) -> bool:
         """Whether the owned worker process is still live."""
@@ -264,70 +325,61 @@ class WorkerClient(SessionCacheMixin):
         )
 
     def restart_and_replay(self) -> int:
-        """Fresh worker, then the session cache if it matches the ledger,
-        else source replay. Returns cell count replayed, or -1 on a cache
-        restore (the ledger is kept — it still describes the state)."""
-        self.kill()
-        self.start()
-        if self._try_restore_session():
-            return -1
-        # A timed-out cache load leaves the worker busy in `load_session`.
-        # Replace it before sending source-replay requests to the main loop.
-        if not self.running():
-            self.start()
-        # The ledger is the canonical record of committed state, so a failed
-        # replay must not consume it: a worker that dies mid-replay would
-        # otherwise truncate it permanently, and the NEXT restart would replay
-        # the stump and report success over a half-empty environment. Cleared
-        # only so execute() can rebuild it, restored on any failure.
-        ledger, self.ledger = self.ledger, []
+        raise WireProtocolError("cas_no_replay forbids restoring a previous session")
+
+    @staticmethod
+    def _write_to(fd: int, obj: RawFrame) -> None:
+        payload = json.dumps(obj, ensure_ascii=False).encode()
+        frame = memoryview(str(len(payload)).encode() + bytes([10]) + payload)
         try:
-            for cell_id, code in ledger:
-                rep = self.execute(code, cell_id=cell_id)
-                if rep.status != "ok":
-                    raise WorkerDied(
-                        f"replay diverged on {cell_id}: {rep.first_error()}")
-        except BaseException:
-            self.ledger = ledger
-            raise
-        return len(ledger)
+            while frame:
+                count = os.write(fd, frame)
+                if count == 0:
+                    raise WorkerDied("unavailable/connection_lost_after_send")
+                frame = frame[count:]
+        except OSError as e:
+            raise WorkerDied(f"unavailable/connection_lost_after_send: {e}") from e
 
     def _write_frame(self, obj: RawFrame) -> None:
-        if self.req_fd is None:
-            raise WorkerDied("no request channel (worker not started)")
-        payload = json.dumps(obj).encode()
-        try:
-            os.write(self.req_fd, str(len(payload)).encode() + b"\n" + payload)
-        except OSError as e:
-            raise WorkerDied(f"cannot write to worker: {e}") from e
+        self.require_session()
+        assert self.req_fd is not None
+        self._write_to(self.req_fd, obj)
+
+    def _send(self, op: str, payload: RawFrame) -> str:
+        self.require_session()
+        self._rid += 1
+        rid = f"r{self._rid}"
+        self._outstanding.add(rid)
+        self._write_frame({"op": op, "protocol": WIRE_PROTOCOL,
+                           "worker_nonce": self.worker_nonce, "request_id": rid, **payload})
+        return rid
 
     def _request(self, op: str, payload: RawFrame,
                  timeout: float = REPLY_TIMEOUT) -> RawFrame:
-        """Transport: one framed request, one raw reply. Typed wrappers below
-        are the owned API; raw dicts do not leave this class."""
-        self._rid += 1
-        rid = f"r{self._rid}"
-        self._write_frame({"op": op, "request_id": rid, **payload})
+        rid = self._send(op, payload)
         try:
             return self._await(rid, timeout)
         except KeyboardInterrupt:
-            # Jupyter interrupt: ask the worker to cancel the in-flight
-            # request; if elaboration doesn't reach a cancellation checkpoint
-            # within the grace window, kill the worker (the caller restarts
-            # and replays on the next execute).
+            if op != "execute":
+                raise
             try:
-                self._write_frame({"op": "cancel", "request_id": rid})
+                cancel = self._send("cancel", {"target_request_id": rid, "mode": "cooperative"})
+                ack = self._await(cancel, CANCEL_GRACE)
+                if ack.get("status") not in {"cancelled", "already_committed"}:
+                    raise WorkerInterrupted(f"unavailable/cancel_unacknowledged: {ack}")
                 return self._await(rid, CANCEL_GRACE)
-            except (TimeoutError, KeyboardInterrupt, WorkerDied):
-                self.kill()
-                raise WorkerInterrupted(
-                    "interrupted: worker killed (did not cancel in time)"
-                ) from None
+            except (TimeoutError, KeyboardInterrupt) as e:
+                self._uncertain.add(rid)
+                raise WorkerInterrupted("unavailable/cancel_unacknowledged: execution indeterminate") from e
+        except TimeoutError as e:
+            self._uncertain.add(rid)
+            raise WorkerInterrupted("unavailable/connection_lost_after_send: reply timeout; execution indeterminate") from e
 
     def _await(self, rid: str, timeout: float) -> RawFrame:
         if rid in self._pending:
+            self._outstanding.discard(rid)
             return self._pending.pop(rid)
-        assert self.replies is not None  # invariant: requests follow start()
+        assert self.replies is not None
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
@@ -335,46 +387,59 @@ class WorkerClient(SessionCacheMixin):
                 raise TimeoutError("timed out waiting for worker reply")
             assert self.worker_pid is not None
             rep = self.replies.read_frame(remaining, self.worker_pid)
-            if rep.get("request_id") == rid:
+            if rep.get("worker_nonce") != self.worker_nonce:
+                raise WireProtocolError("unavailable/incompatible_protocol: reply has another worker nonce")
+            if rep.get("op") == "protocol_error" and rep.get("reason") == "duplicate_request_id":
+                # This source-free diagnostic is not the original request's reply.
+                self.on_stream("stderr", f"duplicate request id: {rep.get('offending_request_id')}" + chr(10))
+                continue
+            key = rep.get("request_id")
+            if not isinstance(key, str) or key not in self._outstanding or key in self._pending:
+                raise WireProtocolError("worker returned an unknown or repeated response")
+            if key == rid:
+                self._outstanding.discard(rid)
                 return rep
-            # out-of-order reply: stash it
-            self._pending[rep.get("request_id")] = rep
+            self._pending[key] = rep
 
     def execute(self, code: str, cell_id: str = "cell") -> ExecuteReply:
-        """REPL-order execute: parent is the client's current snapshot and
-        the committed cell joins the replay ledger."""
-        rep = ExecuteReply.model_validate(self._request(
-            "execute", {"code": code, "cell_id": cell_id,
-                        "parent_snapshot": self.snapshot}))
-        if rep.status == "ok":
-            self.snapshot = rep.snapshot
-            self.ledger.append((cell_id, code))
-        return rep
+        return self.execute_at(code, cell_id, self.snapshot)
 
     def execute_at(self, code: str, cell_id: str, parent: int) -> ExecuteReply:
-        """Document-order execute against an explicit parent snapshot.
-        Not ledgered: document mode recovers by prefix revalidation."""
-        rep = ExecuteReply.model_validate(self._request(
-            "execute", {"code": code, "cell_id": cell_id,
-                        "parent_snapshot": parent}))
+        self.require_session()
+        if self._uncertain:
+            raise WorkerInterrupted("unavailable/indeterminate_execution: previous request must be resolved")
+        try:
+            rep = ExecuteReply.model_validate(self._request(
+                "execute", {"code": code, "cell_id": cell_id,
+                            "session_policy": SESSION_POLICY,
+                            "parent_snapshot": str(parent)}))
+        except ValidationError as e:
+            raise WireProtocolError("malformed execution reply") from e
+        if rep.parent_snapshot != parent:
+            raise WireProtocolError("execution reply has a different parent")
         if rep.status == "ok":
+            assert rep.commit is not None
+            if rep.commit.profile_sha256 != self.profile_sha256:
+                raise WireProtocolError("execution reply has a different frozen profile")
             self.snapshot = rep.snapshot
         return rep
 
     def complete(self, code: str, cursor: int) -> CompleteOk | WorkerError:
         return COMPLETE_REPLY.validate_python(self._request(
-            "complete", {"code": code, "cursor": cursor}, timeout=30))
+            "complete", {"mode": "environment", "snapshot": str(self.snapshot),
+                         "code": code, "cursor": cursor}, timeout=30))
 
-    def inspect(self, code: str, cursor: int) -> InspectOk | WorkerError:
+    def inspect(self, code: str, cursor: int, detail_level: int = 0) -> InspectOk | WorkerError:
         return INSPECT_REPLY.validate_python(self._request(
-            "inspect", {"code": code, "cursor": cursor}, timeout=30))
+            "inspect", {"mode": "environment", "snapshot": str(self.snapshot),
+                        "code": code, "cursor": cursor, "detail_level": detail_level}, timeout=30))
 
     def is_complete(self, code: str) -> IsCompleteOk | WorkerError:
         return IS_COMPLETE_REPLY.validate_python(self._request(
-            "is_complete", {"code": code}, timeout=30))
+            "is_complete", {"mode": "syntax", "snapshot": str(self.snapshot),
+                            "code": code}, timeout=30))
 
     def restart_fresh(self) -> None:
-        """Fresh worker with no replay (document mode rebuilds on demand)."""
+        """An explicit new session has no relationship to the previous snapshot IDs."""
         self.kill()
-        self.ledger = []
         self.start()

@@ -17,6 +17,8 @@ if TYPE_CHECKING:
 
 def publish_reply(kernel: NbDslKernel, rep: ExecuteReply) -> None:
     """Publish diagnostics, sorries, and outputs for an execute reply."""
+    if rep.status != "ok" or rep.commit is None or rep.worker_nonce is None:
+        raise ValueError("only a negotiated committed batch may be published")
     for diag in rep.diagnostics:
         if diag.severity == "error":
             continue  # errors are published once, as the error output
@@ -31,8 +33,11 @@ def publish_reply(kernel: NbDslKernel, rep: ExecuteReply) -> None:
             "stderr", f"⚠ sorry at {s.start.line}:{s.start.column}\n{s.goal}\n"
         )
     for i, out in enumerate(rep.outputs):
+        identity = (rep.worker_nonce, rep.commit.output_batch_id, out.result_id)
+        if identity in kernel._published:
+            continue
         data = dict(out.data)
-        data.setdefault("text/plain", "<nbdsl output>")
+        kernel._published.add(identity)
         last = i == len(rep.outputs) - 1
         if last and rep.status == "ok":
             kernel.send_response(

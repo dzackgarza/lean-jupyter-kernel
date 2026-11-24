@@ -7,7 +7,7 @@ virtual document — that upgrade belongs to the milestone-2 document model.
 Cursor offsets are Unicode code points on both sides of the protocol.
 -/
 import Lean
-import Worker.Frontend
+import Worker.Cell
 
 namespace Worker.Query
 
@@ -131,64 +131,29 @@ def resolve? (cmdState : Elab.Command.State) (ident : String) : Option Name := I
     return some name
   return none
 
-def runMetaM (cmdState : Elab.Command.State) (x : MetaM α) : IO α := do
-  let scope := cmdState.scopes.head!
-  let ctx : Core.Context := {
-    fileName := "<query>"
-    fileMap := FileMap.ofString ""
-    options := scope.opts
-    currNamespace := scope.currNamespace
-    openDecls := scope.openDecls
-  }
-  let (a, _) ← (x.run').toIO ctx { env := cmdState.env }
-  return a
-
-/-- Type-aware dot completion: for `x.pre` where `x` resolves to a global
-constant whose type reduces (whnf) to an application headed by constant `C`,
-offer `C.*` members — generalized field notation — completing `pre`. `none`
-when the shape doesn't apply; the caller falls back to prefix completion. -/
-def dotCompletions (cmdState : Elab.Command.State) (code : String) (cursor : Nat)
-    : IO (Option (Nat × Array String)) := do
-  let (pref, start) := identPrefixAt code cursor
-  let parts := pref.splitOn "."
-  if parts.length < 2 then return none
-  let frag := parts.getLast!
-  let headStr := String.intercalate "." parts.dropLast
-  if headStr.isEmpty then return none
-  let some headName := resolve? cmdState headStr
-    | return none
-  let some ci := cmdState.env.find? headName
-    | return none
-  let tyHead ← runMetaM cmdState do
-    return (← Meta.whnf ci.type).getAppFn
-  let .const tyC _ := tyHead
-    | return none
-  let found := cmdState.env.constants.fold (init := #[]) fun acc n _ =>
-    if n.isInternal || n.hasMacroScopes then acc
-    else Id.run do
-      if tyC.isPrefixOf n then
-        let suffix := n.replacePrefix tyC Name.anonymous
-        if nameStartsWith frag.toName suffix && !suffix.isAnonymous then
-          return acc.push (headStr ++ "." ++ suffix.toString)
-      return acc
-  let results := finishResults found
-  if results.isEmpty then return none
-  return some (start, results)
+/-- Purely syntactic completion and lookup in the committed environment.
+Neither candidate elaboration, native reduction, extensible pretty-printers nor
+documentation callbacks occur at this boundary. -/
+def retainedCompletions (cmdState : Elab.Command.State) (code : String) (cursor : Nat) :
+    Nat × Array String := Id.run do
+  let (stem, start, names) := completions cmdState code cursor
+  let supplied := (Cell.getObservations cmdState.env).filterMap fun item =>
+    if stem.isPrefixOf item.name then some item.name else none
+  return (start, finishResults (names ++ supplied))
 
 structure InspectResult where
-  name : Name
+  name : String
   type : String
   doc? : Option String
 
-def inspect (cmdState : Elab.Command.State) (code : String) (cursor : Nat)
-    : IO (Option InspectResult) := do
-  let some name := resolve? cmdState (identAt code cursor)
-    | return none
-  let some ci := cmdState.env.find? name
-    | return none
-  let type ← runMetaM cmdState do
-    return toString (← Meta.ppExpr ci.type)
-  let doc? ← findDocString? cmdState.env name
-  return some { name, type, doc? }
+def inspect (cmdState : Elab.Command.State) (code : String) (cursor : Nat) :
+    Option InspectResult := do
+  let ident := identAt code cursor
+  if let some entry := (Cell.getObservations cmdState.env).find? (·.name == ident) then
+    return { name := entry.name, type := entry.type, doc? := entry.doc }
+  let name ← resolve? cmdState ident
+  let ci ← cmdState.env.find? name
+  -- Expr's structural representation is pure and cannot run a delaborator.
+  return { name := name.toString, type := toString ci.type, doc? := none }
 
 end Worker.Query

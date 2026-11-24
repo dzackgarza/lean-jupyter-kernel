@@ -62,9 +62,13 @@ def test_check_wire_protocol_accepts_match() -> None:
         {
             "op": "ready",
             "protocol": WIRE_PROTOCOL,
-            "lean": "4.32.0",
+            "lean": "4.33.0",
             "pid": 1,
-            "snapshot": 0,
+            "snapshot": "0",
+            "release": "identity-control",
+            "worker_nonce": "identity-control",
+            "realization_profile": {"id": "all", "sha256": "0" * 64},
+            "features": list(_NOTEBOOK_FEATURES),
         }
     )
     check_wire_protocol(ready)

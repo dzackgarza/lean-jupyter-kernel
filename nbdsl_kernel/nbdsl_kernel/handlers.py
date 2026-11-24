@@ -27,9 +27,7 @@ async def do_complete(kernel: NbDslKernel, code: str, cursor_pos: int) -> Jupyte
         "metadata": {},
     }
     try:
-        # Query requests are a valid first interaction. Bootstrap the
-        # same prelude and init-cell state as execute_request.
-        kernel._ensure_worker()
+        kernel.worker.require_session()
         if kernel._init_error:
             return {
                 **empty,
@@ -79,8 +77,7 @@ async def do_inspect(
         "metadata": {},
     }
     try:
-        # Inspection, like completion, may bootstrap a fresh kernel.
-        kernel._ensure_worker()
+        kernel.worker.require_session()
         if kernel._init_error:
             return {
                 "status": "error",
@@ -88,7 +85,7 @@ async def do_inspect(
                 "evalue": kernel._init_error,
                 "traceback": [kernel._init_error],
             }
-        rep = kernel.worker.inspect(code, cursor_pos)
+        rep = kernel.worker.inspect(code, cursor_pos, detail_level)
     except (WireProtocolError, WorkerDied, TimeoutError) as e:
         # Fail loudly: a dead worker must not masquerade as "not found".
         return {

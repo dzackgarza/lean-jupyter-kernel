@@ -12,17 +12,26 @@ open across `lake env`'s exec). stdout/stderr are exclusively user streams:
 `#eval IO.println` in a cell must not be able to corrupt control traffic.
 -/
 import Lean.Data.Json
+import Std.Sync.Mutex
 
 namespace Worker.Protocol
 
 open Lean (Json)
 
 /-- Must agree with ``release.toml`` ``compat.wire_protocol`` and the Python adapter. -/
-def wireProtocol : Nat := 1
+def wireProtocol : Nat := 2
+
+def sessionPolicy : String := "cas_no_replay"
+
+def notebookFeatures : Array String :=
+  #["cas-session/2", "explicit-parent/2", "atomic-cell/2",
+    "inspect-environment/2", "complete-environment/2", "cancel-by-request/2",
+    "no-replay/2", "no-session-cache/2"]
 
 structure Channel where
   reqH : IO.FS.Handle
   repH : IO.FS.Handle
+  writeLock : Std.Mutex Unit
 
 /--
 Reopen the inherited pipe fds via `/dev/fd/N` (on Linux, `/proc/self/fd/N`).
@@ -32,13 +41,14 @@ pipes, so reopening the write end this way is sound on Linux.
 def openChannel (reqFd repFd : Nat) : IO Channel := do
   let reqH ← IO.FS.Handle.mk s!"/dev/fd/{reqFd}" .read
   let repH ← IO.FS.Handle.mk s!"/dev/fd/{repFd}" .write
-  return { reqH, repH }
+  return { reqH, repH, writeLock := ← Std.Mutex.new () }
 
 def writeFrame (ch : Channel) (j : Json) : IO Unit := do
   let bytes := j.compress.toUTF8
-  ch.repH.putStr s!"{bytes.size}\n"
-  ch.repH.write bytes
-  ch.repH.flush
+  ch.writeLock.atomically do
+    ch.repH.putStr s!"{bytes.size}\n"
+    ch.repH.write bytes
+    ch.repH.flush
 
 private partial def readExact (h : IO.FS.Handle) (n : Nat)
     (acc : ByteArray := .empty) : IO ByteArray := do

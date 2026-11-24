@@ -48,6 +48,8 @@ private partial def loop (ictx : Parser.InputContext)
     (cancelTk? : Option IO.CancelToken)
     (pstate : Parser.ModuleParserState) (cmdState : Command.State)
     : IO Command.State := do
+  if cmdState.messages.hasErrors || (← cancelTk?.mapM (·.isSet)).getD false then
+    return cmdState
   let scope := cmdState.scopes.head!
   let pmctx : Parser.ParserModuleContext :=
     { env := cmdState.env, options := scope.opts,
