@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from .protocol import ExecuteReply
+from .cas_display import render_committed
 
 if TYPE_CHECKING:
     from .kernel import NbDslKernel
@@ -36,7 +37,7 @@ def publish_reply(kernel: NbDslKernel, rep: ExecuteReply) -> None:
         identity = (rep.worker_nonce, rep.commit.output_batch_id, out.result_id)
         if identity in kernel._published:
             continue
-        data = dict(out.data)
+        data = render_committed(out.data, out.metadata)
         kernel._published.add(identity)
         last = i == len(rep.outputs) - 1
         if last and rep.status == "ok":

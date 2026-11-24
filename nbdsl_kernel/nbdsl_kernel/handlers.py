@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from .protocol import CompleteOk, InspectOk
+from .cas_display import render_inspection
 from .worker import WireProtocolError, WorkerDied
 
 if TYPE_CHECKING:
@@ -119,6 +120,6 @@ async def do_inspect(
     return {
         "status": "ok",
         "found": True,
-        "data": {"text/plain": text},
+        "data": render_inspection(text, rep.details) if rep.details else {"text/plain": text},
         "metadata": {},
     }

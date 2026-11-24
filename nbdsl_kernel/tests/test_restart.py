@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import signal
 import time
 from collections.abc import Iterator
@@ -189,29 +190,47 @@ def test_noncooperative_interrupt_does_not_force_or_replay(tmp_path: Path) -> No
     """The original interpreted spin cannot license transparent replacement."""
     km, kc = start_init_kernel(tmp_path, "noncooperative-cancel")
     marker = tmp_path / "entered"
+    owned: psutil.Process | None = None
     try:
         reply, _ = run_cell(kc, "def x : Nat := 41")
         assert reply["status"] == "ok", reply
         provisioner = km.provisioner
         assert isinstance(provisioner, LocalProvisioner) and provisioner.process is not None
         worker, _ = find_worker_under(provisioner.process.pid)
+        owned = psutil.Process(worker)
         code = (
             "def spin : IO Unit := do while true do pure ()\n"
-            f"#eval (IO.FS.writeFile {json.dumps(str(marker))} \"entered\" >> spin)"
+            "#eval (do\n"
+            f"  IO.FS.writeFile {json.dumps(str(marker))} \"entered\"\n"
+            "  spin : IO Unit)"
         )
         request_id = kc.execute(code)
         deadline = time.monotonic() + 120
         while not marker.exists():
             assert time.monotonic() < deadline, "the actual interpreted loop never started"
-            time.sleep(0.01)
+            try:
+                early = kc.get_shell_msg(timeout=0.05)
+            except queue.Empty:
+                continue
+            if early["parent_header"].get("msg_id") == request_id:
+                pytest.fail(f"the interpreted loop returned before its marker: {early['content']}")
         km.interrupt_kernel()
         reply, _ = await_execute(kc, request_id)
         assert reply["status"] == "error", reply
-        assert "cancel_unacknowledged" in reply["evalue"], reply
+        # The worker acknowledges the cancellation but this interpreted IO
+        # action never returns. The missing original reply is draining, not
+        # an unacknowledged cancellation, and cannot license a replay.
+        assert "unavailable/draining" in reply["evalue"], reply
         assert psutil.pid_exists(worker), "cooperative interrupt forced the worker"
         current, _ = find_worker_under(provisioner.process.pid)
         assert current == worker, "the adapter started a replacement session"
     finally:
         kc.stop_channels()
-        # This is explicit disposal of the test-owned kernel, not a retry.
+        # The non-returning worker has its own process group. Explicit test
+        # disposal must close it even when Jupyter kills its kernel parent.
+        if owned is not None and owned.is_running():
+            try:
+                owned.kill()
+            except psutil.NoSuchProcess:
+                pass
         km.shutdown_kernel(now=True)
