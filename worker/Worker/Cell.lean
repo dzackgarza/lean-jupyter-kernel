@@ -3,9 +3,13 @@ Generic cell lifecycle, owned by the notebook worker. The DSL supplies its
 transaction through the public hook at startup; no Worker module imports it.
 Only immutable observations enter committed Environment snapshots.
 -/
-import Lean
+module
+
+public import Lean
 import Std.Sync.Mutex
-import Worker.Output
+public import Worker.Output
+
+public section
 
 namespace Worker.Cell
 

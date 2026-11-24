@@ -12,7 +12,11 @@ Outputs are MIME bundles the Jupyter kernel republishes as `display_data` /
 request-local `IO.Ref` the worker clears before and drains after each cell,
 and nothing here ever enters the `Environment` or `Command.State`.
 -/
-import Lean
+module
+
+public import Lean
+
+public section
 
 namespace Worker
 
