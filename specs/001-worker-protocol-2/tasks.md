@@ -135,12 +135,16 @@ Format: `[ID] [Story] Description`. A task with no story serves every story.
   none of it. **Supplies**: K FR-043 (the worker part of the application log). **Inputs**:
   T010.
 - [ ] T012 [US1] [US4] Qualify against a real `KernelSession`. Pin `scripts/qualify_consumer.sh`
-  to the lean-cas-dsl revision of research R9 and replace the `sage -python` start; add a
+  to the lean-cas-dsl revision of research R9 (the head of the kernel-source branch that marks
+  K:T038, K:T085 and K:T090 complete and has this repository's toolchain), write its hash into the
+  script and the commit body, make the script refuse another revision, and replace the
+  `sage -python` start; add a
   qualification notebook in `conformance/` with CAS cells: a retained value used in a later cell
   with one dispatch in the application log; a forced owner whose dependent use is unavailable;
   inspection with zero dispatches. Update `conformance/README.md` and the `casdsl` row of
   `conformance/test_semantic.py`.
-  **Acceptance**: tier 3 passes on the pinned revision. **Consumes**: K:T038, K:T085, K:T090.
+  **Acceptance**: tier 3 passes on the pinned revision; the script exits nonzero on a revision
+  without one of the three tasks or with another toolchain. **Consumes**: K:T038, K:T085, K:T090.
   **Supplies**: the notebook path of the M1.9 checkpoint (K:T093). **Inputs**: T011.
 - [ ] T013 Bring the documents into agreement with protocol 2: `docs/protocol.md` (the frames of
   `contracts/wire-protocol-2.md`), `docs/architecture.md`, `docs/plugins.md` (remove the

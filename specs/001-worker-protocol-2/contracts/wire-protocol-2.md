@@ -20,7 +20,8 @@ restate [NS]; where they differ, [NS] holds and this file is corrected.
 `drain` value:
 
 ```json
-{"state": "drained" | "draining" | "cleanup_unacknowledged", "failures": ["<reason>"]}
+{"state": "drained" | "draining" | "cleanup_unacknowledged",
+ "failures": [{"request_id": <provider request ID>, "reason": "<text>"}]}
 ```
 
 `docs/protocol.md` is the reader-facing description of these frames and agrees with this table.

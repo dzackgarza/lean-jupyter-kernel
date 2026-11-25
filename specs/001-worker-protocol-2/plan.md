@@ -65,6 +65,21 @@ tier-1 commit gate.
 | FR-015 toolchain | `release.toml`, `worker/lean-toolchain`, `dsls/nbdsl/lean-toolchain`, `dsls/nbdsl/lakefile.lean`, both `lake-manifest.json`, `worker/` sources that the toolchain change breaks | Missing | T004 |
 | FR-016 tier-1 gate | `justfile` (`test-commit`, `test-push`, a new `test-tier1`), `docs/development.md` | Missing | T002 |
 
+## Disagreements with [NS]
+
+[NS] governs; each row names the edit and the task that makes it.
+
+| ID | Source now | [NS] | Edit | Task |
+| --- | --- | --- | --- | --- |
+| N1 | `execute` on a missing parent replies `status:"error"` with `stratum:"unavailable"` (`worker/Worker.lean`, `failedExecution`) | §3.1, §5: `unavailable/snapshot_unavailable`, no prefix execution | Reply research R1 | T005 |
+| N2 | `kernel.py` has a path that calls `execute` without a parent | §1, §3.1: every execution names its committed parent | Remove `execute` without a parent; compute the parent of research R4 | T005 |
+| N3 | An unknown operation receives the protocol-1 `unsupported` reply (`docs/protocol.md:30-31` on `main`) | §2, §3.2: unknown operations, modes and control fields are protocol errors | Reply research R2 | T006 |
+| N4 | `inspect` and `complete` with no worker are not established as `unavailable/worker_absent` | §2: no live worker gives `unavailable/worker_absent` without startup | Guards in `kernel.py` and `handlers.py` | T006 |
+| N5 | `Active.draining` is a `Bool`; no drain report reaches the wire | §3.3: a cancelled cell drains its exact frames and reports a draining state | `drainReport` in the cell status (research R3) | T008 |
+| N6 | `restart_and_replay` remains in `worker/client.py` as a raising method | §1, §3.1: no restart and replay, no `restart_and_replay` | Delete it and its callers | T009 |
+| N7 | `docs/plugins.md:34` states a replayability law and the `unsupported` seam | §1: worker loss never authorizes replay | Rewrite the documents | T013 |
+| N8 | [NS] §2 shows `"lean":"4.33.0"` in the `ready` example | §2: release and PID are diagnostic | `lean` is the `Lean.versionString` of the build (`contracts/wire-protocol-2.md`); the example is not a pin, and lean-cas-dsl T105 updates it | T003 |
+
 ## The eight local protocol-2 commits
 
 They are on the local branch `integration/kernel-v1-20261106` of the worktree
