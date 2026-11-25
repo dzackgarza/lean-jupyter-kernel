@@ -43,6 +43,7 @@ test: build
     @! grep -rn '^import NbDsl' worker/ --include='*.lean' || \
         { echo 'BOUNDARY: the core must never import DSL modules'; exit 1; }
     @just -f ~/ai-review-ci/justfiles/python.just -d nbdsl_kernel _mypy
+    @python3 nbdsl_kernel/tests/roundtrip.py --core-only
     @python3 nbdsl_kernel/tests/roundtrip.py
     @JUPYTER_DATA_DIR="$(mktemp -d)"; export JUPYTER_DATA_DIR; \
       trap 'rm -rf "$JUPYTER_DATA_DIR"' EXIT; \

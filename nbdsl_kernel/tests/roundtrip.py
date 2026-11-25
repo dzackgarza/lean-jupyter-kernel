@@ -9,6 +9,7 @@ Grows with each worker milestone; doubles as the protocol spec by example.
 Run: python nbdsl_kernel/tests/roundtrip.py   (after `just build`)
 """
 
+import argparse
 import json
 import os
 import select
@@ -59,14 +60,14 @@ class FrameReader:
 
 
 class Worker:
-    def __init__(self, prelude: str = "NbDsl.Notebook") -> None:
+    def __init__(self, prelude: str = "NbDsl.Notebook", *, project: Path = NBDSL) -> None:
         req_r, req_w = os.pipe()
         rep_r, rep_w = os.pipe()
         self.proc = subprocess.Popen(
             ["lake", "env", str(REPO / "worker/.lake/build/bin/nbdsl_worker"),
              "--req-fd", str(req_r), "--rep-fd", str(rep_w),
              "--prelude-module", prelude],
-            cwd=NBDSL,
+            cwd=project,
             pass_fds=(req_r, rep_w),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -127,7 +128,50 @@ def infos(rep: dict) -> list[dict]:
     return [d for d in rep["diagnostics"] if d["severity"] == "information"]
 
 
+def check_trivia_cells(w: Worker) -> None:
+    # Ordinary Lean comments are lexical trivia, not incomplete commands.
+    # A successful no-op still gives the notebook trail a usable snapshot.
+    rep = w.execute("namespace TriviaRegression\ndef marker : Nat := 41")
+    assert rep["status"] == "ok", rep
+    before = rep["snapshot"]
+    for code in (
+        "-- let e := 5 in ℤ\n-- let i := 3 in ℤ", "", " \n  \n", "-- first\n-- second\n",
+        "/- outer /- nested ℤ -/ comment -/", " \n/- block -/\n-- line",
+    ):
+        rep = w.execute(code, parent=before)
+        assert rep["status"] == "ok" and rep["snapshot"] == before + 1, (code, rep)
+        assert rep["diagnostics"] == rep["outputs"] == rep["sorries"] == [], (code, rep)
+        complete = w.request("is_complete", code=code)
+        assert complete["status"] == "ok" and complete["result"] == "complete", (code, complete)
+        before = rep["snapshot"]
+    # Bad trivia and forbidden module commands must not be accepted as no-ops.
+    for code in ("/- unterminated", "\t", "-- comment\nimport Init", "/- comment -/ #exit"):
+        rep = w.execute(code, parent=before)
+        assert rep["status"] == "error" and rep["snapshot"] == before and errors(rep), (code, rep)
+    # The original scope and declaration survived every no-op, and ordinary
+    # commands preceded/followed by comments are still elaborated.
+    rep = w.execute("-- leading comment\n#eval marker + 1\n/- trailing comment -/", parent=before)
+    assert rep["status"] == "ok" and any("42" in d["message"] for d in infos(rep)), rep
+    rep = w.execute("end TriviaRegression")
+    assert rep["status"] == "ok", rep
+    print("ok: trivia-only cells are silent, complete, and preserve the notebook trail")
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--core-only", action="store_true", help="Run the trivia regression with the mathlib-free worker")
+    args = parser.parse_args()
+    if args.core_only:
+        w = Worker("Init", project=REPO / "worker")
+        try:
+            ready = w.replies.read_frame()
+            assert ready["op"] == "ready" and ready["protocol"] == 1, ready
+            check_trivia_cells(w)
+            rc, out, err = w.shutdown()
+            assert rc == 0 and out == b"", (rc, out, err)
+        finally:
+            w.close()
+        return
     w = Worker()
     try:
         _run(w)
@@ -183,6 +227,8 @@ def _run(w: Worker) -> None:
     assert rep["status"] == "ok", rep
     assert any("42" in d["message"] for d in infos(rep)), rep
     print("ok: definitions persist across cells")
+
+    check_trivia_cells(w)
 
     # Scope state: dangling namespace persists without 'expected end'.
     rep = w.execute("namespace Foo\ndef y : Nat := 1")
