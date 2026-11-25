@@ -25,8 +25,11 @@ just test         # the full commit gate, see below
 `just test` = both builds → Lean no-sorry scan over both packages → the
 **boundary grep** (`import NbDsl` under `worker/` fails the build) → the
 global ai-review-ci **strict mypy** over `nbdsl_kernel` → the protocol
-roundtrip. Commit and push hooks run it; don't hand-run whole suites beyond
-this while iterating — targeted runs are fine.
+roundtrip. Test tiers, the commit and push cadence, test-run logs and
+timing records follow articles E1 to E7 of the
+[constitution](../.specify/memory/constitution.md): the commit hook runs
+tier 1 only, and the full gate runs at milestones. Targeted runs are fine
+while iterating.
 
 Note the QC stanza situation: this is a polyglot monorepo and ai-review-ci's
 doctor has no profile for that, so the repo declares no `ai_review_ci_*`

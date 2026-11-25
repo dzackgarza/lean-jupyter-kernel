@@ -5,6 +5,10 @@ Use the [shared math container](https://github.com/dzackgarza/ai-review-ci/blob/
 Julia/Oscar, Macaulay2, and Singular. The guide covers image pull/run commands,
 CI use, and the host launchers.
 
+Read the [constitution](.specify/memory/constitution.md) before any change. It
+states the roles, the permitted inputs and the rules. Work follows the task list
+of the active feature in `specs/` in document order.
+
 <!-- agent-memory:start -->
 # Agent memory
 

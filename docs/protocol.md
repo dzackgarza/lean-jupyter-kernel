@@ -109,15 +109,15 @@ prelude + ledger hash.
 
 ## Wire protocol version
 
-`protocol` on `ready` / `describe` is the sole compatibility gate between
-adapter and worker. It must match `Worker.Protocol.wireProtocol` /
-`release.toml` `compat.wire_protocol` / `nbdsl_kernel.protocol.WIRE_PROTOCOL`.
-A mismatch surfaces as a typed `WireProtocolError` on execute (the kernel
-still answers `kernel_info`). There is no build-identity or provenance
-comparison and no `nbdsl_provenance` comm.
+Compatibility is the protocol-2 handshake: protocol 2, a fresh worker
+nonce, the eight notebook features, the frozen realization profile hash
+and the `hello` acknowledgement, validated before any source is sent
+(constitution J6; `specs/001-worker-protocol-2/spec.md`). The version in
+`Worker.Protocol.wireProtocol`, `release.toml` `compat.wire_protocol` and
+`nbdsl_kernel.protocol.WIRE_PROTOCOL` agree.
 
 ## Client-side contracts (not wire, but load-bearing)
 
-- The replay ledger (committed `(cell_id, code)` pairs in REPL mode) is the
-  canonical recovery record; the session cache is a validated shortcut.
+- No replay ledger and no session cache exist; worker loss is reported as
+  unavailable (constitution J4).
 - Killing the worker means `os.killpg` on the worker's process group.
