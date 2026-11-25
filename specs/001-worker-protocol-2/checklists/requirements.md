@@ -17,7 +17,8 @@
 - [x] Success criteria are measurable
 - [x] All acceptance scenarios are defined
 - [x] Edge cases are identified
-- [x] Scope is bounded to lean-cas-dsl T083 to T093 and T099 and the constitution
+- [x] Scope is bounded to the worker and client parts of lean-cas-dsl T083 to T093, T098, T099,
+  T127, T347 and the notebook launch of T153, issue #20 (User Story 7) and the constitution
 - [x] Dependencies and assumptions identified
 
 ## Feature Readiness

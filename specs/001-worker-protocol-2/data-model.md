@@ -10,6 +10,7 @@
 | Committed receipt | worker (`Cell.CommittedReceipt`) | `transaction_id`, `output_batch_id`, `profile_sha256`, `result_refs`, snapshot | Visible only in snapshots that contain it |
 | Output batch | worker, published by the client | `result_id`, `mime` (`text/plain`, `text/latex` where supplied), `metadata`, `display_id` | Published once, after commit |
 | Client session | client (`worker/client.py`) | process, nonce, validated `ready`, the last committed snapshot | Never restarts by itself |
+| Language-server document | JupyterLab channel (`jupyterlab_nbdsl`) | the Lean cells in cell order, the map from each cell to its line range, the server session | Separate from the worker session; never on `casdsl` (FR-019) |
 
 State of an execution: `queued` → `active` → one of `committed`, `error`, `cancelled`,
 `unavailable`. A `cancelled` execution has a drain report in `drained`, `draining` or

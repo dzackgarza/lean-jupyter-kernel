@@ -3,10 +3,12 @@
 **Feature Branch**: none (work lands on `main`)
 **Created**: 2026-11-25
 **Status**: Ready for planning
-**Input**: The part of the lean-cas-dsl notebook session that this repository owns: kernel tasks
-T083 to T093 and T099 of lean-cas-dsl `specs/001-categorical-research-language/tasks.md`, under
-the session contract `contracts/notebook-session.md` ([NS]) and the kernel requirements FR-034
-to FR-038, FR-043, SC-010, SC-011 and SC-016 ([KS]).
+**Input**: The part of the lean-cas-dsl notebook session that this repository owns: the worker
+and client parts of kernel tasks T083 to T093, T098, T099, T127 and T347, and the notebook launch
+of T153, of lean-cas-dsl `specs/001-categorical-research-language/tasks.md`, under the session
+contract `contracts/notebook-session.md` ([NS]) and the kernel requirements FR-034 to FR-038,
+FR-043, FR-140, SC-010, SC-011 and SC-016 ([KS]); and the Lean language server in Lean notebook
+cells of issue #20 (User Story 7), which is outside the notebook unit of lean-cas-dsl.
 
 Source identifiers [NS], [KS], [KT] and [K] are defined in the
 [constitution](../../.specify/memory/constitution.md).
@@ -42,6 +44,9 @@ the reuse in B.
    see any declaration of the failed cell.
 4. **Given** a cell that a user executes a second time, **When** it runs, **Then** it is a fresh
    request with a fresh transport ID and a fresh occurrence.
+5. **Given** a committed cell `def two : Nat := 2`, **When** a later cell `#guard two == 2` runs on
+   its snapshot, **Then** it commits, and the plugin state differs from the parent only by the
+   declarations of the two cells.
 
 ### User Story 2 - Inspection that executes nothing (Priority: P1)
 
@@ -161,6 +166,40 @@ qualifications of the result. A refresh of the display executes nothing.
 4. **Given** no request for diagnostics, **When** a cell commits, **Then** no backend, routing or
    timing text is shown.
 
+### User Story 7 - The Lean language server in Lean notebook cells (Priority: P3)
+
+The researcher writes Lean proofs in the cells of a notebook on the `nbdsl` kernelspec or the
+native session. While the researcher edits, the real Lean language server gives the goal state,
+hover, diagnostics, completion and navigation of the cell under the cursor, as the VS Code Lean
+extension does. Execution of a cell still goes through the worker.
+
+**Why this priority**: Proof work needs the live goal state of the text being edited; a REPL
+answer after execution does not supply it (issue #20). No notebook requirement of lean-cas-dsl
+asks for it, so it is not part of the notebook unit; the kernel's inert-inspection requirement
+excludes it from CAS notebooks ([KS] FR-035).
+
+**Independent Test**: In JupyterLab, a notebook holds a Mathlib-backed proof in two cells, the
+second using a definition of the first. With neither cell executed, the researcher edits the first
+cell, moves the cursor into the proof of the second and reads its goal and hover for the current
+text; inserts lines in the first cell, reorders the cells and applies a suggestion of the
+infoview. Diagnostics, goals and the insertion map to the right cell and position, also after a
+server restart and after the panel is hidden and shown again. The worker log shows no request
+from these steps.
+
+**Acceptance Scenarios**:
+
+1. **Given** a Lean notebook with the language-server channel on, **When** the cursor is in a
+   proof, **Then** the infoview shows the goal state of the current cell text at that position.
+2. **Given** an edit of an earlier cell that is not executed, **When** the cursor moves into a
+   later cell that uses it, **Then** hover and diagnostics follow the edited text.
+3. **Given** a suggestion applied from the infoview, **When** it is inserted, **Then** it lands in
+   the cell and at the position that the server names.
+4. **Given** the channel on, **When** Jupyter sends `inspect`, `complete` or `is_complete`,
+   **Then** the worker answers from committed state (FR-005) and the language server takes no
+   part.
+5. **Given** a notebook on the `casdsl` kernelspec, **When** the researcher edits a cell, **Then**
+   no cell text reaches a language server.
+
 ### Edge Cases
 
 - A repeated transport ID with an equal payload, a changed payload or a different operation
@@ -215,7 +254,8 @@ qualifications of the result. A refresh of the display executes nothing.
   the permit of the cell until its exact in-flight frames drain, schedules no late child or
   resume, and publishes nothing. The drain report of the cell (draining, drained, or
   unacknowledged cleanup with its failures) is carried in the cell status of `commit_status` and in the reply to a cooperative `cancel`.
-  ([NS] §3.3; [KT] T089, T091 and the "Unreached code" row of `FramedConnection.cleanupFailures`.)
+  ([NS] §3.3; [KT] T089, which connects `FramedConnection.cleanupFailures` to the drain report of
+  the cell, and T091.)
 - **FR-009 — Force, close and generation invalidation.** Explicit force closes the connections
   of the target and reports the exact invalidated owners. Shutdown, restart and transport
   failure report generation loss. A later use of a dependent reference is unavailable before
@@ -246,6 +286,25 @@ qualifications of the result. A refresh of the display executes nothing.
   Mathlib revision that lean-cas-dsl `main` pins. (Constitution J9.)
 - **FR-016 — Tier-1 commit gate.** The commit hook runs tier 1 (constitution E1) within 300
   seconds; the full gate runs at push. (Constitution E1, E4.)
+- **FR-017 — Lean commands in cells.** An ordinary Lean command in a cell elaborates as Lean in the
+  environment of the session, through the plugin, and changes the plugin state only through the
+  declarations that it adds. ([KS] FR-140; [KT] T347.)
+- **FR-018 — Language-server channel.** For the Lean cells of a notebook on the `nbdsl` kernelspec
+  or the native session, a JupyterLab channel drives the Lean language server (`lake serve`) of the
+  notebook's Lean project on one language-server document: the Lean cells in cell order, with a map
+  from each cell to its line range. It gives goal state, hover, diagnostics, completion and
+  navigation, and it hosts the upstream infoview through its host API (`EditorApi` and
+  `InfoviewApi` of `@leanprover/infoview`): it relays the subscribed notifications in both
+  directions, sends cursor changes, maps edits and navigation back to the cells, and keeps the RPC
+  session alive. The researcher turns the channel on for a notebook (constitution J4). (Issue #20;
+  research R10.)
+- **FR-019 — The channel and the kernel stay apart.** The language-server channel answers no
+  kernel request: `inspect`, `complete` and `is_complete` stay worker answers from committed
+  state (FR-005; constitution J1, J5). The channel sends no request to the worker and changes no
+  snapshot, occurrence or dispatch. On the `casdsl` kernelspec the channel is off and no cell text
+  reaches a language server: the server elaborates uncommitted text, the elaboration of a CAS cell
+  dispatches computations, and an endpoint without nonexecuting committed-environment inspection
+  receives no executable cell text ([KS] User Story 7, scenario 2, and FR-035; [NS] §3.2).
 
 ### Key Entities
 
@@ -256,6 +315,9 @@ qualifications of the result. A refresh of the display executes nothing.
   its drain report.
 - **Committed receipt**: the commit of a transaction, visible in the snapshots that contain it.
 - **Output batch**: the complete set of result displays of one commit.
+- **Language-server document**: the Lean cells of one notebook in cell order, the map from each
+  cell to its line range, and the server session of the channel; separate from the worker
+  session.
 
 ## Success Criteria *(mandatory)*
 
@@ -272,6 +334,7 @@ qualifications of the result. A refresh of the display executes nothing.
 | SC-007 | Display once | Exactly 1 display event per committed result; 0 diagnostics shown without request ([KS] SC-010) |
 | SC-008 | Records | Every test run has a log and every test has a timing record in the repository ([KS] SC-016) |
 | SC-009 | Fast loop | Tier 1 finishes within 300 seconds on the development host |
+| SC-010 | Language server in Lean cells | In the two-cell specimen of User Story 7, goal, hover, diagnostics and insertion map to the right cell and position at every step, also after a server restart and a hidden panel; 0 worker requests from these steps; 0 bytes of `casdsl` cell text to a language server |
 
 ## Assumptions
 
@@ -281,3 +344,5 @@ qualifications of the result. A refresh of the display executes nothing.
 - The lifecycle validation phase `lifecycle-v2` and the final notebook acceptance (lean-cas-dsl
   T094, T095, T102, T107) are run by the independent assessor in lean-cas-dsl against a build of
   this repository.
+- The Lean project of the language-server channel is `dsls/nbdsl`, Mathlib-backed and built in the
+  research image on the toolchain of FR-015.

@@ -11,7 +11,9 @@ cancels through one commit/cancel gate, reports drain and forced invalidation, p
 batches once, and never restarts or replays. Most of this exists in eight local commits that
 `origin` does not have. The plan lands them on `main`, closes the gaps against the
 specification, aligns the toolchain with lean-cas-dsl, and adds logs, timing records and a
-tier-1 commit gate.
+tier-1 commit gate. Ordinary Lean commands run in cells (FR-017). After the release that
+lean-cas-dsl locks, a separate JupyterLab channel gives Lean notebook cells the Lean language
+server (User Story 7, issue #20), outside the notebook unit and never on the CAS kernelspec.
 
 ## Technical Context
 
@@ -31,11 +33,11 @@ tier-1 commit gate.
 
 | Article | Plan element | State |
 | --- | --- | --- |
-| J1 verbatim cells | No Python parsing is added; `cas_display.py` reads retained MIME data only | Pass |
+| J1 verbatim cells | No Python parsing is added; `cas_display.py` reads retained MIME data only; the language-server channel answers in the editor and never through a kernel request (FR-019) | Pass |
 | J2 plugin boundary | CAS state stays in the plugin; the worker exposes `Worker.Cell.Plugin` only | Pass |
 | J3 retained results | Explicit `parent_snapshot` on every execute (R1, R4) | Pass after T005 |
 | J4 no replay | `cache.py`, `SessionCache.lean` removed on the branch; `restart_and_replay` removed by T009 | Pass after T009 |
-| J5 inert inspection | `Query.lean` data-only on the branch; error paths checked by T006 | Pass after T006 |
+| J5 inert inspection | `Query.lean` data-only on the branch; error paths checked by T006; the channel of US7 is off on `casdsl` and sends nothing to the worker (FR-019) | Pass after T006 |
 | J6 handshake | `errors.py` validates `ready` on the branch | Pass after T003 |
 | J7 display once | `cas_display.py` and `rendering.py` on the branch; T010 | Pass after T010 |
 | J8 typed wire | `protocol.py` typed models; roundtrip codec stays independent | Pass |
@@ -64,6 +66,8 @@ tier-1 commit gate.
 | FR-014 logs, timing | `nbdsl_kernel/tests/conftest.py` (new), `nbdsl_kernel/tests/roundtrip.py`, `worker/Worker.lean`, `worker/client.py`, `records/` (new) | Missing | T002, T011 |
 | FR-015 toolchain | `release.toml`, `worker/lean-toolchain`, `dsls/nbdsl/lean-toolchain`, `dsls/nbdsl/lakefile.lean`, both `lake-manifest.json`, `worker/` sources that the toolchain change breaks | Missing | T004 |
 | FR-016 tier-1 gate | `justfile` (`test-commit`, `test-push`, a new `test-tier1`), `docs/development.md` | Missing | T002 |
+| FR-017 Lean commands in cells | `worker/Worker/Frontend.lean`, `worker/Worker.lean` (`execute`), `worker/Worker/NativeSession.lean` | Not established | T015 |
+| FR-018, FR-019 language-server channel | `jupyterlab_nbdsl/src/` (a new channel module and the infoview panel), `jupyterlab_nbdsl/package.json`, `jupyterlab_nbdsl/ui-tests/` (new) | Missing | T016, T017 |
 
 ## Disagreements with [NS]
 
@@ -130,9 +134,27 @@ locks the worker release of T014.
 | US5 | restart with a fresh nonce and no replay; lost reply | 1 | `test_restart.py` |
 | US6 | one display event per result; no diagnostics | 1 and 2 | `test_cas_display.py`; `test_e2e.py` |
 | all | protocol frames, independent codec | 1 | `nbdsl_kernel/tests/roundtrip.py` |
+| US1 | an ordinary Lean command in a cell and its later use | 1 | `test_native_v2.py` |
+| US7 | the two-cell specimen through JupyterLab: goal, hover, diagnostics, insertion, reorder, restart, hidden panel; no worker request; no text from `casdsl` | 2 | `jupyterlab_nbdsl/ui-tests/language-server.spec.ts` (`@jupyterlab/galata`) |
 
 The native session plugin (`Worker/NativeSession.lean`, `Init` prelude) is the language of tier 1
 where the CAS is not needed. Tier 3 uses a real `KernelSession` of lean-cas-dsl.
+
+## The Lean language server (User Story 7)
+
+Decision (research R10): the language server of issue #20 serves the Lean cells of the `nbdsl`
+kernelspec and of the native session through a JupyterLab channel and the upstream infoview. It
+is not part of the notebook unit of lean-cas-dsl, and its tasks T016 and T017 follow the release
+T014 that lean-cas-dsl locks. On `casdsl` the channel is off (FR-019).
+
+T016 is the spike: it runs the separating specimen of User Story 7 on two adapters and keeps the
+one that passes every step. Adapter A is the `jupyterlab-lsp` virtual document with the Lean
+server, with the kernel `language_info.file_extension` and MIME type that it requires. Adapter B
+writes the language-server document as a real file inside `dsls/nbdsl` and drives `lake serve` on
+it. When both pass, adapter A is kept: it reuses a maintained client and needs no file
+synchronization. When neither passes, T016 records the failed step of each with the URI, project
+root, import resolution and notification flow, and T017 repairs the adapter whose failure is
+narrower. T017 makes the kept adapter the channel of FR-018 and FR-019.
 
 ## Project Structure
 
@@ -154,7 +176,8 @@ specs/001-worker-protocol-2/
 
 ```text
 worker/                     Lake package nbdsl-worker (protocol, cells, queries, native plugin)
-dsls/nbdsl/                 reference plugin NbDsl
+dsls/nbdsl/                 reference plugin NbDsl; Lean project of the language-server channel
+jupyterlab_nbdsl/           JupyterLab extension: highlighting; the language-server channel (US7)
 nbdsl_kernel/nbdsl_kernel/  ipykernel adapter, client, display
 nbdsl_kernel/tests/         tier-1 and tier-2 suites
 scripts/                    check and consumer qualification

@@ -11,7 +11,8 @@ inputs. Every test is end to end: a real cell through the production client or t
 kernelspec, through the real worker (constitution E2). Tier-1 tests use the native mathlib-free
 plugin `Worker/NativeSession.lean`; tier-3 tests use a real `KernelSession` of lean-cas-dsl.
 
-Format: `[ID] [Story] Description`. A task with no story serves every story.
+Format: `[ID] [Story] Description`. A task with no story serves every story. Task IDs are stable:
+lean-cas-dsl names them, so a new task takes the next free ID at its place in the order.
 
 ## Phase 1: Feedback and records
 
@@ -67,6 +68,14 @@ Format: `[ID] [Story] Description`. A task with no story serves every story.
   keeps its parent.
   **Acceptance**: User Story 1 scenarios 1 to 4 pass in tier 1. **Supplies**: K:T085, K:T087.
   **Inputs**: T003.
+- [ ] T015 [US1] Elaborate ordinary Lean commands in cells (FR-017; research R11). In
+  `worker/Worker/Frontend.lean` and `worker/Worker.lean` (`execute`), elaborate an ordinary Lean
+  command of a cell in the environment of its parent snapshot, through the plugin, and commit its
+  declarations with the cell; `worker/Worker/NativeSession.lean` keeps its state unchanged apart
+  from them. Add the test to `nbdsl_kernel/tests/test_native_v2.py`: a cell `def two : Nat := 2`,
+  then a cell `#guard two == 2` on its snapshot.
+  **Acceptance**: User Story 1 scenario 5 passes in tier 1. **Supplies**: the worker part of
+  K:T347. **Inputs**: T005.
 
 ## Phase 4: User Story 2 - Inspection that executes nothing (P1)
 
@@ -78,7 +87,9 @@ Format: `[ID] [Story] Description`. A task with no story serves every story.
   side-effecting delaborator and a documentation hook to a test prelude in
   `nbdsl_kernel/tests/test_request_controls.py` and assert that inspection does not run them.
   **Acceptance**: User Story 2 scenarios 1 to 4 pass in tier 1; zero source bytes reach an
-  incompatible worker (`test_identity.py`). **Supplies**: K:T086, K:T087. **Inputs**: T005.
+  incompatible worker (`test_identity.py`). **Supplies**: K:T084, K:T086, K:T087, and the worker
+  part of K:T098 (non-extensible formatting of the plugin's descriptors in `Query.lean` on the
+  success and error paths). **Inputs**: T005.
 
 ## Phase 5: User Story 3 - Cancellation (P1)
 
@@ -133,20 +144,23 @@ Format: `[ID] [Story] Description`. A task with no story serves every story.
   `worker/client.py`; pass the paths from `kernel.py` and `install.py`. Add a tier-1 test that
   runs connected cells and reads both logs.
   **Acceptance**: for each request the logs hold every field of research R5; the notebook shows
-  none of it. **Supplies**: K FR-043 (the worker part of the application log). **Inputs**:
-  T010.
+  none of it. **Supplies**: K:T127 and K FR-043 (the worker part of the application log).
+  **Inputs**: T010.
 - [ ] T012 [US1] [US4] Qualify against a real `KernelSession`. Pin `scripts/qualify_consumer.sh`
-  to the lean-cas-dsl revision of research R9 (the head of the kernel-source branch that marks
-  K:T038, K:T085 and K:T090 complete and has this repository's toolchain), write its hash into the
-  script and the commit body, make the script refuse another revision, and replace the
-  `sage -python` start; add a
-  qualification notebook in `conformance/` with CAS cells: a retained value used in a later cell
-  with one dispatch in the application log; a forced owner whose dependent use is unavailable;
-  inspection with zero dispatches. Update `conformance/README.md` and the `casdsl` row of
+  to the lean-cas-dsl revision of research R9 (the head of the kernel-source branch with this
+  repository's toolchain and K:T038 checked), write its hash into the script and the commit body,
+  make the script refuse another revision, and replace the `sage -python` start; run the
+  qualification job of `.github/workflows/ci.yml` in the research image and delete its Sage 10.7
+  micromamba step; add a qualification notebook in `conformance/` with CAS cells: a retained value
+  used in a later cell with one dispatch in the application log; a missing parent that is
+  `unavailable` and runs nothing; a forced owner whose dependent use is unavailable; inspection
+  with zero dispatches. Update `conformance/README.md` and the `casdsl` row of
   `conformance/test_semantic.py`.
   **Acceptance**: tier 3 passes on the pinned revision; the script exits nonzero on a revision
-  without one of the three tasks or with another toolchain. **Consumes**: K:T038, K:T085, K:T090.
-  **Supplies**: the notebook path of the notebook checkpoint N1 (K:T093). **Inputs**: T011, T004.
+  with another toolchain or with K:T038 unchecked. **Consumes**: K:T038; the notebook-session
+  source of K:T085 and K:T090, which close on this qualification (research R9). **Supplies**: the
+  checks of K:T085 and K:T090; the notebook path of the notebook checkpoint N1 (K:T093); the
+  notebook-launch part of K:T153. **Inputs**: T011, T004.
 - [ ] T013 Bring the documents into agreement with protocol 2: `docs/protocol.md` (the frames of
   `contracts/wire-protocol-2.md`), `docs/architecture.md`, `docs/plugins.md` (remove the
   replayability law at `:34` and the `unsupported` seam), `README.md` (limits and verify
@@ -159,6 +173,30 @@ Format: `[ID] [Story] Description`. A task with no story serves every story.
   **Acceptance**: the release workflow publishes `v2.0.0`. **Supplies**: the immutable pin that
   lean-cas-dsl locks for `nbdsl-worker` (K:T093 and issue #90). **Inputs**: T013.
 
+## Phase 9: User Story 7 - The Lean language server in Lean notebook cells (P3)
+
+- [ ] T016 [US7] Spike the two adapters of the language-server channel (plan, "The Lean language
+  server"; research R10; issue #20). Build the two-cell Mathlib-backed specimen notebook of User
+  Story 7 on the `nbdsl` kernelspec in `dsl-notebooks/`, and run its steps (edit without
+  execution, goal and hover in the later cell, line insertion, cell reorder, infoview suggestion,
+  server restart, hidden panel) on adapter A (`jupyterlab-lsp` virtual document) and adapter B (a
+  real file in `dsls/nbdsl` under `lake serve`), each with the upstream infoview in a JupyterLab
+  panel. Record in research R10 the result of each step for each adapter, with its URI, project
+  root, import resolution and notification flow, and the adapter that the plan's rule keeps.
+  **Files**: `dsl-notebooks/lean-language-server.ipynb`, `jupyterlab_nbdsl/src/`,
+  `jupyterlab_nbdsl/package.json`, `specs/001-worker-protocol-2/research.md`.
+  **Acceptance**: research R10 names the kept adapter and the result of every step for both.
+  **Supplies**: none. **Inputs**: T011.
+- [ ] T017 [US7] Make the kept adapter the language-server channel (FR-018, FR-019): turned on per
+  notebook, off on `casdsl`; the infoview host API with cursor changes, relayed notifications,
+  navigation and edits mapped to cells, and the RPC session kept alive. Add
+  `jupyterlab_nbdsl/ui-tests/language-server.spec.ts` (`@jupyterlab/galata`) in the research
+  image: the specimen steps of User Story 7, the worker log with no request from them, and a
+  `casdsl` notebook whose edits send no cell text to a language server. Document the channel in
+  `docs/architecture.md` and `jupyterlab_nbdsl/README.md`.
+  **Acceptance**: User Story 7 scenarios 1 to 5 pass in tier 2 (SC-010). **Supplies**: issue #20.
+  **Inputs**: T016.
+
 ## Dependencies
 
 | Task | Inputs |
@@ -168,20 +206,24 @@ Format: `[ID] [Story] Description`. A task with no story serves every story.
 | T003 | T002 |
 | T004 | T003; K:T105 |
 | T005 | T003 |
+| T015 | T005 |
 | T006 | T005 |
 | T007 | T005 |
 | T008 | T007 |
 | T009 | T008 |
 | T010 | T009 |
 | T011 | T010 |
-| T012 | T011, T004; K:T038, K:T085, K:T090 |
+| T012 | T011, T004; K:T038 |
 | T013 | T011 |
 | T014 | T012, T013 |
+| T016 | T011 |
+| T017 | T016 |
 
 A wait for a lean-cas-dsl task blocks only its consumer: T004 waits for K:T105 and T012 for
-T004 and its three kernel tasks; the contributor continues with the next task whose inputs are
-present, and the waiting task keeps its position. T012 qualifies only against a kernel at the
-toolchain of this repository (research R9), so it follows T004.
+T004 and K:T038; the contributor continues with the next task whose inputs are present, and the
+waiting task keeps its position. T012 qualifies only against a kernel at the toolchain of this
+repository (research R9), so it follows T004. T016 and T017 follow T014 in the order and wait for
+T011 only, so they proceed while T012 and T014 wait.
 
 ## Coverage
 
@@ -198,6 +240,8 @@ toolchain of this repository (research R9), so it follows T004.
 | FR-014 | T002, T011 |
 | FR-015 | T004 |
 | FR-016 | T002 |
+| FR-017 | T015 |
+| FR-018, FR-019 | T016, T017 |
 
 | Success criterion | Tasks |
 | --- | --- |
@@ -210,3 +254,4 @@ toolchain of this repository (research R9), so it follows T004.
 | SC-007 | T010 |
 | SC-008 | T002, T011 |
 | SC-009 | T002 |
+| SC-010 | T017 |

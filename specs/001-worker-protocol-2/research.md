@@ -35,8 +35,8 @@ reply leaves a draining or busy state; an unacknowledged worker cancellation is
 point that [NS] leaves to this repository (`contracts/wire-protocol-2.md`); kernel runtime
 contract §7 (a call during the drain is `unavailable/busy_draining`; an unacknowledged drain
 persists until explicit force or actual loss; a lost cleanup reply is recorded and not resent);
-lean-cas-dsl `tasks.md`, "Unreached code", row T089 (the worker carries the report in the cell
-status, T091); the kernel branch at `6808bc0`: `CellTransaction.draining : BaseIO Bool`
+lean-cas-dsl `tasks.md`, T089 (it connects `FramedConnection.cleanupFailures` to the drain report
+of the cell, and the worker carries the report in the cell status, T091); the kernel branch at `6808bc0`: `CellTransaction.draining : BaseIO Bool`
 (`CasRuntime/Transaction.lean:734`) and `FramedConnection.cleanupFailures : BaseIO (Array (Nat ×
 String))` (`CasRuntime/Connection.lean:275`).
 
@@ -85,12 +85,46 @@ lean-cas-dsl `main`. **Source**: constitution J9; lean-cas-dsl `AGENTS.md` "Sour
 **Decision**: the qualification revision of lean-cas-dsl is the head, at the time T012 runs, of
 the lean-cas-dsl branch that holds the kernel source (lean-cas-dsl `AGENTS.md`, "Source
 location": `integration/kernel-v1-20261106` until its pull request #87 merges, then `main`). It
-qualifies only when its `specs/001-categorical-research-language/tasks.md` marks K:T038, K:T085
-and K:T090 complete, the kernel tasks that T012 consumes, and when its `lean-toolchain` equals the
-toolchain of this repository (J9). T012 writes its full hash into `scripts/qualify_consumer.sh`
-and into the body of the T012 commit. The script exits nonzero on a revision that lacks one of
-the three tasks or has another toolchain. The present pin 4c6feda (2026-07-31) and its
-`sage -python` start are replaced.
-**Source**: [KT] T038, T085, T090 and T093; constitution J9 (one toolchain for the worker and the
-plugin oleans) and E1 (tier 3 uses a real `KernelSession`); lean-cas-dsl `AGENTS.md`, "Source
-location"; the digest gap G6.
+qualifies only when its `lean-toolchain` equals the toolchain of this repository (J9) and its
+tasks file marks K:T038 complete. The qualification is the check of K:T085 and K:T090 (their check
+is the tier-3 qualification of T012), so T012 does not wait for their checkboxes: a revision
+without their notebook-session code fails the qualification notebook itself, and those two kernel
+tasks close when it passes. T012 writes its full hash into `scripts/qualify_consumer.sh` and into
+the body of the T012 commit. The script exits nonzero on a revision with another toolchain or with
+K:T038 unchecked. The present pin 4c6feda (2026-07-31), its `sage -python` start and the CI step
+that provisions Sage 10.7 for that start are replaced: the qualification job runs in the research
+image (constitution E5); this is the notebook-launch part of K:T153.
+**Source**: [KT] T038, T085, T090, T093 and T153; constitution J9 (one toolchain for the worker
+and the plugin oleans), E1 (tier 3 uses a real `KernelSession`) and E5; lean-cas-dsl `AGENTS.md`,
+"Source location"; the digest gap G6; `.github/workflows/ci.yml` (Sage 10.7 through micromamba for
+the `sage -python` start of the frozen consumer baseline).
+
+## R10. The Lean language server of issue #20
+
+**Decision**: the language server serves the Lean cells of the `nbdsl` kernelspec and of the
+native session through a JupyterLab channel that hosts the upstream infoview (FR-018). It is not a
+task of the notebook unit, and it is off on `casdsl` (FR-019). Its tasks T016 (the spike of the
+two adapters, plan "The Lean language server") and T017 follow T014, so that the release that
+lean-cas-dsl T093 locks does not wait for them; their input is T011, whose worker log observes that
+the channel sends nothing to the worker.
+**Source**: issue #20 and its comment of 2026-10-25 (the infoview host API `EditorApi` and
+`InfoviewApi`, the RPC session that the host keeps alive, the separating two-cell specimen; the
+`jupyterlab-lsp` virtual document and its `language_info.file_extension` and MIME requirements);
+[KS] User Stories 7 and 8, FR-034 to FR-038 and FR-140 (no notebook requirement asks for a
+language server; FR-035 and User Story 7, scenario 2, reject an inspection endpoint that executes
+text); [KT], the notebook unit (T083 to T093, T010, T097 to T099, T346 to T348, T325), which holds
+no language-server task; [NS] §3.2 (inspection passes no candidate text to elaboration);
+constitution J1, J4 and J5.
+**Reason**: a language server elaborates uncommitted text on every edit. For a Lean cell of NbDsl
+or of the native session that is the editor behaviour of Lean. For a CAS cell, elaboration
+dispatches computations, so a CAS notebook can send no cell text to a language server.
+**Rejected**: answering Jupyter `inspect` and `complete` from the language server, which
+elaborates candidate text (J5, FR-005); a REPL-only kernel, which issue #20 excludes.
+
+## R11. Lean commands in cells
+
+**Decision**: a cell is elaborated by `Worker/Frontend.lean` through the plugin; an ordinary Lean
+command elaborates in the environment of the parent snapshot and its declarations enter the
+committed snapshot like any other cell result. T015 checks it through the native plugin, the
+language of tier 1, and the CAS plugin receives the same worker path (K:T347).
+**Source**: [KS] FR-140; [KT] T347 (its files include `worker/Worker.lean` of this repository).

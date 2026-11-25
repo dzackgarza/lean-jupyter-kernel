@@ -11,17 +11,24 @@ External sources cited by identifier:
 | ID | Source |
 | --- | --- |
 | [K] | lean-cas-dsl constitution v4.0.1, `.specify/memory/constitution.md` on `main` |
-| [KS] | lean-cas-dsl `specs/001-categorical-research-language/spec.md` (User Stories 7 and 8, FR-034 to FR-038, FR-043, SC-010, SC-011, SC-016) |
+| [KS] | lean-cas-dsl `specs/001-categorical-research-language/spec.md` (User Stories 7 and 8, FR-034 to FR-038, FR-043, FR-140, SC-010, SC-011, SC-016) |
 | [NS] | lean-cas-dsl `specs/001-categorical-research-language/contracts/notebook-session.md` (notebook session contract v2) |
-| [KT] | lean-cas-dsl `specs/001-categorical-research-language/tasks.md` (T083 to T093, T099, and T105 for the toolchain port) |
+| [KT] | lean-cas-dsl `specs/001-categorical-research-language/tasks.md` (the notebook unit: T083 to T093, T098, T099 and T347; T127 for the application log; T153 for the notebook launch; T105 for the toolchain port) |
 
 ## Core Principles
 
 ### J1. Cell text reaches Lean verbatim
 
 Python never tokenizes, parses or interprets a character of a cell. The Python kernel does
-transport and rendering only. Completion, inspection, diagnostics and syntax completeness are
-answers of the Lean worker, not of Python. (`docs/architecture.md:9`, `:19-20`; `README.md:3-6`.)
+transport and rendering only. The kernel's completion, inspection, diagnostics and syntax
+completeness are answers of the Lean worker, not of Python. (`docs/architecture.md:9`, `:19-20`;
+`README.md:3-6`.)
+
+In the editor of a Lean notebook, a separate channel to the Lean language server MAY give the goal
+state, hover, diagnostics, completion and navigation of uncommitted cell text. That channel never
+answers a kernel request (J5), sends nothing to the worker, and is off for a plugin whose
+elaboration computes outside Lean: no cell text of the CAS reaches a language server ([KS] User
+Story 7, scenario 2; FR-035).
 
 ### J2. The worker is language-agnostic; a language enters through the plugin boundary
 
@@ -200,4 +207,4 @@ specification, plan and task list into agreement through `speckit-specify`, `spe
 redefined article, MINOR for a new article or a material expansion, PATCH for wording. A review
 of a change checks it against every article that the change touches.
 
-**Version**: 1.0.1 | **Ratified**: 2026-11-25 | **Last Amended**: 2026-11-25
+**Version**: 1.1.0 | **Ratified**: 2026-11-25 | **Last Amended**: 2026-11-25
