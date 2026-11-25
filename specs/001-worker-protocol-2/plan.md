@@ -113,8 +113,9 @@ result to `main` as a fast-forward. No commit is rewritten, so fb03325 becomes r
 | Mathlib (NbDsl) | v4.32.0, 81a5d25 | `master`, 5d0d3c0 | lean-cas-dsl `lake-manifest.json` on `main` |
 | Contract example | `"lean":"4.33.0"` in [NS] §2 | the value of `Lean.versionString` of the build | the worker reports its build; the example is not a pin |
 
-T004 aligns them after T003. lean-cas-dsl issue #90 ports the kernel branch to the same pins and
-then locks the aligned worker revision.
+T004 aligns them after T003 and after lean-cas-dsl T105, which ports the kernel branch to the same
+pins (issue #90), so the worker and the kernel change toolchain together. lean-cas-dsl T093 then
+locks the worker release of T014.
 
 ## Tests
 

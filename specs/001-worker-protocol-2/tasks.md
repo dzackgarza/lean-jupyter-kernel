@@ -52,8 +52,9 @@ Format: `[ID] [Story] Description`. A task with no story serves every story.
   at 5d0d3c0 in `dsls/nbdsl/lakefile.lean` and its `lake-manifest.json`; repair the worker
   sources that the Lean change breaks.
   **Acceptance**: tier 1 and tier 2 pass on v4.36.0-rc2; `ready.lean` reports the new version.
-  **Supplies**: lean-cas-dsl issue #90 (the port of its kernel branch to the research-image
-  pins). **Inputs**: T003; the lean-cas-dsl `main` pins.
+  **Supplies**: the worker at the toolchain of the ported kernel, which K:T093 locks through the
+  release of T014. **Consumes**: K:T105, the port of the lean-cas-dsl kernel branch to the
+  research-image pins (lean-cas-dsl issue #90). **Inputs**: T003; K:T105.
 
 ## Phase 3: User Story 1 - Connected cells that use retained results (P1)
 
@@ -145,7 +146,7 @@ Format: `[ID] [Story] Description`. A task with no story serves every story.
   `conformance/test_semantic.py`.
   **Acceptance**: tier 3 passes on the pinned revision; the script exits nonzero on a revision
   without one of the three tasks or with another toolchain. **Consumes**: K:T038, K:T085, K:T090.
-  **Supplies**: the notebook path of the M1.9 checkpoint (K:T093). **Inputs**: T011.
+  **Supplies**: the notebook path of the notebook checkpoint N1 (K:T093). **Inputs**: T011, T004.
 - [ ] T013 Bring the documents into agreement with protocol 2: `docs/protocol.md` (the frames of
   `contracts/wire-protocol-2.md`), `docs/architecture.md`, `docs/plugins.md` (remove the
   replayability law at `:34` and the `unsupported` seam), `README.md` (limits and verify
@@ -165,7 +166,7 @@ Format: `[ID] [Story] Description`. A task with no story serves every story.
 | T001 | none |
 | T002 | none |
 | T003 | T002 |
-| T004 | T003 |
+| T004 | T003; K:T105 |
 | T005 | T003 |
 | T006 | T005 |
 | T007 | T005 |
@@ -173,12 +174,14 @@ Format: `[ID] [Story] Description`. A task with no story serves every story.
 | T009 | T008 |
 | T010 | T009 |
 | T011 | T010 |
-| T012 | T011; K:T038, K:T085, K:T090 |
+| T012 | T011, T004; K:T038, K:T085, K:T090 |
 | T013 | T011 |
 | T014 | T012, T013 |
 
-A wait for a lean-cas-dsl task blocks only T012; the contributor continues with T013 and keeps
-T012 in its position.
+A wait for a lean-cas-dsl task blocks only its consumer: T004 waits for K:T105 and T012 for
+T004 and its three kernel tasks; the contributor continues with the next task whose inputs are
+present, and the waiting task keeps its position. T012 qualifies only against a kernel at the
+toolchain of this repository (research R9), so it follows T004.
 
 ## Coverage
 
