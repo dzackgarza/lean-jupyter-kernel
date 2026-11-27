@@ -10,7 +10,7 @@ External sources cited by identifier:
 
 | ID | Source |
 | --- | --- |
-| [K] | lean-cas-dsl constitution v4.0.1, `.specify/memory/constitution.md` on `main` |
+| [K] | lean-cas-dsl constitution v5.0.0, `.specify/memory/constitution.md` on `main` |
 | [KS] | lean-cas-dsl `specs/001-categorical-research-language/spec.md` (User Stories 7 and 8, FR-034 to FR-038, FR-043, FR-140, SC-010, SC-011, SC-016) |
 | [NS] | lean-cas-dsl `specs/001-categorical-research-language/contracts/notebook-session.md` (notebook session contract v2) |
 | [KT] | lean-cas-dsl `specs/001-categorical-research-language/tasks.md` (the notebook unit: T083 to T093, T098, T099 and T347; T127 for the application log; T153 for the notebook launch; T105 for the toolchain port) |
@@ -207,4 +207,4 @@ specification, plan and task list into agreement through `speckit-specify`, `spe
 redefined article, MINOR for a new article or a material expansion, PATCH for wording. A review
 of a change checks it against every article that the change touches.
 
-**Version**: 1.1.0 | **Ratified**: 2026-11-25 | **Last Amended**: 2026-11-25
+**Version**: 1.1.1 | **Ratified**: 2026-11-25 | **Last Amended**: 2026-11-27

@@ -45,6 +45,7 @@ server (User Story 7, issue #20), outside the notebook unit and never on the CAS
 | E1, E4 tiers and cadence | T002 | Pass after T002 |
 | E3 lessons | T001 | Pass after T001 |
 | E6, E7 logs and timing | T002 (test runs), T011 (application log) | Pass after T011 |
+| Work order | No task waits: T004 consumes K:T352 and T012 consumes K:T038, which the workstream does first in lean-cas-dsl ([tasks](tasks.md#dependencies)) | Pass |
 
 ## Requirement to file map
 
@@ -82,7 +83,7 @@ server (User Story 7, issue #20), outside the notebook unit and never on the CAS
 | N5 | `Active.draining` is a `Bool`; no drain report reaches the wire | §3.3: a cancelled cell drains its exact frames and reports a draining state | `drainReport` in the cell status (research R3) | T008 |
 | N6 | `restart_and_replay` remains in `worker/client.py` as a raising method | §1, §3.1: no restart and replay, no `restart_and_replay` | Delete it and its callers | T009 |
 | N7 | `docs/plugins.md:34` states a replayability law and the `unsupported` seam | §1: worker loss never authorizes replay | Rewrite the documents | T013 |
-| N8 | [NS] §2 shows `"lean":"4.33.0"` in the `ready` example | §2: release and PID are diagnostic | `lean` is the `Lean.versionString` of the build (`contracts/wire-protocol-2.md`); the example is not a pin, and lean-cas-dsl T105 updates it | T003 |
+| N8 | [NS] §2 shows `"lean":"4.33.0"` in the `ready` example | §2: release and PID are diagnostic | `lean` is the `Lean.versionString` of the build (`contracts/wire-protocol-2.md`); the example is not a pin, and lean-cas-dsl T352 updates it | T003 |
 
 ## The eight local protocol-2 commits
 
@@ -117,7 +118,7 @@ result to `main` as a fast-forward. No commit is rewritten, so fb03325 becomes r
 | Mathlib (NbDsl) | v4.32.0, 81a5d25 | `master`, 5d0d3c0 | lean-cas-dsl `lake-manifest.json` on `main` |
 | Contract example | `"lean":"4.33.0"` in [NS] §2 | the value of `Lean.versionString` of the build | the worker reports its build; the example is not a pin |
 
-T004 aligns them after T003 and after lean-cas-dsl T105, which ports the kernel branch to the same
+T004 aligns them after T003 and after lean-cas-dsl T352, which ports the kernel branch to the same
 pins (issue #90), so the worker and the kernel change toolchain together. lean-cas-dsl T093 then
 locks the worker release of T014.
 

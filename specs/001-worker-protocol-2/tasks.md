@@ -54,8 +54,8 @@ lean-cas-dsl names them, so a new task takes the next free ID at its place in th
   sources that the Lean change breaks.
   **Acceptance**: tier 1 and tier 2 pass on v4.36.0-rc2; `ready.lean` reports the new version.
   **Supplies**: the worker at the toolchain of the ported kernel, which K:T093 locks through the
-  release of T014. **Consumes**: K:T105, the port of the lean-cas-dsl kernel branch to the
-  research-image pins (lean-cas-dsl issue #90). **Inputs**: T003; K:T105.
+  release of T014. **Consumes**: K:T352, the port of the lean-cas-dsl kernel branch to the
+  research-image pins (lean-cas-dsl issue #90). **Inputs**: T003; K:T352.
 
 ## Phase 3: User Story 1 - Connected cells that use retained results (P1)
 
@@ -112,8 +112,8 @@ lean-cas-dsl names them, so a new task takes the next free ID at its place in th
   invalidated owners and a later use of a dependent reference is unavailable before dispatch.
   **Acceptance**: User Story 3 scenario 4 and User Story 4 scenarios 1 and 2 pass in tier 1 with
   the native plugin. **Supplies**: the wire part of K:T089, K:T090, K:T091. **Consumes**:
-  K:T089 supplies `CellTransaction.draining` and `FramedConnection.cleanupFailures` for the CAS
-  plugin. **Inputs**: T007.
+  the CAS part of K:T089, `CellTransaction.draining` and `FramedConnection.cleanupFailures` for
+  the CAS plugin, which comes first within that kernel task. **Inputs**: T007.
 
 ## Phase 6: User Story 5 - Restart with no replay (P2)
 
@@ -144,8 +144,8 @@ lean-cas-dsl names them, so a new task takes the next free ID at its place in th
   `worker/client.py`; pass the paths from `kernel.py` and `install.py`. Add a tier-1 test that
   runs connected cells and reads both logs.
   **Acceptance**: for each request the logs hold every field of research R5; the notebook shows
-  none of it. **Supplies**: K:T127 and K FR-043 (the worker part of the application log).
-  **Inputs**: T010.
+  none of it. **Supplies**: K FR-043, the worker part of the application log (its kernel part is
+  the session log of lean-cas-dsl T127). **Inputs**: T010.
 - [ ] T012 [US1] [US4] Qualify against a real `KernelSession`. Pin `scripts/qualify_consumer.sh`
   to the lean-cas-dsl revision of research R9 (the head of the kernel-source branch with this
   repository's toolchain and K:T038 checked), write its hash into the script and the commit body,
@@ -158,9 +158,8 @@ lean-cas-dsl names them, so a new task takes the next free ID at its place in th
   `conformance/test_semantic.py`.
   **Acceptance**: tier 3 passes on the pinned revision; the script exits nonzero on a revision
   with another toolchain or with K:T038 unchecked. **Consumes**: K:T038; the notebook-session
-  source of K:T085 and K:T090, which close on this qualification (research R9). **Supplies**: the
-  checks of K:T085 and K:T090; the notebook path of the notebook checkpoint N1 (K:T093); the
-  notebook-launch part of K:T153. **Inputs**: T011, T004.
+  source of K:T085 and K:T090 (research R9). **Supplies**: the notebook path of the notebook
+  checkpoint N1 (K:T093); the notebook-launch part of K:T153. **Inputs**: T011, T004.
 - [ ] T013 Bring the documents into agreement with protocol 2: `docs/protocol.md` (the frames of
   `contracts/wire-protocol-2.md`), `docs/architecture.md`, `docs/plugins.md` (remove the
   replayability law at `:34` and the `unsupported` seam), `README.md` (limits and verify
@@ -204,7 +203,7 @@ lean-cas-dsl names them, so a new task takes the next free ID at its place in th
 | T001 | none |
 | T002 | none |
 | T003 | T002 |
-| T004 | T003; K:T105 |
+| T004 | T003; K:T352 |
 | T005 | T003 |
 | T015 | T005 |
 | T006 | T005 |
@@ -219,11 +218,11 @@ lean-cas-dsl names them, so a new task takes the next free ID at its place in th
 | T016 | T011 |
 | T017 | T016 |
 
-A wait for a lean-cas-dsl task blocks only its consumer: T004 waits for K:T105 and T012 for
-T004 and K:T038; the contributor continues with the next task whose inputs are present, and the
-waiting task keeps its position. T012 qualifies only against a kernel at the toolchain of this
-repository (research R9), so it follows T004. T016 and T017 follow T014 in the order and wait for
-T011 only, so they proceed while T012 and T014 wait.
+An input of lean-cas-dsl is a kernel task: the contributor does that task in lean-cas-dsl first
+and then returns (constitution, "Work order"). T004 consumes K:T352 and T012 consumes K:T038, so
+the workstream that reaches T004 or T012 finishes those kernel tasks first. T012 qualifies only
+against a kernel at the toolchain of this repository (research R9), so it follows T004. T016 and
+T017 need T011 only; they follow T014 in the order.
 
 ## Coverage
 

@@ -86,10 +86,10 @@ lean-cas-dsl `main`. **Source**: constitution J9; lean-cas-dsl `AGENTS.md` "Sour
 the lean-cas-dsl branch that holds the kernel source (lean-cas-dsl `AGENTS.md`, "Source
 location": `integration/kernel-v1-20261106` until its pull request #87 merges, then `main`). It
 qualifies only when its `lean-toolchain` equals the toolchain of this repository (J9) and its
-tasks file marks K:T038 complete. The qualification is the check of K:T085 and K:T090 (their check
-is the tier-3 qualification of T012), so T012 does not wait for their checkboxes: a revision
-without their notebook-session code fails the qualification notebook itself, and those two kernel
-tasks close when it passes. T012 writes its full hash into `scripts/qualify_consumer.sh` and into
+tasks file marks K:T038 complete. The qualification consumes the notebook-session source of K:T085
+and K:T090, which close on their own checks before it, and it is the notebook path of the notebook
+checkpoint N1 at K:T093; a revision without their notebook-session code fails the qualification
+notebook itself. T012 writes its full hash into `scripts/qualify_consumer.sh` and into
 the body of the T012 commit. The script exits nonzero on a revision with another toolchain or with
 K:T038 unchecked. The present pin 4c6feda (2026-07-31), its `sage -python` start and the CI step
 that provisions Sage 10.7 for that start are replaced: the qualification job runs in the research
