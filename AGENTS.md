@@ -8,6 +8,8 @@ CI use, and the host launchers.
 Read the [constitution](.specify/memory/constitution.md) before any change. It
 states the roles, the permitted inputs and the rules. Work follows the task list
 of the active feature in `specs/` in document order.
+`.specify/feature.json` names the feature whose first unchecked task comes first
+in that execution order; set it with `jq` when that feature changes.
 
 <!-- agent-memory:start -->
 # Agent memory

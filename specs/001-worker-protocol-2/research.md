@@ -86,15 +86,16 @@ lean-cas-dsl `main`. **Source**: constitution J9; lean-cas-dsl `AGENTS.md` "Sour
 the lean-cas-dsl branch that holds the kernel source (lean-cas-dsl `AGENTS.md`, "Source
 location": `integration/kernel-v1-20261106` until its pull request #87 merges, then `main`). It
 qualifies only when its `lean-toolchain` equals the toolchain of this repository (J9) and its
-tasks file marks K:T038 complete. The qualification consumes the notebook-session source of K:T085
-and K:T090, which close on their own checks before it, and it is the notebook path of the notebook
-checkpoint N1 at K:T093; a revision without their notebook-session code fails the qualification
-notebook itself. T012 writes its full hash into `scripts/qualify_consumer.sh` and into
+tasks file marks K:T038, K:T085, K:T086 and K:T090 complete: the qualification consumes the public
+entrance of K:T038 and the notebook-session source of execution (K:T085), inspection (K:T086) and
+invalidation (K:T090). Those kernel tasks close on their own checks, which use tasks T003, T005,
+T006 and T008 of this repository. The qualification is the notebook path of the notebook
+checkpoint N1 at K:T093. T012 writes its full hash into `scripts/qualify_consumer.sh` and into
 the body of the T012 commit. The script exits nonzero on a revision with another toolchain or with
-K:T038 unchecked. The present pin 4c6feda (2026-07-31), its `sage -python` start and the CI step
+one of those four kernel tasks unchecked. The present pin 4c6feda (2026-07-31), its `sage -python` start and the CI step
 that provisions Sage 10.7 for that start are replaced: the qualification job runs in the research
 image (constitution E5); this is the notebook-launch part of K:T153.
-**Source**: [KT] T038, T085, T090, T093 and T153; constitution J9 (one toolchain for the worker
+**Source**: [KT] T038, T085, T086, T090, T093 and T153; constitution J9 (one toolchain for the worker
 and the plugin oleans), E1 (tier 3 uses a real `KernelSession`) and E5; lean-cas-dsl `AGENTS.md`,
 "Source location"; the digest gap G6; `.github/workflows/ci.yml` (Sage 10.7 through micromamba for
 the `sage -python` start of the frozen consumer baseline).
@@ -105,7 +106,7 @@ the `sage -python` start of the frozen consumer baseline).
 native session through a JupyterLab channel that hosts the upstream infoview (FR-018). It is not a
 task of the notebook unit, and it is off on `casdsl` (FR-019). Its tasks T016 (the spike of the
 two adapters, plan "The Lean language server") and T017 follow T014, so that the release that
-lean-cas-dsl T093 locks does not wait for them; their input is T011, whose worker log observes that
+lean-cas-dsl T093 locks needs neither of them; their input is T011, whose worker log observes that
 the channel sends nothing to the worker.
 **Source**: issue #20 and its comment of 2026-10-25 (the infoview host API `EditorApi` and
 `InfoviewApi`, the RPC session that the host keeps alive, the separating two-cell specimen; the

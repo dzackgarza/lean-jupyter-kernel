@@ -305,6 +305,18 @@ from these steps.
   reaches a language server: the server elaborates uncommitted text, the elaboration of a CAS cell
   dispatches computations, and an endpoint without nonexecuting committed-environment inspection
   receives no executable cell text ([KS] User Story 7, scenario 2, and FR-035; [NS] §3.2).
+- **FR-020 — Contribution lessons.** `CONTRIBUTING.md` holds the lessons of past mistakes as
+  policies with stable IDs in categories; each policy shows a defective contribution beside its
+  replacement. (Constitution E3.)
+- **FR-021 — Documents of protocol 2.** The README, `docs/` and the extension README describe
+  protocol 2. No document gives replay, a session cache, protocol 1 or an implicit restart as
+  behaviour of this repository. ([NS] §1; plan, disagreement N7.)
+- **FR-022 — Release.** A tagged release `v2.0.0` of `main` is the immutable worker revision that
+  lean-cas-dsl locks for `nbdsl-worker`. ([KT] T093.)
+- **FR-023 — Consumer qualification.** Tier 3 runs CAS cells through the installed worker and a
+  real `KernelSession` of lean-cas-dsl at a pinned revision with the toolchain of FR-015: a
+  retained value used in a later cell, a missing parent, a forced owner and an inert inspection.
+  (Constitution E1; [KT] T093, T153.)
 
 ### Key Entities
 
@@ -339,8 +351,8 @@ from these steps.
 ## Assumptions
 
 - The CAS plugin, `KernelSession`, its transactions, owners and drain report are supplied by
-  lean-cas-dsl tasks T009 to T013, T021 to T023 and T038. This repository carries them across
-  the wire.
+  lean-cas-dsl tasks T009, T011, T013, T021 to T023, T038 and T089. This repository carries them
+  across the wire.
 - The lifecycle validation phase `lifecycle-v2` and the final notebook acceptance (lean-cas-dsl
   T094, T095, T102, T107) are run by the independent assessor in lean-cas-dsl against a build of
   this repository.

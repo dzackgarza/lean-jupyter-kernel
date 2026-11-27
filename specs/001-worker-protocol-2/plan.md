@@ -45,7 +45,7 @@ server (User Story 7, issue #20), outside the notebook unit and never on the CAS
 | E1, E4 tiers and cadence | T002 | Pass after T002 |
 | E3 lessons | T001 | Pass after T001 |
 | E6, E7 logs and timing | T002 (test runs), T011 (application log) | Pass after T011 |
-| Work order | No task waits: T004 consumes K:T352 and T012 consumes K:T038, which the workstream does first in lean-cas-dsl ([tasks](tasks.md#dependencies)) | Pass |
+| Work order | No task waits: T004 consumes K:T352, and T012 consumes K:T038, K:T085, K:T086 and K:T090, which the workstream does first in lean-cas-dsl ([tasks](tasks.md#dependencies)) | Pass |
 
 ## Requirement to file map
 
@@ -69,6 +69,10 @@ server (User Story 7, issue #20), outside the notebook unit and never on the CAS
 | FR-016 tier-1 gate | `justfile` (`test-commit`, `test-push`, a new `test-tier1`), `docs/development.md` | Missing | T002 |
 | FR-017 Lean commands in cells | `worker/Worker/Frontend.lean`, `worker/Worker.lean` (`execute`), `worker/Worker/NativeSession.lean` | Not established | T015 |
 | FR-018, FR-019 language-server channel | `jupyterlab_nbdsl/src/` (a new channel module and the infoview panel), `jupyterlab_nbdsl/package.json`, `jupyterlab_nbdsl/ui-tests/` (new) | Missing | T016, T017 |
+| FR-020 contribution lessons | `CONTRIBUTING.md` (new), `docs/development.md`, `AGENTS.md` | Missing | T001 |
+| FR-021 documents of protocol 2 | `docs/protocol.md`, `docs/architecture.md`, `docs/plugins.md`, `README.md`, `jupyterlab_nbdsl/README.md`, `justfile` | Partial: the replayability law of `docs/plugins.md:34` remains (N7) | T013 |
+| FR-022 release | `release.toml` and the output of `scripts/release_projection.py` | Missing | T014 |
+| FR-023 consumer qualification | `scripts/qualify_consumer.sh`, `.github/workflows/ci.yml`, `conformance/` | Partial: pinned to 4c6feda with a `sage -python` start (research R9) | T012 |
 
 ## Disagreements with [NS]
 
@@ -106,8 +110,9 @@ lacks: 819849d "fix: elaborate trivia-only notebook cells as no-ops (#21)", whic
 | c914cd1 | `Worker/NativeSession.lean` (the mathlib-free native plugin), transaction ownership, observation validation, `test_native_session.py` |
 
 Landing (T003): merge `origin/main` into the branch with a forward merge commit, resolve the
-conflicts in favour of protocol 2 and of the constitution, run tier 1 and tier 2, and push the
-result to `main` as a fast-forward. No commit is rewritten, so fb03325 becomes reachable from
+conflicts in favour of protocol 2 and of the constitution, run the repository QC gate `just test`,
+and push the result to `main` as a fast-forward. T002 then adds the tier-1 gate on `main`, where
+the native plugin and its tier-1 client tests are present after the landing. No commit is rewritten, so fb03325 becomes reachable from
 `main` and the kernel lock resolves on GitHub.
 
 ## Toolchain alignment
